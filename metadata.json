@@ -1,0 +1,6 @@
+{
+  "name": "Viva Experience CRM",
+  "description": "Omnichannel CRM e Gestão de Viagens para a Viva Destinos Experience. Inclui atendimento WhatsApp, funil de vendas, gestão de pacotes e cotações com suporte de IA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

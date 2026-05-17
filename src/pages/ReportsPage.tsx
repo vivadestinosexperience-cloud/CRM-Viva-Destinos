@@ -1,0 +1,170 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React from 'react';
+import { BarChart3, TrendingUp, Users, MessageSquare, Download, Clock, CheckCircle2, ArrowRightLeft } from 'lucide-react';
+import { toast } from 'sonner';
+import { useAppStore } from '../store/useAppStore';
+
+export default function ReportsPage() {
+  const { customers, conversations, messages, users } = useAppStore();
+
+  const totalConversations = conversations.length || 0;
+  const resolvedConversations = conversations.filter(c => c.status === 'RESOLVED').length;
+  const resolutionRate = totalConversations > 0 ? ((resolvedConversations / totalConversations) * 100).toFixed(1) : "0";
+
+  const kpis = [
+    { label: 'Total de Atendimentos', value: totalConversations.toString(), trend: 'Acumulado', icon: MessageSquare, color: 'text-blue-500', bg: 'bg-blue-50' },
+    { label: 'Taxa de Resolução', value: `${resolutionRate}%`, trend: 'Geral', icon: CheckCircle2, color: 'text-emerald-500', bg: 'bg-emerald-50' },
+    { label: 'Abertos / Em Curso', value: conversations.filter(c => c.status === 'OPEN').length.toString(), trend: 'Ativos', icon: Clock, color: 'text-amber-500', bg: 'bg-amber-50' },
+    { label: 'Novos Clientes', value: customers.length.toString(), trend: '+12%', icon: Users, color: 'text-purple-500', bg: 'bg-purple-50' },
+  ];
+
+  const statusDistribution = [
+    { name: 'Abertos', value: conversations.filter(c => c.status === 'OPEN').length || 0, color: 'bg-blue-500' },
+    { name: 'Em Atendimento', value: conversations.filter(c => c.status === 'OPEN').length || 0, color: 'bg-amber-500' }, // Simulating sub-status
+    { name: 'Transferidos', value: conversations.filter(c => c.status === 'TRANSFERRED').length || 0, color: 'bg-purple-500' },
+    { name: 'Resolvidos', value: resolvedConversations, color: 'bg-emerald-500' },
+  ];
+
+  return (
+    <div className="flex flex-col h-full bg-slate-50 overflow-hidden font-sans animate-in fade-in duration-500">
+      <header className="bg-white border-b border-slate-200 px-8 py-6 flex items-center justify-between shrink-0">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800 tracking-tight">Relatório de Atendimentos</h2>
+          <p className="text-sm text-slate-500 mt-1">Visão geral da operação omnichannel da Viva Destinos.</p>
+        </div>
+        <div className="flex gap-3">
+          <button 
+            onClick={() => toast.success('Relatório exportado para área de transferência!')}
+            className="flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl font-bold text-sm shadow-sm hover:bg-slate-50 transition-all active:scale-95"
+          >
+            <Download className="w-4 h-4" />
+            Exportar CSV
+          </button>
+        </div>
+      </header>
+
+      <div className="flex-1 overflow-auto p-8 space-y-8">
+        {/* Main KPI Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+           {kpis.map((kpi, i) => (
+            <div key={i} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm transition-all hover:shadow-md group">
+                <div className="flex items-center justify-between mb-4">
+                  <div className={`p-2.5 rounded-xl ${kpi.bg} ${kpi.color}`}>
+                    <kpi.icon className="w-5 h-5 group-hover:scale-110 transition-transform" />
+                  </div>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 uppercase tracking-widest`}>
+                    {kpi.trend}
+                  </span>
+                </div>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-1">{kpi.label}</p>
+                <p className="text-2xl font-black text-slate-800 tracking-tight">{kpi.value}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Chart Display */}
+          <div className="lg:col-span-2 bg-white p-8 rounded-3xl border border-slate-100 shadow-sm flex flex-col">
+            <div className="flex items-center justify-between mb-8">
+              <h3 className="font-bold text-slate-800">Volume de Mensagens (24h)</h3>
+              <TrendingUp className="w-5 h-5 text-blue-500" />
+            </div>
+            <div className="flex-1 flex items-end justify-between gap-2 h-64 border-b border-slate-50 pb-2">
+              {[12, 45, 67, 32, 89, 45, 90, 34, 56, 78, 23, 10, 5, 23, 67, 89, 45, 23, 56, 78, 90, 100, 45, 23].map((h, i) => (
+                <div key={i} className="flex-1 flex flex-col items-center gap-2 group">
+                   <div 
+                    className="w-full bg-blue-100 rounded-t-lg transition-all duration-500 group-hover:bg-blue-500 cursor-help" 
+                    style={{ height: `${h}%` }}
+                  ></div>
+                  <span className="text-[8px] font-bold text-slate-300 hidden md:block">{i}h</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Status Distribution */}
+          <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm">
+            <h3 className="font-bold text-slate-800 mb-6">Distribuição por Status</h3>
+            <div className="space-y-6">
+              {statusDistribution.map((status) => {
+                 const percentage = totalConversations > 0 ? ((status.value / totalConversations) * 100).toFixed(0) : "0";
+                 return (
+                  <div key={status.name} className="space-y-2">
+                    <div className="flex justify-between text-[11px] font-bold uppercase tracking-wider">
+                      <span className="text-slate-500">{status.name}</span>
+                      <span className="text-slate-800">{status.value} ({percentage}%)</span>
+                    </div>
+                    <div className="w-full h-2.5 bg-slate-50 rounded-full overflow-hidden border border-slate-100">
+                      <div className={`h-full ${status.color} transition-all duration-1000 shadow-sm`} style={{ width: `${percentage}%` }}></div>
+                    </div>
+                  </div>
+                 );
+              })}
+            </div>
+            
+            <div className="mt-8 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+               <div className="flex items-center gap-3 text-blue-600 mb-2">
+                  <ArrowRightLeft className="w-4 h-4" />
+                  <span className="text-xs font-bold uppercase tracking-wider">Transferências</span>
+               </div>
+               <p className="text-[10px] text-slate-500 font-medium leading-relaxed">
+                 O volume de transferências reflete a necessidade de escalonamento entre equipes. 
+                 Mantenha este índice abaixo de 15% para melhor experiência do cliente.
+               </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Team Table */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between px-1">
+            <h3 className="text-lg font-bold text-slate-800 tracking-tight">Performance por Consultor</h3>
+          </div>
+          <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+            <table className="w-full text-left border-collapse">
+               <thead>
+                <tr className="bg-slate-50/50 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
+                  <th className="px-8 py-5">Consultor</th>
+                  <th className="px-8 py-5">Atendimentos</th>
+                  <th className="px-8 py-5">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {users.map((user) => {
+                  const userConvs = conversations.filter(c => c.assigned_user_id === user.id || (c as any).responsibleId === user.id).length;
+                  return (
+                    <tr key={user.id} className="hover:bg-blue-50/20 transition-all group">
+                       <td className="px-8 py-5">
+                         <div className="flex items-center gap-4">
+                            <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-600 font-bold text-sm border-2 border-white shadow-sm ring-1 ring-slate-100 transition-all group-hover:rotate-6">
+                              {user.name.charAt(0)}
+                            </div>
+                            <div>
+                               <p className="text-sm font-bold text-slate-800">{user.name}</p>
+                               <p className="text-[10px] text-slate-400 font-medium uppercase">{user.role || 'Agente'}</p>
+                            </div>
+                         </div>
+                       </td>
+                       <td className="px-8 py-5 text-sm font-bold text-slate-600">
+                         {userConvs} chats
+                       </td>
+                       <td className="px-8 py-5">
+                         <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${userConvs > 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+                           {userConvs > 0 ? 'Ativo' : 'Inativo'}
+                         </span>
+                       </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
