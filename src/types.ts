@@ -109,6 +109,7 @@ export interface Customer {
 export interface Message {
   id: string;
   conversation_id: string;
+  customer_phone_normalized?: string;
   whatsapp_account_id?: string;
   external_message_id?: string;
   sender_type: 'customer' | 'agent' | 'system';
@@ -118,7 +119,8 @@ export interface Message {
   message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'template' | 'internal_note';
   content: string;
   media_url?: string;
-  status: 'sent' | 'delivered' | 'read' | 'failed' | 'deleted';
+  status: 'sent' | 'delivered' | 'read' | 'failed' | 'deleted' | 'sending' | 'received';
+  is_internal?: boolean;
   raw_payload?: any;
   metadata?: {
     agentName?: string;

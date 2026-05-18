@@ -41,6 +41,7 @@ import {
   campaignRecipientService
 } from '../services/dataService';
 import { toast } from 'sonner';
+import { renderSafeText } from '../utils/renderSafeText';
 
 interface AppearanceSettings {
   logoUrl: string;
@@ -302,21 +303,24 @@ export const useAppStore = create<AppState>()(
             set(state => {
               if (state.messages.some(m => m.id === newMsg.id)) return state;
               
+              const safeContent = renderSafeText(newMsg.content, "Mensagem recebida");
+              const safeMsg = { ...newMsg, content: safeContent };
+              
               // Find conversation to update its unread count and last message if it's from customer
               const updatedConversations = state.conversations.map(c => {
-                if (c.id === newMsg.conversation_id) {
+                if (c.id === safeMsg.conversation_id) {
                   return {
                     ...c,
-                    last_message: newMsg.content,
-                    last_message_at: newMsg.created_at || new Date().toISOString(),
-                    unread_count: newMsg.sender_type === 'customer' ? (c.unread_count || 0) + 1 : c.unread_count
+                    last_message: safeContent,
+                    last_message_at: safeMsg.created_at || new Date().toISOString(),
+                    unread_count: safeMsg.sender_type === 'customer' ? (c.unread_count || 0) + 1 : c.unread_count
                   };
                 }
                 return c;
               });
 
               return { 
-                messages: [...state.messages, newMsg],
+                messages: [...state.messages, safeMsg],
                 conversations: updatedConversations
               };
             });
@@ -470,7 +474,18 @@ export const useAppStore = create<AppState>()(
       addCustomer: async (customer) => {
         set({ isSaving: true });
         try {
-          const newCust = await customerService.create(customer);
+          const phoneNormalized = String(customer.phone || "").replace(/\D/g, "");
+          let finalNormalized = phoneNormalized;
+          if ((finalNormalized.length === 10 || finalNormalized.length === 11) && !finalNormalized.startsWith("55")) {
+            finalNormalized = `55${finalNormalized}`;
+          }
+          
+          const enrichedCustomer = {
+            ...customer,
+            phone_normalized: finalNormalized
+          };
+          
+          const newCust = await customerService.create(enrichedCustomer);
           set((state) => ({ customers: [...state.customers, newCust], isSaving: false }));
         } catch (err) {
           set((state) => ({ customers: [...state.customers, customer], isSaving: false }));
@@ -506,15 +521,22 @@ export const useAppStore = create<AppState>()(
 
       // Message/Conversation Actions
       addMessage: async (message) => {
-        set((state) => ({ messages: [...state.messages, message] }));
+        const safeContent = renderSafeText(message.content, "Mensagem enviada");
+        const safeMessage = { ...message, content: safeContent };
+        
+        set((state) => ({ messages: [...state.messages, safeMessage] }));
         try {
+          const conv = get().conversations.find(c => c.id === (safeMessage.conversation_id || safeMessage.conversationId));
+          
           await messageService.create({
-            conversation_id: message.conversation_id || message.conversationId,
-            content: message.content,
-            sender_type: message.sender_type || 'agent',
-            sender_name: message.sender_name,
-            message_type: (message.message_type || message.type || 'text').toLowerCase() as any,
-            status: (message.status || 'sent').toLowerCase() as any
+            conversation_id: safeMessage.conversation_id || safeMessage.conversationId,
+            customer_phone_normalized: safeMessage.customer_phone_normalized || conv?.customer_phone_normalized,
+            content: safeContent,
+            sender_type: safeMessage.sender_type || 'agent',
+            sender_name: safeMessage.sender_name,
+            message_type: (safeMessage.message_type || safeMessage.type || 'text').toLowerCase() as any,
+            is_internal: safeMessage.is_internal || safeMessage.message_type === 'internal_note',
+            status: (safeMessage.status || 'sent').toLowerCase() as any
           });
         } catch (err) {
           console.error('Message only saved locally', err);
@@ -546,12 +568,36 @@ export const useAppStore = create<AppState>()(
       addConversation: async (conv) => {
         set({ isSaving: true });
         try {
-          const newConv = await conversationService.create(conv);
-          set((state) => ({ conversations: [newConv, ...state.conversations], isSaving: false }));
-        } catch (err) {
-          // Fallback manual ID if needed, but usually we ignore for mock-only
+          // Find phone if not provided
+          let phoneNormalized = conv.customer_phone_normalized;
+          if (!phoneNormalized && conv.customer_id) {
+            const cust = get().customers.find(c => c.id === conv.customer_id);
+            if (cust) {
+              phoneNormalized = cust.phone_normalized || String(cust.phone || "").replace(/\D/g, "");
+              if (phoneNormalized && (phoneNormalized.length === 10 || phoneNormalized.length === 11) && !phoneNormalized.startsWith("55")) {
+                phoneNormalized = `55${phoneNormalized}`;
+              }
+            }
+          }
+
+          const enrichedConv = {
+            ...conv,
+            customer_phone_normalized: phoneNormalized,
+            last_message: renderSafeText(conv.last_message, "Conversa iniciada")
+          };
+
+          const newConv = await conversationService.create(enrichedConv);
           set((state) => ({ 
-            conversations: [{ id: `temp-${Date.now()}`, ...conv } as Conversation, ...state.conversations], 
+            conversations: [newConv, ...state.conversations.filter(c => c.customer_phone_normalized !== phoneNormalized)], 
+            isSaving: false 
+          }));
+        } catch (err) {
+          set((state) => ({ 
+            conversations: [{ 
+              id: `temp-${Date.now()}`, 
+              ...conv, 
+              last_message: renderSafeText(conv.last_message, "Conversa iniciada") 
+            } as Conversation, ...state.conversations], 
             isSaving: false 
           }));
           toast.warning('Conexão instável, salvo localmente');

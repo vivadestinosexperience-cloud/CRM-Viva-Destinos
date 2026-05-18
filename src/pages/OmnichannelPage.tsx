@@ -39,7 +39,7 @@ import { Conversation, Message, Customer, Team } from '../types';
 import { supabase } from '../integrations/supabase/client';
 import { useAppStore } from '../store/useAppStore';
 import { toast } from 'sonner';
-import { getErrorMessage } from '../utils/getErrorMessage';
+import { getErrorMessage, renderSafeText } from '../utils/renderSafeText';
 import { safeAction } from '../utils/safeAction';
 
 import { getAgentDisplayName, formatOutgoingWhatsAppMessage } from '../utils/userUtils';
@@ -107,6 +107,102 @@ export default function OmnichannelPage() {
   const activeCustomer = activeConversation?.customer || customers.find(c => c.id === activeConversation?.customer_id);
   const activeChatMessages = messages.filter(m => m.conversation_id === activeConversationId);
   const currentAccount = whatsAppAccounts.find(a => a.id === activeConversation?.whatsapp_account_id);
+
+  function renderMessageContent(message: Message) {
+    if (!message) return null;
+
+    const type = message.message_type || (message as any).type || "text";
+    const content = renderSafeText(message.content, "Mensagem recebida");
+
+    if (type === "internal_note" || (message as any).is_internal) {
+      return (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-1.5 opacity-70">
+            <Info className="w-3 h-3" />
+            <span className="text-[10px] font-black uppercase tracking-widest">Anotação Interna</span>
+          </div>
+          <p className="text-xs italic leading-relaxed">
+            {content}
+          </p>
+        </div>
+      );
+    }
+
+    if (type === "image") {
+      return (
+        <div className="space-y-2">
+          {message.media_url && (
+             <img 
+               src={message.media_url} 
+               alt="Anexo" 
+               className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity shadow-sm"
+               onClick={() => window.open(message.media_url, '_blank')}
+             />
+          )}
+          {content && content !== "Imagem enviada" && content !== "Imagem recebida" && (
+            <p className="text-sm">{content}</p>
+          )}
+        </div>
+      );
+    }
+
+    if (type === "audio") {
+      return (
+        <div className="space-y-2 min-w-[200px]">
+          {message.media_url && (
+            <audio controls src={message.media_url} className="w-full h-8" />
+          )}
+          {content && content !== "Áudio enviado" && content !== "Áudio recebido" && (
+            <p className="text-sm">{content}</p>
+          )}
+        </div>
+      );
+    }
+
+    if (type === "video") {
+      return (
+        <div className="space-y-2">
+          {message.media_url && (
+            <video controls src={message.media_url} className="max-w-full rounded-lg shadow-sm" />
+          )}
+          {content && content !== "Vídeo enviado" && content !== "Vídeo recebido" && (
+            <p className="text-sm">{content}</p>
+          )}
+        </div>
+      );
+    }
+
+    if (type === "document") {
+      return (
+        <div className="space-y-2">
+          {message.media_url ? (
+            <a 
+              href={message.media_url} 
+              target="_blank" 
+              rel="noreferrer"
+              className="flex items-center gap-2 p-2 bg-black/5 rounded-lg hover:bg-black/10 transition-colors"
+            >
+              <FileIcon className="w-5 h-5 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-xs font-bold truncate">{(message.metadata as any)?.fileName || 'Documento'}</p>
+                <p className="text-[10px] opacity-60">Clique para abrir</p>
+              </div>
+            </a>
+          ) : (
+            <div className="flex items-center gap-2 p-2 bg-black/5 rounded-lg opacity-50">
+              <FileIcon className="w-5 h-5" />
+              <p className="text-xs">Documento indisponível</p>
+            </div>
+          )}
+          {content && content !== "Documento enviado" && content !== "Documento recebido" && (
+            <p className="text-sm">{content}</p>
+          )}
+        </div>
+      );
+    }
+
+    return <p className="text-sm whitespace-pre-wrap">{content}</p>;
+  }
 
   // Filtered Conversations
   useEffect(() => {
@@ -265,10 +361,11 @@ export default function OmnichannelPage() {
     if (searchTerm) {
       const customer = conv.customer || customers.find(c => c.id === conv.customer_id);
       const searchLower = searchTerm.toLowerCase();
+      const safeLastMessage = renderSafeText(conv.last_message).toLowerCase();
       return (
-        customer?.name.toLowerCase().includes(searchLower) ||
-        customer?.phone.includes(searchTerm) ||
-        conv.last_message?.toLowerCase().includes(searchLower)
+        (customer?.name || "").toLowerCase().includes(searchLower) ||
+        (customer?.phone || "").includes(searchTerm) ||
+        safeLastMessage.includes(searchLower)
       );
     }
 
@@ -847,7 +944,7 @@ export default function OmnichannelPage() {
                   </div>
 
                   <p className="text-xs text-slate-500 truncate leading-relaxed">
-                    {conv.last_message || "O cliente iniciou uma nova conversa"}
+                    {renderSafeText(conv.last_message, "O cliente iniciou uma nova conversa")}
                   </p>
                 </div>
 
@@ -985,28 +1082,9 @@ export default function OmnichannelPage() {
               {activeChatMessages.map((msg: Message) => {
                 const isMine = msg.sender_type === 'agent' || msg.sender_type === 'system';
                 const isInternal = (msg as any).is_internal || msg.message_type === 'internal_note';
-                const content = msg.content;
                 const timestamp = msg.created_at;
                 const status = msg.status;
-                const type = msg.message_type;
                 
-                if (isInternal) {
-                  return (
-                    <div key={msg.id} className="flex justify-center my-4">
-                      <div className="bg-amber-50 border border-amber-100 rounded-2xl px-6 py-3 max-w-[80%] shadow-sm">
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <Info className="w-3.5 h-3.5 text-amber-500" />
-                          <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Anotação Interna</span>
-                          <span className="text-[9px] text-amber-400 font-bold ml-auto">{msg.sender_name || 'Sistema'} • {timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>
-                        </div>
-                        <p className="text-xs text-amber-800 leading-relaxed font-medium">
-                          {content}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                }
-
                 return (
                   <div key={msg.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[70%] lg:max-w-[60%] flex gap-3 ${isMine ? 'flex-row-reverse' : ''}`}>
@@ -1018,49 +1096,23 @@ export default function OmnichannelPage() {
                         <div className={`text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-0.5 px-1 ${isMine ? 'text-right' : 'text-left'}`}>
                           {msg.sender_type === 'system' ? 'Sistema' : (isMine ? (msg.sender_name || 'Agente') : (activeCustomer?.name || 'Cliente'))}
                         </div>
-                        <div className={`px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed transition-all ${isMine ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-white text-slate-700 rounded-tl-none border border-slate-100'} ${status === 'failed' ? 'border-red-300 bg-red-50 text-red-600' : ''}`}>
-                          {type === 'image' && msg.media_url && (
-                            <img src={msg.media_url} alt="Imagem enviada" className="max-w-full rounded-lg mb-2 cursor-pointer hover:opacity-90 transition-opacity" onClick={() => window.open(msg.media_url, '_blank')} />
-                          )}
-                          {type === 'video' && msg.media_url && (
-                             <div className="relative group cursor-pointer" onClick={() => window.open(msg.media_url, '_blank')}>
-                               <video src={msg.media_url} className="max-w-full rounded-lg mb-2" />
-                               <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg">
-                                 <VideoIcon className="w-10 h-10 text-white" />
-                               </div>
-                             </div>
-                          )}
-                          {type === 'audio' && msg.media_url && (
-                            <div className="min-w-[200px]">
-                              <audio src={msg.media_url} controls className={`h-8 w-full ${isMine ? 'brightness-200 contrast-50' : ''}`} />
-                            </div>
-                          )}
-                          {type === 'document' && (
-                             <div className="flex items-center gap-3 p-3 bg-black/5 rounded-xl mb-2 cursor-pointer hover:bg-black/10 transition-colors" onClick={() => msg.media_url && window.open(msg.media_url, '_blank')}>
-                               <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${isMine ? 'bg-blue-500' : 'bg-slate-100'}`}>
-                                 <FileIcon className={`w-5 h-5 ${isMine ? 'text-white' : 'text-slate-500'}`} />
-                               </div>
-                               <div className="min-w-0">
-                                 <p className="text-[11px] font-bold truncate max-w-[150px] leading-tight">{msg.metadata?.fileName || content}</p>
-                                 <p className="text-[9px] opacity-60 uppercase font-black">{msg.metadata?.fileSize ? (msg.metadata.fileSize / 1024 / 1024).toFixed(2) + ' MB' : 'Documento'}</p>
-                               </div>
-                             </div>
-                          )}
-                          {(type === 'image' || type === 'video' || type === 'document') ? content : content}
-                        </div>
-                        <div className={`flex items-center gap-1.5 px-1 ${isMine ? 'flex-row-reverse justify-end' : ''}`}>
-                          <span className="text-[9px] font-medium text-slate-400 uppercase">
-                            {timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'}
-                          </span>
-                          {isMine && status === 'read' && <CheckCheck className="w-3 h-3 text-blue-500" />}
-                          {isMine && status === 'sent' && <CheckCheck className="w-3 h-3 text-slate-300" />}
-                          {isMine && (status as any) === 'sending' && <RefreshCw className="w-3 h-3 text-blue-400 animate-spin" />}
-                          {isMine && status === 'failed' && (
-                            <button onClick={() => retryMessage(msg)} className="flex items-center gap-1 group">
-                               <AlertCircle className="w-3 h-3 text-red-500" />
-                               <span className="text-[8px] text-red-500 font-bold uppercase hover:underline">Falhou • Tentar novamente</span>
-                            </button>
-                          )}
+                        <div className={`px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed transition-all ${isMine ? (isInternal ? 'bg-amber-100 text-amber-900 border-amber-200 rounded-tr-none' : 'bg-blue-600 text-white rounded-tr-none') : 'bg-white text-slate-700 rounded-tl-none border border-slate-100'} ${status === 'failed' ? 'border-red-300 bg-red-50 text-red-600' : ''}`}>
+                          {renderMessageContent(msg)}
+                          
+                          <div className={`flex items-center gap-1.5 mt-1 opacity-50 ${isMine ? 'justify-end' : 'justify-start'}`}>
+                            <span className="text-[9px] font-medium uppercase">
+                              {timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'}
+                            </span>
+                            {isMine && status === 'read' && <CheckCheck className="w-3 h-3 text-blue-500" />}
+                            {isMine && status === 'sent' && <CheckCheck className="w-3 h-3 text-slate-300" />}
+                            {isMine && (status as any) === 'sending' && <RefreshCw className="w-3 h-3 text-blue-400 animate-spin" />}
+                            {isMine && status === 'failed' && (
+                              <button onClick={() => retryMessage(msg)} className="flex items-center gap-1 group">
+                                 <AlertCircle className="w-3 h-3 text-red-500" />
+                                 <span className="text-[8px] text-red-500 font-bold uppercase hover:underline">Falhou • Tentar novamente</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>

@@ -114,16 +114,25 @@ export default function ChannelsSettingsPage() {
   const [qrCodeData, setQrCodeData] = useState<{ value: string; type: 'IMAGE' | 'RAW' } | null>(null);
   const [qrError, setQrError] = useState<string | null>(null);
   const [configStatus, setConfigStatus] = useState<any | null>(null);
+  const [webhookUrl, setWebhookUrl] = useState<string>('');
 
   const qrIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const statusIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const refreshConfigStatus = async () => {
     return safeAction(async () => {
-      const res = await fetch('/api/zapi/config-status');
-      const data = await res.json();
-      setConfigStatus(data);
-      return data;
+      const [statusRes, infoRes] = await Promise.all([
+        fetch('/api/zapi/config-status'),
+        fetch('/api/webhook-info')
+      ]);
+      
+      const statusData = await statusRes.json();
+      const infoData = await infoRes.json();
+      
+      setConfigStatus(statusData);
+      setWebhookUrl(infoData.webhookUrl || `${window.location.origin}/api/webhooks/zapi/received`);
+      
+      return statusData;
     }, { label: 'Erro ao verificar configuração', showToast: false });
   };
 
@@ -318,15 +327,15 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
       </header>
 
       {/* Webhook Configuration Section */}
-      <section className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden p-8 space-y-6">
+      <section className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden p-8 space-y-8">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center">
               <Globe className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight">Webhook de Recebimento</h2>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Integração automática com Z-API</p>
+              <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight">Webhooks Z-API</h2>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Configuração de endpoints para eventos</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -349,7 +358,7 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                   const res = await fetch('/api/zapi/register-webhook-received', { method: 'POST' });
                   const data = await res.json();
                   if (!res.ok) throw data;
-                  toast.success("Webhook registrado na Z-API com sucesso!");
+                  toast.success("Webhook principal registrado na Z-API com sucesso!");
                 }, { label: 'Falha ao registrar webhook' });
               }}
               className="flex items-center gap-2 px-6 py-4 bg-emerald-600 text-white rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100"
@@ -360,61 +369,70 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4">
-           <div className="space-y-4">
-              <div className="p-6 bg-slate-50 rounded-3xl border border-slate-100">
-                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">URL do Webhook (Endpoint da Aplicação)</label>
-                <div className="flex items-center gap-2">
-                  <input 
-                    type="text" 
-                    readOnly 
-                    value={`${window.location.origin}/api/webhooks/zapi/received`}
-                    className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono text-slate-600 outline-none"
-                  />
-                  <button 
-                    onClick={() => {
-                      navigator.clipboard.writeText(`${window.location.origin}/api/webhooks/zapi/received`);
-                      toast.success("URL copiada!");
-                    }}
-                    className="p-3 bg-white border border-slate-200 rounded-xl text-slate-400 hover:text-blue-600 hover:border-blue-200 transition-all"
-                  >
-                    <Layers className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-5 bg-amber-50 rounded-3xl border border-amber-100 flex items-start gap-4">
-                 <Info className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
-                 <div className="space-y-1">
-                    <p className="text-[10px] font-black text-amber-700 uppercase tracking-tight">Importante</p>
-                    <p className="text-[10px] text-amber-600 font-medium leading-relaxed">
-                      Ao registrar o webhook, a Z-API passará a enviar todas as mensagens recebidas para esta aplicação. 
-                      Certifique-se de que a instância do WhatsApp esteja conectada.
-                    </p>
-                 </div>
-              </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+           <div className="space-y-3">
+              {[
+                { label: 'Ao receber', path: '/api/webhooks/zapi/received' },
+                { label: 'Ao enviar', path: '/api/webhooks/zapi/sent' },
+                { label: 'Ao desconectar', path: '/api/webhooks/zapi/disconnected' },
+                { label: 'Ao conectar', path: '/api/webhooks/zapi/connected' },
+                { label: 'Presença do chat', path: '/api/webhooks/zapi/chat-presence' },
+                { label: 'Status da mensagem', path: '/api/webhooks/zapi/message-status' },
+              ].map((hook) => {
+                const fullUrl = webhookUrl 
+                  ? (webhookUrl.includes('/received') ? webhookUrl.replace('/api/webhooks/zapi/received', hook.path) : `${webhookUrl.split('/api/')[0]}${hook.path}`)
+                  : `${window.location.origin}${hook.path}`;
+                
+                return (
+                  <div key={hook.path} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-100 gap-4">
+                    <div className="min-w-[120px] px-2">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{hook.label}</span>
+                    </div>
+                    <input 
+                      type="text" 
+                      readOnly 
+                      value={fullUrl}
+                      className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-2 text-[10px] font-mono text-slate-500 outline-none"
+                    />
+                    <button 
+                      onClick={() => {
+                        navigator.clipboard.writeText(fullUrl);
+                        toast.success(`${hook.label} copiado!`);
+                      }}
+                      className="p-2 bg-white border border-slate-200 rounded-xl text-slate-400 hover:text-blue-600 hover:border-blue-200 transition-all"
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
            </div>
 
-           <div className="p-6 bg-slate-900 rounded-[2rem] text-white flex flex-col justify-center">
-              <h4 className="text-sm font-black uppercase tracking-tight mb-4 flex items-center gap-2">
-                <Cloud className="w-5 h-5 text-blue-400" />
-                Como funciona?
-              </h4>
-              <ul className="space-y-3">
-                {[
-                  "A Z-API recebe a mensagem do seu cliente.",
-                  "A Z-API dispara um POST para a URL configurada acima.",
-                  "Nossa aplicação processa o remetente e o conteúdo.",
-                  "O cliente é cadastrado e a conversa aparece em tempo real."
-                ].map((step, i) => (
-                  <li key={i} className="flex items-start gap-3">
-                    <span className="w-5 h-5 rounded-full bg-slate-800 text-[10px] font-black flex items-center justify-center shrink-0 border border-slate-700">
-                      {i + 1}
-                    </span>
-                    <span className="text-[11px] font-medium text-slate-300">{step}</span>
-                  </li>
-                ))}
-              </ul>
+           <div className="space-y-6">
+              <div className="p-6 bg-slate-900 rounded-[2rem] text-white flex flex-col justify-center h-full">
+                <h4 className="text-sm font-black uppercase tracking-tight mb-4 flex items-center gap-2">
+                  <Cloud className="w-5 h-5 text-blue-400" />
+                  Instruções
+                </h4>
+                <p className="text-xs text-slate-400 mb-6 leading-relaxed">
+                  Para que o Viva Experience CRM funcione corretamente em tempo real, você deve copiar as URLs acima e colar nos campos correspondentes no painel da Z-API (Webhook &gt; Configurar Webhooks).
+                </p>
+                <ul className="space-y-3">
+                  {[
+                    "As URLs acima são baseadas no ambiente atual.",
+                    "Garanta que o webhook de 'Recebidos' esteja configurado.",
+                    "Após configurar, o sistema receberá mensagens instantaneamente.",
+                    "Você pode usar o botão 'Testar Recebimento' para validar localmente."
+                  ].map((step, i) => (
+                    <li key={i} className="flex items-start gap-3">
+                      <span className="w-5 h-5 rounded-full bg-slate-800 text-[10px] font-black flex items-center justify-center shrink-0 border border-slate-700">
+                        {i + 1}
+                      </span>
+                      <span className="text-[11px] font-medium text-slate-300">{step}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
            </div>
         </div>
       </section>

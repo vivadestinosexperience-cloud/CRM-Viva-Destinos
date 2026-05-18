@@ -205,9 +205,168 @@ async function startServer() {
     }
   });
 
+  function getLastMessageText(msg: any) {
+    if (msg.type === "image") return msg.text || "Imagem recebida";
+    if (msg.type === "audio") return "Áudio recebido";
+    if (msg.type === "video") return msg.text || "Vídeo recebido";
+    if (msg.type === "document") return msg.text || "Documento recebido";
+    return msg.text || "Mensagem recebida";
+  }
+
+  // --- Central Processing Function ---
+  async function processIncomingZapiMessage(payload: any) {
+    const msg = normalizeZapiIncomingMessage(payload);
+    
+    if (!msg.phone) {
+      throw new Error("Telefone não identificado no payload do webhook.");
+    }
+
+    const phoneNormalized = msg.phone;
+    console.log(`[PROCESS MESSAGE] Processing for ${phoneNormalized}. Type: ${msg.type}`);
+
+    // --- CAMPAIGN TRACKING ---
+    let campaignId = null;
+    try {
+      const { data: recipient } = await supabase
+        .from('campaign_recipients')
+        .select('campaign_id, id')
+        .eq('phone', phoneNormalized)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      if (recipient) {
+        campaignId = recipient.campaign_id;
+        await supabase
+          .from('campaign_recipients')
+          .update({ 
+             replied_at: new Date().toISOString(),
+             status: 'REPLIED'
+          })
+          .eq('id', recipient.id);
+      }
+    } catch (campErr) {
+      console.error("[CAMPAIGN ERROR] Failed to track campaign reply:", campErr);
+    }
+
+    // 1. Find or Create Customer
+    let { data: customer } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('phone_normalized', phoneNormalized)
+      .maybeSingle();
+
+    if (!customer) {
+      const { data: newCustomer, error: createError } = await supabase
+        .from('customers')
+        .insert({
+          name: msg.name || 'Cliente',
+          phone: phoneNormalized,
+          phone_normalized: phoneNormalized,
+          origin: msg.raw?.isTest ? 'Teste Interno' : 'WhatsApp Z-API'
+        })
+        .select()
+        .single();
+      
+      if (createError) throw createError;
+      customer = newCustomer;
+    }
+
+    // 2. Find or Create UNIFIED Conversation
+    let { data: conversation } = await supabase
+      .from('conversations')
+      .select('*')
+      .eq('customer_phone_normalized', phoneNormalized)
+      .maybeSingle();
+
+    const messageContent = msg.text || (msg.type === 'text' ? '' : getLastMessageText(msg));
+
+    if (!conversation) {
+      const { data: newConv, error: createConvError } = await supabase
+        .from('conversations')
+        .insert({
+          customer_id: customer.id,
+          customer_phone_normalized: phoneNormalized,
+          campaign_id: campaignId,
+          status: 'NEW',
+          unread_count: 1,
+          last_message: messageContent || "Mensagem recebida",
+          last_message_at: new Date().toISOString(),
+          source: msg.raw?.isTest ? 'Teste Interno' : 'WhatsApp Z-API'
+        })
+        .select()
+        .single();
+      
+      if (createConvError) throw createConvError;
+      conversation = newConv;
+    } else {
+      const updates: any = {
+        last_message: messageContent || "Mensagem recebida",
+        last_message_at: new Date().toISOString(),
+        unread_count: (conversation.unread_count || 0) + 1,
+        updated_at: new Date().toISOString(),
+        customer_phone_normalized: phoneNormalized,
+        campaign_id: campaignId || conversation.campaign_id
+      };
+
+      if (conversation.status === 'RESOLVED' || conversation.status === 'CLOSED') {
+        updates.status = 'NEW';
+      }
+
+      const { error: updateConvError } = await supabase
+        .from('conversations')
+        .update(updates)
+        .eq('id', conversation.id);
+      
+      if (updateConvError) throw updateConvError;
+    }
+
+    // 3. Insert Message
+    const { data: message, error: msgError } = await supabase
+      .from('messages')
+      .insert({
+        conversation_id: conversation.id,
+        customer_phone_normalized: phoneNormalized,
+        sender_type: 'customer',
+        sender_name: msg.name,
+        from_phone: phoneNormalized,
+        content: messageContent || "Mensagem recebida",
+        message_type: msg.type,
+        external_message_id: msg.messageId,
+        media_url: msg.mediaUrl,
+        status: 'received',
+        raw_payload: msg.raw,
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (msgError) throw msgError;
+
+    return { customer, conversation, message };
+  }
+
+  // --- Webhook Helpers ---
+  function getPublicAppUrl() {
+    return process.env.APP_URL || 
+           process.env.RENDER_EXTERNAL_URL || 
+           "https://crm-viva-destinos-experience.onrender.com";
+  }
+
+  function getWebhookUrl() {
+    return `${getPublicAppUrl().replace(/\/$/, "")}/api/webhooks/zapi/received`;
+  }
+
   // --- Health ---
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
+  app.get("/api/webhook-info", (req, res) => {
+    res.json({
+      webhookUrl: getWebhookUrl(),
+      appUrl: getPublicAppUrl()
+    });
   });
 
   // --- Z-API Routes ---
@@ -394,190 +553,127 @@ async function startServer() {
   });
 
   app.post("/api/webhooks/zapi/received", async (req, res) => {
-    const payload = req.body;
-    
-    // Respond quickly to Z-API to avoid retries
-    res.status(200).json({ ok: true });
-
     try {
-      const msg = normalizeZapiIncomingMessage(payload);
-      
-      console.log(`[ZAPI WEBHOOK] Received: ${msg.phone} - ${msg.type} - ID: ${msg.messageId}`);
+      const payload = req.body;
+      // Log for audit
+      await supabase.from('whatsapp_events').insert({
+        event_type: 'received',
+        payload: payload,
+        description: `Mensagem recebida de ${payload.phone || 'desconhecido'}`
+      });
 
-      // Ignore our own messages sent from the phone (unless for tests)
-      if (msg.fromMe && !payload.isTest) return;
-      if (!msg.phone) return;
-
-      const phoneNormalized = msg.phone;
-
-      // 1. Check for Duplicate Message
-      const { data: existingMsg } = await supabase
-        .from('messages')
-        .select('id')
-        .eq('external_message_id', msg.messageId)
-        .maybeSingle();
-
-      if (existingMsg) {
-        console.log(`[ZAPI WEBHOOK] Message ${msg.messageId} already exists. Skipping.`);
-        return;
-      }
-
-      // --- CAMPAIGN TRACKING ---
-      let campaignId = null;
-      try {
-        // Find if this customer is part of an active campaign
-        const { data: recipient } = await supabase
-          .from('campaign_recipients')
-          .select('campaign_id, id')
-          .eq('phone', phoneNormalized)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        
-        if (recipient) {
-          campaignId = recipient.campaign_id;
-          // Mark as replied
-          await supabase
-            .from('campaign_recipients')
-            .update({ 
-               replied_at: new Date().toISOString(),
-               status: 'REPLIED'
-            })
-            .eq('id', recipient.id);
-          
-          console.log(`[CAMPAIGN] Customer ${phoneNormalized} replied to campaign ${campaignId}`);
-        }
-      } catch (campErr) {
-        console.error("[CAMPAIGN ERROR] Failed to track campaign reply:", campErr);
-      }
-      // --- END CAMPAIGN TRACKING ---
-
-      // 2. Find or Create Customer by phone_normalized
-      let { data: customer } = await supabase
-        .from('customers')
-        .select('*')
-        .or(`phone_normalized.eq.${phoneNormalized},phone.eq.${phoneNormalized}`)
-        .maybeSingle();
-
-      if (!customer) {
-        const { data: newCustomer, error: createError } = await supabase
-          .from('customers')
-          .insert({
-            name: msg.name,
-            phone: phoneNormalized,
-            phone_normalized: phoneNormalized,
-            origin: 'WhatsApp Z-API'
-          })
-          .select()
-          .single();
-        
-        if (createError) throw createError;
-        customer = newCustomer;
-      } else if (!customer.phone_normalized) {
-        // Update legacy customer with normalized phone
-        await supabase
-          .from('customers')
-          .update({ phone_normalized: phoneNormalized })
-          .eq('id', customer.id);
-      }
-
-      // 3. Find or Create UNIFIED Conversation for this phone
-      let { data: conversation } = await supabase
-        .from('conversations')
-        .select('*')
-        .eq('customer_phone_normalized', phoneNormalized)
-        .maybeSingle();
-
-      // Fallback for legacy conversations that don't have customer_phone_normalized yet
-      if (!conversation) {
-        let { data: legacyConv } = await supabase
-          .from('conversations')
-          .select('*')
-          .eq('customer_id', customer.id)
-          .maybeSingle();
-        conversation = legacyConv;
-      }
-
-      const messageContent = msg.text || `[Mensagem tipo ${msg.type}]`;
-
-      if (!conversation) {
-        // Create new conversation
-        const { data: newConv, error: createConvError } = await supabase
-          .from('conversations')
-          .insert({
-            customer_id: customer.id,
-            customer_phone_normalized: phoneNormalized,
-            campaign_id: campaignId,
-            status: 'NEW',
-            unread_count: 1,
-            last_message: messageContent,
-            last_message_at: new Date().toISOString(),
-            source: 'WhatsApp Z-API'
-          })
-          .select()
-          .single();
-        
-        if (createConvError) throw createConvError;
-        conversation = newConv;
-      } else {
-        // Update existing conversation (unify)
-        const updates: any = {
-          last_message: messageContent,
-          last_message_at: new Date().toISOString(),
-          unread_count: (conversation.unread_count || 0) + 1,
-          updated_at: new Date().toISOString(),
-          customer_phone_normalized: phoneNormalized, // Ensure it's set
-          campaign_id: campaignId || conversation.campaign_id
-        };
-
-        // If conversation was resolved/closed, reopen it
-        if (conversation.status === 'RESOLVED' || conversation.status === 'CLOSED') {
-          updates.status = 'NEW';
-        }
-
-        const { error: updateConvError } = await supabase
-          .from('conversations')
-          .update(updates)
-          .eq('id', conversation.id);
-        
-        if (updateConvError) throw updateConvError;
-      }
-
-      // 4. Insert Message linking to the unified conversation
-      const { error: msgError } = await supabase
-        .from('messages')
-        .insert({
-          conversation_id: conversation.id,
-          customer_phone_normalized: phoneNormalized,
-          sender_type: 'customer',
-          sender_name: msg.name,
-          from_phone: msg.phone,
-          content: messageContent,
-          message_type: msg.type,
-          external_message_id: msg.messageId,
-          media_url: msg.mediaUrl,
-          status: 'received',
-          created_at: new Date().toISOString()
-        });
-
-      if (msgError) throw msgError;
-
-      console.log(`[Webhook Success] Unified thread updated for ${phoneNormalized}. Conv ID: ${conversation.id}`);
+      const result = await processIncomingZapiMessage(payload);
+      return res.status(200).json({
+        success: true,
+        source: "zapi_webhook",
+        data: result
+      });
     } catch (err) {
-      console.error("[Webhook Error]:", err);
+      console.error("[ZAPI WEBHOOK ERROR]:", err);
+      return res.status(200).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.post("/api/webhooks/zapi/sent", async (req, res) => {
+    try {
+      const payload = req.body;
+      await supabase.from('whatsapp_events').insert({
+        event_type: 'sent',
+        payload: payload,
+        description: `Mensagem enviada para ${payload.phone || 'desconhecido'}`
+      });
+
+      const externalId = payload.messageId;
+      if (externalId) {
+        await supabase
+          .from('messages')
+          .update({ status: 'sent' })
+          .eq('external_message_id', externalId);
+      }
+      return res.status(200).json({ success: true });
+    } catch (err) {
+      console.error("[ZAPI SENT ERROR]:", err);
+      return res.status(200).json({ success: true });
+    }
+  });
+
+  app.post("/api/webhooks/zapi/message-status", async (req, res) => {
+    try {
+      const payload = req.body;
+      const externalId = payload.messageId;
+      const status = String(payload.status || "").toUpperCase();
+      
+      let mappedStatus = 'sent';
+      if (status === 'READ') mappedStatus = 'read';
+      else if (status === 'DELIVERED') mappedStatus = 'delivered';
+      else if (status === 'ERROR') mappedStatus = 'failed';
+
+      if (externalId) {
+        await supabase
+          .from('messages')
+          .update({ status: mappedStatus })
+          .eq('external_message_id', externalId);
+      }
+      return res.status(200).json({ success: true });
+    } catch (err) {
+      console.error("[ZAPI STATUS ERROR]:", err);
+      return res.status(200).json({ success: true });
+    }
+  });
+
+  app.post("/api/webhooks/zapi/disconnected", async (req, res) => {
+    try {
+      await supabase.from('whatsapp_events').insert({
+        event_type: 'disconnected',
+        payload: req.body,
+        description: 'Instância Z-API desconectada'
+      });
+
+      await supabase
+        .from('whatsapp_accounts')
+        .update({ status: 'DISCONNECTED' })
+        .limit(1); // Assume primary for now
+
+      return res.status(200).json({ success: true });
+    } catch (err) {
+      return res.status(200).json({ success: true });
+    }
+  });
+
+  app.post("/api/webhooks/zapi/connected", async (req, res) => {
+    try {
+      await supabase.from('whatsapp_events').insert({
+        event_type: 'connected',
+        payload: req.body,
+        description: 'Instância Z-API conectada'
+      });
+
+      await supabase
+        .from('whatsapp_accounts')
+        .update({ status: 'ESTÁVEL' })
+        .limit(1);
+
+      return res.status(200).json({ success: true });
+    } catch (err) {
+      return res.status(200).json({ success: true });
+    }
+  });
+
+  app.post("/api/webhooks/zapi/chat-presence", async (req, res) => {
+    try {
+      // Just log and respond
+      await supabase.from('whatsapp_events').insert({
+        event_type: 'chat_presence',
+        payload: req.body
+      });
+      return res.status(200).json({ success: true });
+    } catch (err) {
+      return res.status(200).json({ success: true });
     }
   });
 
   app.post("/api/zapi/register-webhook-received", async (req, res) => {
-    const appUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "https://crm-viva-destinos-experience.onrender.com";
-
-    if (!appUrl || appUrl.includes("localhost")) {
-      return res.status(400).json({ 
-        error: "APP_URL não configurada corretamente. Cadastre a URL pública (Render) nas variáveis de ambiente." 
-      });
-    }
-
-    const webhookUrl = `${appUrl.replace(/\/$/, "")}/api/webhooks/zapi/received`;
+    const webhookUrl = getWebhookUrl();
     
     console.log(`[ZAPI] Registering webhook: ${webhookUrl}`);
 
@@ -612,21 +708,19 @@ async function startServer() {
     };
 
     try {
-      // Simulate calling the webhook route internally
-      const appUrl = process.env.APP_URL || `http://localhost:${PORT}`;
-      const resWebhook = await fetch(`${appUrl}/api/webhooks/zapi/received`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(testPayload)
+      const result = await processIncomingZapiMessage(testPayload);
+      return res.json({ 
+        success: true, 
+        message: "Webhook interno disparado com sucesso.",
+        data: result
       });
-
-      if (resWebhook.ok) {
-        return res.json({ success: true, message: "Teste disparado com sucesso. Verifique Atendimentos > Novos." });
-      } else {
-        throw new Error("Falha ao disparar webhook interno");
-      }
     } catch (err) {
-      return res.status(500).json({ error: getErrorMessage(err) });
+      console.error("[TEST WEBHOOK ERROR]:", err);
+      return res.status(500).json({ 
+        success: false, 
+        error: "Falha ao disparar webhook interno.",
+        details: getErrorMessage(err)
+      });
     }
   });
 
