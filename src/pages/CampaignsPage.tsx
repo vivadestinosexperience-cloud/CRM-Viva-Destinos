@@ -246,7 +246,7 @@ export default function CampaignsPage() {
     await safeAction(async () => {
       // Check channel
       const account = whatsAppAccounts.find(a => a.id === campaign.whatsapp_account_id);
-      if (!account || account.status !== 'ESTÁVEL') {
+      if (!account || account.status !== 'CONNECTED') {
         toast.error('O canal de envio está desconectado. Reconecte em Configurações > Canais.');
         return;
       }

@@ -20,7 +20,7 @@ export const MOCK_WHATSAPP_ACCOUNTS: WhatsAppAccount[] = [
     id: 'wa1', 
     name: 'WhatsApp Comercial', 
     phone_number: '+5564999990001', 
-    status: 'ESTÁVEL', 
+    status: 'CONNECTED', 
     quality_status: 'HIGH', 
     type: 'WHATSAPP',
     provider: 'ZAPI',
@@ -31,7 +31,7 @@ export const MOCK_WHATSAPP_ACCOUNTS: WhatsAppAccount[] = [
     id: 'wa2', 
     name: 'WhatsApp Pós-venda', 
     phone_number: '+5564999990002', 
-    status: 'ESTÁVEL', 
+    status: 'CONNECTED', 
     quality_status: 'MEDIUM', 
     type: 'WHATSAPP',
     provider: 'ZAPI',
@@ -60,7 +60,7 @@ export const MOCK_CUSTOMERS: Customer[] = [
 
 export const MOCK_CONVERSATIONS: Conversation[] = [
   { 
-    id: 'conv1', 
+    id: '00000000-0000-0000-0000-000000000001', 
     customer_id: 'c1', 
     whatsapp_account_id: 'wa1', 
     status: 'OPEN', 
@@ -71,7 +71,7 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     tags: ['Porto de Galinhas', 'Família'] 
   },
   { 
-    id: 'conv2', 
+    id: '00000000-0000-0000-0000-000000000002', 
     customer_id: 'c2', 
     whatsapp_account_id: 'wa1', 
     status: 'WAITING_AGENT', 
@@ -82,7 +82,7 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     tags: ['Internacional'] 
   },
   { 
-    id: 'conv3', 
+    id: '00000000-0000-0000-0000-000000000003', 
     customer_id: 'c3', 
     whatsapp_account_id: 'wa1', 
     status: 'NEW', 
@@ -94,10 +94,10 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
 ];
 
 export const MOCK_MESSAGES: Message[] = [
-  { id: 'm1', conversation_id: 'conv1', sender_type: 'customer', content: 'Olá, gostaria de uma cotação para Porto de Galinhas em julho.', created_at: '2026-05-17T15:00:00Z', message_type: 'text', status: 'read' },
-  { id: 'm2', conversation_id: 'conv1', sender_type: 'agent', sender_name: 'Gabriel Agência', message_type: 'text', content: 'Olá Mariana! Seja bem-vinda à Viva Destinos Experience! Vou te ajudar. A viagem seria para quantas pessoas?', created_at: '2026-05-17T15:05:00Z', status: 'read' },
-  { id: 'm3', conversation_id: 'conv1', sender_type: 'customer', content: 'Seriam 2 adultos e 1 criança de 6 anos.', created_at: '2026-05-17T15:10:00Z', message_type: 'text', status: 'read' },
-  { id: 'm4', conversation_id: 'conv1', sender_type: 'agent', content: 'Vocês têm preferência por algum resort específico?', created_at: '2026-05-17T15:30:00Z', message_type: 'text', status: 'delivered' },
+  { id: 'm1', conversation_id: '00000000-0000-0000-0000-000000000001', sender_type: 'customer', content: 'Olá, gostaria de uma cotação para Porto de Galinhas em julho.', created_at: '2026-05-17T15:00:00Z', message_type: 'text', status: 'read' },
+  { id: 'm2', conversation_id: '00000000-0000-0000-0000-000000000001', sender_type: 'agent', sender_name: 'Gabriel Agência', message_type: 'text', content: 'Olá Mariana! Seja bem-vinda à Viva Destinos Experience! Vou te ajudar. A viagem seria para quantas pessoas?', created_at: '2026-05-17T15:05:00Z', status: 'read' },
+  { id: 'm3', conversation_id: '00000000-0000-0000-0000-000000000001', sender_type: 'customer', content: 'Seriam 2 adultos e 1 criança de 6 anos.', created_at: '2026-05-17T15:10:00Z', message_type: 'text', status: 'read' },
+  { id: 'm4', conversation_id: '00000000-0000-0000-0000-000000000001', sender_type: 'agent', content: 'Vocês têm preferência por algum resort específico?', created_at: '2026-05-17T15:30:00Z', message_type: 'text', status: 'delivered' },
 ];
 
 export const MOCK_QUOTES: Quote[] = [

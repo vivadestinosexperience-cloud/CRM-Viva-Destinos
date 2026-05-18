@@ -23,7 +23,7 @@ $$ LANGUAGE plpgsql;
 -- Se existirem, vamos adicionar as colunas necessárias.
 
 -- CUSTOMERS / CLIENTES
-CREATE TABLE IF NOT EXISTS customers (
+CREATE TABLE IF NOT EXISTS crm_customers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL DEFAULT 'Cliente',
     phone TEXT,
@@ -37,47 +37,48 @@ CREATE TABLE IF NOT EXISTS customers (
 );
 
 -- CONVERSATIONS / ATENDIMENTOS
-CREATE TABLE IF NOT EXISTS conversations (
+CREATE TABLE IF NOT EXISTS crm_conversations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    customer_id UUID REFERENCES customers(id),
+    customer_id UUID REFERENCES crm_customers(id),
     customer_phone_normalized TEXT UNIQUE,
     status TEXT DEFAULT 'NEW',
-    team_id UUID, -- Opcional, link para teams
-    assigned_user_id UUID, -- Opcional, link para profiles
+    team_id UUID,
+    assigned_user_id UUID,
+    assigned_user_name TEXT,
     channel_id TEXT,
     whatsapp_account_id TEXT,
     source TEXT,
     last_message TEXT,
     last_message_at TIMESTAMPTZ,
     unread_count INT DEFAULT 0,
-    campaign_id UUID, -- Opcional
+    campaign_id UUID,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- MESSAGES / MENSAGENS
-CREATE TABLE IF NOT EXISTS messages (
+CREATE TABLE IF NOT EXISTS crm_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_id UUID REFERENCES conversations(id),
+    conversation_id UUID REFERENCES crm_conversations(id),
     customer_phone_normalized TEXT,
     external_message_id TEXT UNIQUE,
-    sender_type TEXT, -- 'customer', 'agent', 'system', 'internal'
+    sender_type TEXT, 
     sender_name TEXT,
     from_phone TEXT,
     to_phone TEXT,
-    message_type TEXT DEFAULT 'text', -- 'text', 'image', 'audio', 'video', 'document', 'internal_note'
+    message_type TEXT DEFAULT 'text', 
     content TEXT,
     media_url TEXT,
-    status TEXT, -- 'received', 'sent', 'delivered', 'read', 'failed'
+    status TEXT, 
     is_internal BOOLEAN DEFAULT FALSE,
     raw_payload JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- ANOTAÇÕES (Caso precise de tabela separada, mas usaremos messages para o fluxo unificado)
+-- ANOTAÇÕES
 CREATE TABLE IF NOT EXISTS conversation_notes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_id UUID REFERENCES conversations(id),
+    conversation_id UUID REFERENCES crm_conversations(id),
     content TEXT,
     created_by UUID,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -85,14 +86,28 @@ CREATE TABLE IF NOT EXISTS conversation_notes (
     pinned BOOLEAN DEFAULT FALSE
 );
 
+-- WEBHOOK LOGS
+CREATE TABLE IF NOT EXISTS zapi_webhook_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    received_at TIMESTAMPTZ DEFAULT NOW(),
+    webhook_type TEXT,
+    phone_normalized TEXT,
+    customer_id UUID,
+    conversation_id UUID,
+    message_db_id UUID,
+    payload JSONB,
+    processed BOOLEAN DEFAULT FALSE,
+    error TEXT
+);
+
 -- ÍNDICES E CONSTRAINTS EXTRAS
 DO $$ 
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_customers_phone_normalized') THEN
-        CREATE UNIQUE INDEX idx_customers_phone_normalized ON customers(phone_normalized);
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_crm_customers_phone_normalized') THEN
+        CREATE UNIQUE INDEX idx_crm_customers_phone_normalized ON crm_customers(phone_normalized);
     END IF;
     
-    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_conversations_phone_normalized') THEN
-        CREATE UNIQUE INDEX idx_conversations_phone_normalized ON conversations(customer_phone_normalized);
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_crm_conversations_phone_normalized') THEN
+        CREATE UNIQUE INDEX idx_crm_conversations_phone_normalized ON crm_conversations(customer_phone_normalized);
     END IF;
 END $$;

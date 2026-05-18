@@ -43,6 +43,14 @@ function getZapiHeaders() {
   return headers;
 }
 
+function getPublicAppUrl() {
+  return (
+    process.env.APP_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    "https://crm-viva-destinos-experience.onrender.com"
+  ).replace(/\/$/, "");
+}
+
 function zapiUrl(pathname: string) {
   const { config } = getZapiConfig();
   const base = config.baseUrl.replace(/\/$/, "");
@@ -76,22 +84,71 @@ async function callZapi(pathname: string, options: RequestInit = {}) {
 }
 
 function normalizePhone(input: any) {
-  let phone = String(input || "").replace(/\D/g, "");
+  const raw = String(input || "");
+  if (!raw) return "";
+
+  if (raw.includes("@newsletter")) return "";
+  if (raw.includes("@broadcast")) return "";
+  if (raw.includes("status@broadcast")) return "";
+
+  let phone = raw.split("@")[0].replace(/\D/g, "");
   if (!phone) return "";
 
-  // IDs de grupo/chat do WhatsApp geralmente começam com 120363.
-  // Não tratar isso como telefone de cliente.
-  if (phone.startsWith("120363")) {
-    return "";
-  }
+  // WhatsApp Group/Chat IDs often start with 120363
+  if (phone.startsWith("120363")) return "";
 
   if ((phone.length === 10 || phone.length === 11) && !phone.startsWith("55")) {
     phone = `55${phone}`;
   }
+  
+  if (!(phone.length >= 12 && phone.length <= 13 && phone.startsWith("55"))) {
+    return "";
+  }
+  
   return phone;
 }
 
+function shouldIgnoreZapiPayload(payload: any) {
+  const phone = String(payload?.phone || "");
+
+  if (payload?.isNewsletter === true) {
+    return { ignore: true, reason: "Evento ignorado: mensagem de newsletter/canal do WhatsApp." };
+  }
+
+  if (phone.includes("@newsletter")) {
+    return { ignore: true, reason: "Evento ignorado: phone contém @newsletter." };
+  }
+
+  if (payload?.broadcast === true) {
+    return { ignore: true, reason: "Evento ignorado: broadcast." };
+  }
+
+  if (payload?.fromMe === true && !payload?.isTest) {
+    return { ignore: true, reason: "Evento ignorado: mensagem enviada pela própria instância." };
+  }
+
+  if (payload?.isStatusReply === true || phone.includes("status@broadcast")) {
+    return { ignore: true, reason: "Evento ignorado: status/story do WhatsApp." };
+  }
+
+  if (payload?.isGroup === true && !payload?.participantPhone && !payload?.participant) {
+    return { ignore: true, reason: "Evento ignorado: grupo sem telefone real do participante." };
+  }
+
+  return { ignore: false, reason: null };
+}
+
 function extractRealCustomerPhone(payload: any) {
+  const ignoreCheck = shouldIgnoreZapiPayload(payload);
+  if (ignoreCheck.ignore) {
+    return {
+      rawPhone: payload?.phone || "",
+      phoneNormalized: "",
+      ignored: true,
+      ignoreReason: ignoreCheck.reason
+    };
+  }
+
   const candidates = [
     payload?.phone,
     payload?.senderPhone,
@@ -110,17 +167,21 @@ function extractRealCustomerPhone(payload: any) {
 
   for (const candidate of candidates) {
     const normalized = normalizePhone(candidate);
-    if (normalized && normalized.length >= 12 && normalized.length <= 13) {
+    if (normalized) {
       return {
         rawPhone: candidate,
-        phoneNormalized: normalized
+        phoneNormalized: normalized,
+        ignored: false,
+        ignoreReason: null
       };
     }
   }
 
   return {
     rawPhone: candidates.find(Boolean) || "",
-    phoneNormalized: ""
+    phoneNormalized: "",
+    ignored: true,
+    ignoreReason: "Telefone real do cliente não identificado no payload."
   };
 }
 
@@ -187,6 +248,8 @@ function normalizeZapiIncomingMessage(payload: any) {
   return {
     rawPhone: phoneData.rawPhone,
     phone,
+    ignored: !!phoneData.ignored,
+    ignoreReason: phoneData.ignoreReason,
     name,
     messageId,
     text: typeof text === "string" ? text : "",
@@ -236,10 +299,11 @@ async function startServer() {
   }
 
 const TABLES = {
-  customers: 'customers',
-  conversations: 'conversations',
-  messages: 'messages',
-  logs: 'zapi_webhook_logs'
+  customers: 'crm_customers',
+  conversations: 'crm_conversations',
+  messages: 'crm_messages',
+  logs: 'zapi_webhook_logs',
+  whatsapp_accounts: 'whatsapp_accounts'
 };
 
   async function saveWebhookLog(data: any) {
@@ -276,15 +340,25 @@ const TABLES = {
   async function processIncomingZapiMessage(payload: any) {
     const normalized = normalizeZapiIncomingMessage(payload);
     
-    if (!normalized.phone) {
-      console.warn("[ZAPI] Telefone real do cliente não identificado no payload.");
-      return { ignored: true, reason: "Telefone real não identificado no payload da Z-API.", rawPhone: normalized.rawPhone };
+    console.log(`[ZAPI PROCESS] Normalizado: ${normalized.phone} | Nome: ${normalized.name}`);
+
+    if (normalized.ignored || !normalized.phone) {
+      console.warn(`[ZAPI] Mensagem ignorada: ${normalized.ignoreReason}`);
+      return { 
+        ignored: true, 
+        reason: normalized.ignoreReason || "Evento ignorado pelo sistema.", 
+        rawPhone: normalized.rawPhone,
+        phone: normalized.phone 
+      };
     }
 
     try {
       // 1. Customer
       let { data: customer, error: custFetchErr } = await supabase.from(TABLES.customers).select('*').eq('phone_normalized', normalized.phone).maybeSingle();
-      if (custFetchErr) throw new Error(`Erro ao buscar cliente: ${custFetchErr.message}`);
+      if (custFetchErr) {
+        console.error("[ZAPI] Erro ao buscar cliente:", custFetchErr);
+        throw new Error(`Erro ao buscar cliente: ${custFetchErr.message}`);
+      }
 
       if (!customer) {
         const { data: newCust, error: custErr } = await supabase.from(TABLES.customers).insert({
@@ -337,6 +411,7 @@ const TABLES = {
         if (!conversation.assigned_user_id || isClosed) {
           updates.status = 'NEW';
           updates.assigned_user_id = null;
+          updates.assigned_user_name = null;
         }
 
         const { data: updatedConv, error: updateErr } = await supabase.from(TABLES.conversations).update(updates).eq('id', conversation.id).select().single();
@@ -429,6 +504,9 @@ const TABLES = {
     const payload = req.body || {};
     let logId: string | null = null;
     
+    // Log do payload bruto para diagnóstico em tempo real no console do Render/Host
+    console.log("[ZAPI RAW PAYLOAD]", JSON.stringify(payload));
+
     try {
       const normalized = normalizeZapiIncomingMessage(payload);
       
@@ -449,24 +527,26 @@ const TABLES = {
       });
 
       // 2. Processamento central
-      const result = await processIncomingZapiMessage(payload);
+      const result = await processIncomingZapiMessage(payload) as any;
 
-      // 3. Atualizar log com sucesso
+      // 3. Atualizar log
       if (logId) {
+        const isIgnored = !!result.ignored;
         await updateWebhookLog(logId, {
-          processed: !(result as any).ignored,
-          phone_normalized: result.phone || (result as any).customer?.phone_normalized,
+          processed: !isIgnored,
+          ignored: isIgnored,
+          phone_normalized: result.phone || normalized.phone,
           message_id: result.message?.external_message_id || normalized.messageId,
           customer_id: result.customer?.id,
           conversation_id: result.conversation?.id,
           message_db_id: result.message?.id,
-          error: (result as any).ignored ? (result as any).reason : null
+          error: isIgnored ? result.reason : null
         });
       }
 
       return res.status(200).json({
         success: true,
-        message: (result as any).ignored ? "Webhook recebido mas ignorado." : "Webhook recebido e processado.",
+        message: result.ignored ? `Webhook recebido mas ignorado: ${result.reason}` : "Webhook recebido e processado.",
         result
       });
     } catch (err: any) {
@@ -531,29 +611,70 @@ const TABLES = {
     }
   });
 
+  app.get("/api/zapi/diagnostic", async (req, res) => {
+    try {
+      const { config, missing } = getZapiConfig();
+      const { data: zapiStatus } = await callZapi("/status");
+      
+      const { count: custsCount } = await supabase.from(TABLES.customers).select('*', { count: 'exact', head: true });
+      const { count: convsCount } = await supabase.from(TABLES.conversations).select('*', { count: 'exact', head: true });
+      const { count: msgsCount } = await supabase.from(TABLES.messages).select('*', { count: 'exact', head: true });
+      const { count: logsCount } = await supabase.from(TABLES.logs).select('*', { count: 'exact', head: true });
+      
+      const { data: logs } = await supabase.from(TABLES.logs).select('*').order('created_at', { ascending: false }).limit(5);
+      const { data: convs } = await supabase.from(TABLES.conversations).select('*, customer:customer_id(*)').order('last_message_at', { ascending: false }).limit(5);
+      
+      return res.json({
+        success: true,
+        zapi: {
+          configured: missing.length === 0,
+          missing,
+          connected: zapiStatus?.connected === true || zapiStatus?.status === 'CONNECTED',
+          smartphoneConnected: zapiStatus?.smartphoneConnected === true,
+          statusRaw: zapiStatus
+        },
+        webhooks: {
+          receivedUrl: `${getPublicAppUrl()}/api/webhooks/zapi/received`,
+          lastLogs: logs || []
+        },
+        database: {
+          tablesUsed: TABLES,
+          counts: {
+            customers: custsCount || 0,
+            conversations: convsCount || 0,
+            messages: msgsCount || 0,
+            logs: logsCount || 0
+          },
+          lastConversations: convs || []
+        }
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
   app.get("/api/omnichannel/debug", async (req, res) => {
     try {
+      const { count: custsCount } = await supabase.from(TABLES.customers).select('*', { count: 'exact', head: true });
+      const { count: convsCount } = await supabase.from(TABLES.conversations).select('*', { count: 'exact', head: true });
+      const { count: msgsCount } = await supabase.from(TABLES.messages).select('*', { count: 'exact', head: true });
+      
       const { data: logs } = await supabase.from(TABLES.logs).select('*').order('created_at', { ascending: false }).limit(10);
       const { data: convs } = await supabase.from(TABLES.conversations).select('*, customer:customer_id(*)').order('last_message_at', { ascending: false }).limit(5);
       const { data: msgs } = await supabase.from(TABLES.messages).select('*').order('created_at', { ascending: false }).limit(5);
-      
-      const { count: logsCount } = await supabase.from(TABLES.logs).select('*', { count: 'exact', head: true });
-      const { count: convsCount } = await supabase.from(TABLES.conversations).select('*', { count: 'exact', head: true });
-      const { count: msgsCount } = await supabase.from(TABLES.messages).select('*', { count: 'exact', head: true });
-      const { count: custsCount } = await supabase.from(TABLES.customers).select('*', { count: 'exact', head: true });
 
       return res.json({
         success: true,
-        tablesUsed: TABLES,
+        configuredTables: TABLES,
         counts: {
-          logs: logsCount,
-          conversations: convsCount,
-          messages: msgsCount,
-          customers: custsCount
+          customers: custsCount || 0,
+          conversations: convsCount || 0,
+          messages: msgsCount || 0
         },
         lastLogs: logs || [],
         lastConversations: convs || [],
-        lastMessages: msgs || []
+        lastMessages: msgs || [],
+        timestamp: new Date().toISOString()
       });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: getErrorMessage(err) });
@@ -562,12 +683,13 @@ const TABLES = {
 
   app.get("/api/omnichannel/conversations", async (req, res) => {
     try {
-      const { data: convs, error } = await supabase.from(TABLES.conversations).select(`
+      // 1. Listar do banco
+      const { data: convs, error: fetchErr } = await supabase.from(TABLES.conversations).select(`
         *,
         customer:customer_id(*)
       `).order('last_message_at', { ascending: false });
 
-      if (error) throw error;
+      if (fetchErr) throw fetchErr;
 
       return res.json({
         success: true,
@@ -575,12 +697,96 @@ const TABLES = {
       });
     } catch (err: any) {
       console.error("[OMNICHANNEL CONVS ERR]", err);
+      // Fallback para lista vazia para não quebrar o front
+      return res.json({
+        success: false,
+        error: getErrorMessage(err),
+        conversations: []
+      });
+    }
+  });
+
+  app.post("/api/omnichannel/conversations", async (req, res) => {
+    try {
+      const data = req.body;
+      const { data: newConv, error } = await supabase.from(TABLES.conversations)
+        .insert({
+          ...data,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+      
+      if (error) throw error;
+
+      broadcastEvent("conversation.updated", newConv);
+      return res.json({ success: true, conversation: newConv });
+    } catch (err: any) {
+       return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.post("/api/omnichannel/conversations/:id/assign", async (req, res) => {
+    const { id } = req.params;
+    const { userId, userName } = req.body;
+
+    try {
+      const { data, error } = await supabase.from(TABLES.conversations).update({
+        assigned_user_id: userId,
+        assigned_user_name: userName,
+        status: 'OPEN',
+        updated_at: new Date().toISOString()
+      }).eq('id', id).select().single();
+
+      if (error) throw error;
+
+      broadcastEvent("conversation.updated", data);
+
+      return res.json({ success: true, conversation: data });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.patch("/api/omnichannel/conversations/:id", async (req, res) => {
+    const { id } = req.params;
+    const updates = req.body;
+
+    try {
+      const { data, error } = await supabase.from(TABLES.conversations)
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      broadcastEvent("conversation.updated", data);
+
+      return res.json({ success: true, conversation: data });
+    } catch (err: any) {
       return res.status(500).json({ success: false, error: getErrorMessage(err) });
     }
   });
 
   app.get("/api/omnichannel/conversations/:id/messages", async (req, res) => {
     const { id } = req.params;
+    
+    // Validate UUID format to avoid Postgres errors with mock data like "conv3"
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(id)) {
+      console.warn(`[OMNICHANNEL MSGS] Invalid UUID: ${id}. Returning empty list.`);
+      return res.json({
+        success: true,
+        messages: [],
+        warning: "Identificador inválido para o banco de dados real."
+      });
+    }
+
     try {
       const { data: msgs, error } = await supabase.from(TABLES.messages)
         .select('*')
@@ -595,6 +801,66 @@ const TABLES = {
       });
     } catch (err: any) {
       console.error("[OMNICHANNEL MSGS ERR]", err);
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.post("/api/omnichannel/conversations/:id/send-message", async (req, res) => {
+    const { id } = req.params;
+    const { message, agentId, agentName } = req.body;
+
+    try {
+      // 1. Get conversation and customer
+      const { data: conversation, error: convErr } = await supabase.from(TABLES.conversations).select('*, customer:customer_id(*)').eq('id', id).single();
+      if (convErr || !conversation) throw new Error("Conversa não encontrada.");
+
+      const phone = conversation.customer_phone_normalized || (conversation.customer as any)?.phone_normalized || (conversation.customer as any)?.phone;
+      if (!phone) throw new Error("Telefone do cliente não encontrado.");
+
+      // 2. Send via Z-API
+      const zapiResult = await callZapi("/send-text", {
+        method: "POST",
+        body: JSON.stringify({ phone, message })
+      });
+
+      if (!zapiResult.ok) {
+        throw new Error(zapiResult.data?.error || "Erro ao enviar mensagem via Z-API");
+      }
+
+      // 3. Save to database
+      const { data: newMsg, error: msgErr } = await supabase.from(TABLES.messages).insert({
+        conversation_id: id,
+        sender_type: 'agent',
+        sender_name: agentName || 'Agente',
+        content: message,
+        message_type: 'text',
+        status: 'sent',
+        external_message_id: zapiResult.data?.messageId || `msg-${Date.now()}`,
+        created_at: new Date().toISOString()
+      }).select().single();
+
+      if (msgErr) throw msgErr;
+
+      // 4. Update conversation
+      const { data: updatedConv, error: updateErr } = await supabase.from(TABLES.conversations).update({
+        last_message: message,
+        last_message_at: new Date().toISOString(),
+        assigned_user_id: agentId || conversation.assigned_user_id,
+        assigned_user_name: agentName || conversation.assigned_user_name,
+        status: 'OPEN',
+        updated_at: new Date().toISOString()
+      }).eq('id', id).select().single();
+
+      if (updateErr) throw updateErr;
+
+      broadcastEvent("message.received", {
+        conversation: updatedConv,
+        message: newMsg
+      });
+
+      return res.json({ success: true, message: newMsg, conversation: updatedConv });
+    } catch (err: any) {
+      console.error("[SEND MESSAGE ERR]", err);
       return res.status(500).json({ success: false, error: getErrorMessage(err) });
     }
   });
@@ -659,16 +925,51 @@ const TABLES = {
     });
   });
 
+  app.get("/api/zapi/webhook-urls", (req, res) => {
+    const appUrl = getPublicAppUrl();
+    return res.json({
+      success: true,
+      appUrl,
+      webhooks: {
+        received: `${appUrl}/api/webhooks/zapi/received`,
+        sent: `${appUrl}/api/webhooks/zapi/sent`,
+        disconnected: `${appUrl}/api/webhooks/zapi/disconnected`,
+        connected: `${appUrl}/api/webhooks/zapi/connected`,
+        chatPresence: `${appUrl}/api/webhooks/zapi/chat-presence`,
+        messageStatus: `${appUrl}/api/webhooks/zapi/message-status`
+      }
+    });
+  });
+
+  app.get("/api/zapi/config-status", async (req, res) => {
+    const { config, missing } = getZapiConfig();
+    const appUrl = getPublicAppUrl();
+    
+    const checks = {
+      appUrl: !!appUrl && !appUrl.includes("localhost"),
+      instanceId: !!config.instanceId,
+      instanceToken: !!config.instanceToken,
+      healthRoute: true, // We are here
+      receivedWebhookRoute: true  // Express handles this
+    };
+
+    return res.json({
+      success: missing.length === 0,
+      configured: missing.length === 0,
+      provider: "Z-API",
+      appUrl,
+      missing,
+      checks
+    });
+  });
+
   app.post("/api/zapi/register-webhook-received", async (req, res) => {
     try {
-      const host = req.get('host');
-      const protocol = process.env.NODE_ENV === 'production' ? 'https' : req.protocol;
-      const appUrl = process.env.APP_URL || `${protocol}://${host}`;
-      const webhookUrl = `${appUrl.replace(/\/$/, "")}/api/webhooks/zapi/received`;
+      const webhookUrl = `${getPublicAppUrl()}/api/webhooks/zapi/received`;
+      console.log(`[ZAPI] Registering webhook-received: ${webhookUrl}`);
       
-      console.log(`[ZAPI] Registering webhook: ${webhookUrl}`);
       const result = await callZapi("/update-webhook-received", {
-        method: "POST",
+        method: "PUT",
         body: JSON.stringify({ value: webhookUrl })
       });
       
@@ -683,21 +984,92 @@ const TABLES = {
     }
   });
 
+  app.post("/api/zapi/register-all-webhooks", async (req, res) => {
+    const appUrl = getPublicAppUrl();
+    const webhooks = [
+      { name: "received", path: "/update-webhook-received", url: `${appUrl}/api/webhooks/zapi/received` },
+      { name: "sent", path: "/update-webhook-sent", url: `${appUrl}/api/webhooks/zapi/sent` },
+      { name: "disconnected", path: "/update-webhook-disconnected", url: `${appUrl}/api/webhooks/zapi/disconnected` },
+      { name: "connected", path: "/update-webhook-connected", url: `${appUrl}/api/webhooks/zapi/connected` },
+      { name: "chat-presence", path: "/update-webhook-chat-presence", url: `${appUrl}/api/webhooks/zapi/chat-presence` },
+      { name: "message-status", path: "/update-webhook-message-status", url: `${appUrl}/api/webhooks/zapi/message-status` }
+    ];
+
+    const results = [];
+    for (const webhook of webhooks) {
+      try {
+        const result = await callZapi(webhook.path, {
+          method: "PUT",
+          body: JSON.stringify({ value: webhook.url })
+        });
+        results.push({
+          name: webhook.name,
+          url: webhook.url,
+          success: result.ok,
+          status: result.status,
+          response: result.data
+        });
+      } catch (err) {
+        results.push({
+          name: webhook.name,
+          url: webhook.url,
+          success: false,
+          error: getErrorMessage(err)
+        });
+      }
+    }
+
+    return res.json({ success: true, results });
+  });
+
   app.post("/api/zapi/test-received-webhook", async (req, res) => {
     try {
-      const result = await processIncomingZapiMessage({
-        phone: "5564999999999",
-        senderName: "Cliente Teste",
+      const payload = {
+        type: "ReceivedCallback",
+        phone: "5564992421171",
+        senderName: "Cliente Teste VIVA",
         text: {
-          message: "Mensagem de teste recebida pelo webhook"
+          message: "Mensagem de teste recebida - " + new Date().toLocaleString()
         },
-        messageId: "test-message-" + Date.now(),
-        type: "text",
+        messageId: "test-" + Date.now(),
+        fromMe: false,
+        isNewsletter: false,
+        isGroup: false,
+        broadcast: false,
+        status: "RECEIVED",
         isTest: true
+      };
+
+      const result = await processIncomingZapiMessage(payload) as any;
+
+      const logId = await saveWebhookLog({
+        event_type: "received",
+        payload,
+        raw_phone: result.rawPhone || "5564992421171",
+        phone_normalized: result.phone || "5564992421171",
+        message_id: result.message?.external_message_id || payload.messageId,
+        processed: true,
+        customer_id: result.customer_id,
+        conversation_id: result.conversation_id,
+        message_db_id: result.message_db_id,
+        error: null
       });
+
+      if (result.ignored) {
+        throw new Error(result.reason || "Evento ignorado no teste.");
+      }
+
+      if (!result.customer_id || !result.conversation_id || !result.message_db_id) {
+         throw new Error("O processamento ocorreu, mas não gerou todos os IDs necessários no banco.");
+      }
+
       return res.json({ 
         success: true, 
-        message: "Webhook manual processado com sucesso. Verifique a aba 'Novos' no Omnichannel.", 
+        message: "Webhook manual processado com sucesso.", 
+        phone_normalized: result.phone,
+        customer_id: result.customer_id,
+        conversation_id: result.conversation_id,
+        message_db_id: result.message_db_id,
         result 
       });
     } catch (err) {
@@ -732,16 +1104,67 @@ const TABLES = {
   });
 
   app.get("/api/zapi/status", async (req, res) => {
-    const result = await callZapi("/status");
-    res.status(result.status).json(result.data);
+    try {
+      const result = await callZapi("/status");
+      const connected = result.ok && (result.data?.connected === true || result.data?.status === 'CONNECTED');
+      
+      return res.status(200).json({
+        success: result.ok,
+        connected: connected,
+        smartphoneConnected: result.data?.smartphoneConnected === true,
+        status: connected ? "CONNECTED" : (result.data?.status || "DISCONNECTED"),
+        raw: result.data
+      });
+    } catch (err: any) {
+      return res.status(200).json({
+        success: false,
+        connected: false,
+        smartphoneConnected: false,
+        status: "ERROR",
+        error: getErrorMessage(err)
+      });
+    }
   });
+
   app.get("/api/zapi/qrcode", async (req, res) => {
-    const result = await callZapi("/qr-code");
-    res.status(result.status).json(result.data);
-  });
-  app.get("/api/zapi/config-status", (req, res) => {
-    const { missing } = getZapiConfig();
-    res.json({ configured: missing.length === 0, missing });
+    try {
+      // 1. Tentar imagem direta primeiro
+      const imgResult = await callZapi("/qr-code/image");
+      if (imgResult.ok && imgResult.data?.value) {
+        return res.json({
+          success: true,
+          value: imgResult.data.value,
+          source: "qr-code-image"
+        });
+      }
+
+      // 2. Fallback para JSON normal
+      const result = await callZapi("/qr-code");
+      if (result.ok && result.data?.value) {
+        let value = result.data.value;
+        // Se não tiver o prefixo de data:image, e parecer base64, adicionamos
+        if (!value.startsWith("data:") && value.length > 100) {
+          value = `data:image/png;base64,${value}`;
+        }
+        return res.json({
+          success: true,
+          value: value,
+          source: "qr-code"
+        });
+      }
+
+      return res.status(200).json({
+        success: false,
+        error: "QR Code não disponível no momento. Verifique se a instância já está conectada.",
+        details: result.data
+      });
+    } catch (err: any) {
+      return res.status(200).json({
+        success: false,
+        error: "Falha ao buscar QR Code",
+        details: getErrorMessage(err)
+      });
+    }
   });
 
   if (process.env.NODE_ENV !== "production") {

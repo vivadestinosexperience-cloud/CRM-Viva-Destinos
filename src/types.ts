@@ -74,7 +74,7 @@ export interface WhatsAppAccount {
   phone_number?: string;
   number?: string; // Legacy compatibility
   instance_id?: string;
-  status: 'ESTÁVEL' | 'DISCONNECTED' | 'PENDING' | 'ERROR' | 'WAITING_QR' | 'WAITING_CREDENTIALS' | 'CONECTANDO';
+  status: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'ERROR' | 'QR_PENDING';
   quality_status?: 'HIGH' | 'MEDIUM' | 'LOW';
   quality?: 'HIGH' | 'MEDIUM' | 'LOW'; // Legacy compatibility
   team_id?: string;
@@ -88,7 +88,7 @@ export interface WhatsAppAccount {
   updated_at?: string;
 }
 
-export type ConversationStatus = 'NEW' | 'PENDING' | 'OPEN' | 'WAITING_CLIENT' | 'WAITING_AGENT' | 'RESOLVED' | 'EXPIRED' | 'TRANSFERRED' | 'CLOSED';
+export type ConversationStatus = 'NEW' | 'PENDING' | 'OPEN' | 'WAITING_CLIENT' | 'WAITING_AGENT' | 'RESOLVED' | 'EXPIRED' | 'TRANSFERRED' | 'CLOSED' | 'CONCLUIDO' | 'CONCLUÍDO';
 
 export interface Customer {
   id: string;
@@ -205,6 +205,7 @@ export interface Conversation {
   whatsapp_account_id?: string;
   status: ConversationStatus;
   assigned_user_id?: string;
+  assigned_user_name?: string;
   queue_id?: string;
   last_message?: string;
   last_message_at?: string;

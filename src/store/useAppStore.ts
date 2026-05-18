@@ -258,20 +258,17 @@ export const useAppStore = create<AppState>()(
         // 1. Listen to Conversations
         const conversationChannel = supabase
           .channel('conversations-realtime')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations' }, (payload) => {
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_conversations' }, (payload) => {
             const { eventType, new: newRecord, old: oldRecord } = payload;
             
             if (eventType === 'INSERT' || eventType === 'UPDATE') {
               set(state => {
                 const conv = newRecord as Conversation;
-                const phoneMatchIndex = state.conversations.findIndex(c => 
-                  c.id === conv.id || 
-                  (conv.customer_phone_normalized && c.customer_phone_normalized === conv.customer_phone_normalized)
-                );
+                const matchIndex = state.conversations.findIndex(c => c.id === conv.id);
 
-                if (phoneMatchIndex > -1) {
+                if (matchIndex > -1) {
                   const updatedConversations = [...state.conversations];
-                  updatedConversations[phoneMatchIndex] = { ...updatedConversations[phoneMatchIndex], ...conv };
+                  updatedConversations[matchIndex] = { ...updatedConversations[matchIndex], ...conv };
                   return { conversations: updatedConversations };
                 }
                 return { conversations: [conv, ...state.conversations] };
@@ -288,7 +285,7 @@ export const useAppStore = create<AppState>()(
         // 2. Listen to Messages
         const messageChannel = supabase
           .channel('messages-realtime')
-          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'crm_messages' }, (payload) => {
             console.log('Message insert received:', payload);
             const newMsg = payload.new as Message;
             
@@ -299,7 +296,7 @@ export const useAppStore = create<AppState>()(
               const safeContent = renderSafeText(newMsg.content, "Mensagem recebida");
               const safeMsg = { ...newMsg, content: safeContent };
               
-              // Find conversation to update its unread count and last message if it's from customer
+              // Find conversation to update its unread count and last message
               const updatedConversations = state.conversations.map(c => {
                 if (c.id === safeMsg.conversation_id) {
                   return {
@@ -327,7 +324,7 @@ export const useAppStore = create<AppState>()(
         // 3. Listen to Customers
         const customerChannel = supabase
           .channel('customers-realtime')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, (payload) => {
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_customers' }, (payload) => {
             const { eventType, new: newRecord, old: oldRecord } = payload;
             if (eventType === 'INSERT') {
               set(state => ({ customers: [...state.customers, newRecord as Customer] }));

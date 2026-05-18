@@ -46,12 +46,6 @@ import { getAgentDisplayName, formatOutgoingWhatsAppMessage } from '../utils/use
 
 export default function OmnichannelPage() {
   const { 
-    conversations, 
-    messages, 
-    addMessage, 
-    updateMessage,
-    addConversation, 
-    updateConversation,
     whatsAppAccounts,
     teams,
     customers,
@@ -62,10 +56,15 @@ export default function OmnichannelPage() {
     addInternalNote,
     updateInternalNote,
     deleteInternalNote,
-    fetchConversationMessages
   } = useAppStore();
 
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'novos' | 'meus' | 'concluidos' | 'todos'>('novos');
+  const [loadingConversations, setLoadingConversations] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+
   const [newMessage, setNewMessage] = useState('');
   const [showIAPanel, setShowIAPanel] = useState(false);
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
@@ -92,24 +91,124 @@ export default function OmnichannelPage() {
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [transferData, setTransferData] = useState({ teamId: '', userId: '', reason: '' });
   const [closeReason, setCloseReason] = useState('');
-  const [conversationFilter, setConversationFilter] = useState<'novos' | 'meus' | 'concluidos' | 'todos'>('novos');
   const [searchTerm, setSearchTerm] = useState('');
   
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Auto-refresh data on mount as requested
+  function getApiBaseUrl() {
+    const envUrl = import.meta.env.VITE_API_BASE_URL;
+    if (envUrl) return envUrl.replace(/\/$/, "");
+    if (
+      window.location.hostname === "localhost" ||
+      window.location.hostname.includes("webcontainer") ||
+      window.location.hostname.includes("preview") ||
+      window.location.hostname.includes("aistudio")
+    ) {
+      return "https://crm-viva-destinos-experience.onrender.com";
+    }
+    return "";
+  }
+
+  const isClosedConversation = (conversation: any) => {
+    const status = String(conversation.status || "").toUpperCase();
+    return ["CLOSED", "RESOLVED", "CONCLUIDO", "CONCLUÍDO"].includes(status);
+  };
+
+  async function loadConversations(silent = false) {
+    if (!silent) setLoadingConversations(true);
+    try {
+      const baseUrl = getApiBaseUrl();
+      const response = await fetch(`${baseUrl}/api/omnichannel/conversations`);
+      const data = await response.json();
+
+      if (data.success) {
+        const ordered = [...(data.conversations || [])].sort((a, b) => {
+          return new Date(b.last_message_at || b.updated_at || b.created_at || 0).getTime()
+            - new Date(a.last_message_at || a.updated_at || a.created_at || 0).getTime();
+        });
+        setConversations(ordered);
+
+        // Auto-select first conversation if requested
+        if (!activeConversationId && ordered.length > 0) {
+          const firstNew = ordered.find(c => !c.assigned_user_id && !isClosedConversation(c));
+          setActiveConversationId(firstNew?.id || ordered[0].id);
+        }
+      }
+    } catch (error) {
+      console.error("[LOAD CONVERSATIONS ERROR]", error);
+      if (!silent) toast.error("Erro ao carregar conversas.");
+    } finally {
+      if (!silent) setLoadingConversations(false);
+    }
+  }
+
+  async function loadMessages(conversationId: string, silent = false) {
+    if (!conversationId) return;
+    if (!silent) setLoadingMessages(true);
+    try {
+      const baseUrl = getApiBaseUrl();
+      const response = await fetch(`${baseUrl}/api/omnichannel/conversations/${conversationId}/messages`);
+      const data = await response.json();
+      if (data.success) {
+        setMessages(data.messages || []);
+      }
+    } catch (error) {
+      console.error("[LOAD MESSAGES ERROR]", error);
+      if (!silent) toast.error("Erro ao carregar mensagens.");
+    } finally {
+      if (!silent) setLoadingMessages(false);
+    }
+  }
+
+  // Initial load
   useEffect(() => {
-    const refreshDataAtendimentos = async () => {
-      // Re-initialize only what's needed for this page to avoid heavy reloading
+    loadConversations();
+  }, []);
+
+  // Sync messages when active conversation changes
+  useEffect(() => {
+    if (activeConversationId) {
+      loadMessages(activeConversationId);
+    } else {
+      setMessages([]);
+    }
+  }, [activeConversationId]);
+
+  // Real-time updates (SSE + Polling fallback)
+  useEffect(() => {
+    const baseUrl = getApiBaseUrl();
+    const eventSource = new EventSource(`${baseUrl}/api/events`);
+
+    eventSource.onmessage = (event) => {
       try {
-        const { initializeAppData } = useAppStore.getState();
-        await initializeAppData();
-      } catch (err) {
-        console.error("Mount refresh failed", err);
+        const data = JSON.parse(event.data);
+        if (data.event === "message.received" || data.event === "conversation.updated") {
+          loadConversations(true);
+          if (activeConversationId) {
+            loadMessages(activeConversationId, true);
+          }
+        }
+      } catch (e) {
+        console.error("Error parsing SSE data", e);
       }
     };
-    refreshDataAtendimentos();
-  }, []);
+
+    eventSource.onerror = () => {
+      console.warn("SSE connection error. Fallback to polling.");
+    };
+
+    const interval = setInterval(() => {
+      loadConversations(true);
+      if (activeConversationId) {
+        loadMessages(activeConversationId, true);
+      }
+    }, 10000);
+
+    return () => {
+      eventSource.close();
+      clearInterval(interval);
+    };
+  }, [activeConversationId]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
@@ -120,7 +219,7 @@ export default function OmnichannelPage() {
 
   const activeConversation = conversations.find(c => c.id === activeConversationId);
   const activeCustomer = activeConversation?.customer || customers.find(c => c.id === activeConversation?.customer_id);
-  const activeChatMessages = messages.filter(m => m.conversation_id === activeConversationId);
+  const activeChatMessages = messages; 
   const currentAccount = whatsAppAccounts.find(a => a.id === activeConversation?.whatsapp_account_id);
 
   function renderMessageContent(message: Message) {
@@ -330,7 +429,8 @@ export default function OmnichannelPage() {
         reader.onloadend = () => resolve(reader.result as string);
       });
 
-      const res = await fetch('/api/zapi/send-audio', {
+      const baseUrl = getApiBaseUrl();
+      const res = await fetch(`${baseUrl}/api/zapi/send-audio`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: activeCustomer.phone, audio: base64 })
@@ -338,19 +438,8 @@ export default function OmnichannelPage() {
 
       if (!res.ok) throw await res.json();
 
-      const agentName = getAgentDisplayName(currentUser);
-      await addMessage({
-        id: `m${Date.now()}`,
-        conversation_id: activeConversationId,
-        sender_type: 'agent',
-        sender_name: agentName,
-        content: `Áudio enviado`,
-        message_type: 'audio',
-        status: 'sent',
-        media_url: audioUrl || '',
-        created_at: new Date().toISOString(),
-        metadata: { duration: recordingTime, agentName }
-      });
+      await loadMessages(activeConversationId, true);
+      await loadConversations(true);
 
       setShowAudioRecorder(false);
       setAudioUrl(null);
@@ -359,44 +448,43 @@ export default function OmnichannelPage() {
     }, { label: 'Erro ao enviar áudio' });
     setIsSendingMedia(false);
   };
-  function getConversationTab(conv: Conversation, currentUserId: string | undefined): 'novos' | 'meus' | 'concluidos' | 'outros' {
-    const status = String(conv.status || "").toUpperCase();
-    const assignedUserId = conv.assigned_user_id;
+  function getFilteredConversations() {
+    return conversations.filter((conversation) => {
+      const isClosed = isClosedConversation(conversation);
+      const assignedUserId = conversation.assigned_user_id;
 
-    const isClosed = ["CLOSED", "RESOLVED", "CONCLUIDO", "CONCLUÍDO"].includes(status);
-    if (isClosed) return "concluidos";
+      // Filter by Search
+      if (searchTerm) {
+        const searchLower = searchTerm.toLowerCase();
+        const cust = conversation.customer || customers.find(c => c.id === conversation.customer_id);
+        const name = (cust?.name || (conversation as any).customer_name || "").toLowerCase();
+        const phone = (conversation.customer_phone_normalized || cust?.phone || "");
+        const msg = String(conversation.last_message || "").toLowerCase();
+        
+        if (!name.includes(searchLower) && !phone.includes(searchTerm) && !msg.includes(searchLower)) {
+          return false;
+        }
+      }
 
-    if (assignedUserId && assignedUserId === currentUserId) return "meus";
+      if (activeTab === "novos") {
+        return !assignedUserId && !isClosed;
+      }
 
-    if (!assignedUserId) return "novos";
+      if (activeTab === "meus") {
+        return assignedUserId && assignedUserId === currentUser?.id && !isClosed;
+      }
 
-    return "outros";
+      if (activeTab === "concluidos") {
+        return isClosed;
+      }
+
+      return true;
+    });
   }
 
-  const filteredConversations = conversations.filter(conv => {
-    const tab = getConversationTab(conv, currentUser?.id);
-    
-    if (conversationFilter === 'novos') return tab === 'novos';
-    if (conversationFilter === 'meus') return tab === 'meus';
-    if (conversationFilter === 'concluidos') return tab === 'concluidos';
-    // 'todos' shows everything except maybe deleted
-    
-    // Filter by search
-    if (searchTerm) {
-      const customer = conv.customer || customers.find(c => c.id === conv.customer_id);
-      const searchLower = searchTerm.toLowerCase();
-      const safeLastMessage = renderSafeText(conv.last_message).toLowerCase();
-      return (
-        (customer?.name || "").toLowerCase().includes(searchLower) ||
-        (customer?.phone || "").includes(searchTerm) ||
-        safeLastMessage.includes(searchLower)
-      );
-    }
-
-    return true;
-  }).sort((a, b) => {
-    const timeA = new Date(a.last_message_at || a.updated_at || a.created_at).getTime();
-    const timeB = new Date(b.last_message_at || b.updated_at || b.created_at).getTime();
+  const filteredConversations = getFilteredConversations().sort((a, b) => {
+    const timeA = new Date(a.last_message_at || a.updated_at || a.created_at || 0).getTime();
+    const timeB = new Date(b.last_message_at || b.updated_at || b.created_at || 0).getTime();
     return timeB - timeA;
   });
 
@@ -412,23 +500,33 @@ export default function OmnichannelPage() {
     if (!activeConversationId || !transferData.teamId) return;
 
     await safeAction(async () => {
-      await updateConversation(activeConversationId, {
-        queue_id: transferData.teamId,
-        assigned_user_id: transferData.userId || undefined,
-        status: 'TRANSFERRED'
+      const baseUrl = getApiBaseUrl();
+      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queue_id: transferData.teamId,
+          assigned_user_id: transferData.userId || null,
+          status: 'TRANSFERRED'
+        })
       });
+
+      if (!res.ok) throw await res.json();
       
       const teamName = teams.find(t => t.id === transferData.teamId)?.name || 'Nova Equipe';
-      await addMessage({
-        id: `sys-${Date.now()}`,
-        conversation_id: activeConversationId,
-        sender_type: 'system',
-        content: `Atendimento transferido para a equipe: ${teamName}${transferData.reason ? `. Motivo: ${transferData.reason}` : ''}`,
-        created_at: new Date().toISOString(),
-        message_type: 'text',
-        status: 'sent'
-      } as Message);
+      
+      // Send system message
+      await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          message: `Atendimento transferido para a equipe: ${teamName}${transferData.reason ? `. Motivo: ${transferData.reason}` : ''}`,
+          agentId: currentUser?.id,
+          agentName: 'Sistema'
+        })
+      });
 
+      await loadConversations(true);
       setShowTransferModal(false);
       toast.success('Atendimento transferido');
     }, { label: 'Erro ao transferir atendimento' });
@@ -436,93 +534,59 @@ export default function OmnichannelPage() {
 
   const handleCreateChat = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+    if (!newChatData.accountId || !newChatData.teamId) {
+      toast.error('Informe o canal e a equipe');
+      return;
+    }
+
     await safeAction(async () => {
-      let targetPhone = newChatData.newPhone;
-      let targetName = newChatData.newName;
+      let finalCustomerId = newChatData.customerId;
+      const baseUrl = getApiBaseUrl();
 
-      if (newChatData.customerId) {
-        const cust = customers.find(c => c.id === newChatData.customerId);
-        if (cust) {
-          targetPhone = cust.phone;
-          targetName = cust.name;
+      // 1. Create customer if new
+      if (!finalCustomerId) {
+        if (!newChatData.newName || !newChatData.newPhone) {
+          toast.error('Informe o nome e o telefone do novo cliente');
+          return;
         }
-      }
-
-      if (!targetPhone) {
-        toast.error('Informe o telefone para iniciar a conversa');
-        return;
-      }
-
-      const phoneNormalized = String(targetPhone).replace(/\D/g, "");
-      // Re-apply our rule: if 10/11 and no 55, add 55
-      let finalNormalized = phoneNormalized;
-      if ((finalNormalized.length === 10 || finalNormalized.length === 11) && !finalNormalized.startsWith("55")) {
-        finalNormalized = `55${finalNormalized}`;
-      }
-
-      // Check if conversation already exists for this normalized phone
-      const existingConv = conversations.find(c => c.customer_phone_normalized === finalNormalized);
-
-      if (existingConv) {
-        setActiveConversationId(existingConv.id);
-        setShowNewChatModal(false);
-        toast.success('Conversa existente localizada para este telefone.');
         
-        // Reopen and assign if needed
-        const currentStatus = String(existingConv.status || "").toUpperCase();
-        const isClosed = ["RESOLVED", "CLOSED", "CONCLUIDO", "CONCLUÍDO"].includes(currentStatus);
-        
-        if (isClosed || existingConv.assigned_user_id !== currentUser?.id) {
-          await updateConversation(existingConv.id, { 
-            status: 'OPEN',
-            assigned_user_id: currentUser?.id
-          });
-        }
-        return;
+        const custRes = await fetch(`${baseUrl}/api/crm/customers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: newChatData.newName,
+            phone: newChatData.newPhone,
+            source: 'Manual'
+          })
+        });
+        const custData = await custRes.json();
+        if (!custRes.ok) throw custData;
+        finalCustomerId = custData.customer.id;
       }
 
-      // If not exists, proceed with creation (but we should findOrCreate customer first)
-      let targetCustomerId = newChatData.customerId;
-      if (!targetCustomerId) {
-        const existingCustomer = customers.find(c => c.phone_normalized === finalNormalized || c.phone === finalNormalized);
-        if (existingCustomer) {
-          targetCustomerId = existingCustomer.id;
-        } else {
-          const newCustId = `c${Date.now()}`;
-          await addCustomer({
-            id: newCustId,
-            name: targetName || 'Cliente',
-            phone: targetPhone,
-            phone_normalized: finalNormalized,
-            origin: 'Manual'
-          } as any);
-          targetCustomerId = newCustId;
-        }
-      }
+      // 2. Create conversation
+      const convRes = await fetch(`${baseUrl}/api/omnichannel/conversations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_id: finalCustomerId,
+          whatsapp_account_id: newChatData.accountId,
+          queue_id: newChatData.teamId,
+          assigned_user_id: currentUser?.id,
+          assigned_user_name: getAgentDisplayName(currentUser),
+          status: 'OPEN',
+          source: 'WhatsApp Z-API'
+        })
+      });
 
-      const selectedAccount = whatsAppAccounts.find(a => a.id === newChatData.accountId) || whatsAppAccounts[0];
-      const selectedTeam = teams.find(t => t.id === newChatData.teamId) || teams[0];
+      const convData = await convRes.json();
+      if (!convRes.ok) throw convData;
 
-      const newId = `conv-${Date.now()}`;
-      const newConv: Partial<Conversation> = {
-        id: newId,
-        customer_id: targetCustomerId,
-        customer_phone_normalized: finalNormalized,
-        whatsapp_account_id: selectedAccount?.id || '',
-        queue_id: selectedTeam?.id || '',
-        assigned_user_id: currentUser?.id,
-        status: 'OPEN',
-        last_message: 'Atendimento manual iniciado',
-        unread_count: 0,
-        source: 'Manual',
-        created_at: new Date().toISOString()
-      };
-
-      await addConversation(newConv);
-      setActiveConversationId(newId);
+      await loadConversations(true);
+      setActiveConversationId(convData.conversation.id);
       setShowNewChatModal(false);
-      toast.success('Atendimento iniciado com sucesso!');
+      setNewChatData({ accountId: '', teamId: '', customerId: '', newName: '', newPhone: '' });
+      toast.success('Conversa iniciada com sucesso!');
     }, { label: 'Erro ao criar conversa' });
   };
 
@@ -533,10 +597,19 @@ export default function OmnichannelPage() {
     }
 
     await safeAction(async () => {
-      await updateConversation(activeConversationId, {
-        status: 'RESOLVED',
-        last_message: `Finalizado: ${closeReason}`
+      const baseUrl = getApiBaseUrl();
+      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'RESOLVED',
+          last_message: `Finalizado: ${closeReason}`
+        })
       });
+
+      if (!res.ok) throw await res.json();
+
+      await loadConversations(true);
       setShowCloseModal(false);
       toast.success('Atendimento finalizado com sucesso');
     }, { label: 'Erro ao finalizar atendimento' });
@@ -545,7 +618,6 @@ export default function OmnichannelPage() {
   const handleAISuggestion = async () => {
     if (!activeConversation) return;
     const history = messages
-      .filter(m => m.conversation_id === activeConversation.id)
       .map(m => `${m.sender_type === 'customer' ? 'Cliente' : 'Agente'}: ${m.content}`)
       .join('\n');
 
@@ -575,7 +647,6 @@ export default function OmnichannelPage() {
   const handleAIClassify = async () => {
     if (!activeConversation) return;
     const history = messages
-      .filter(m => m.conversation_id === activeConversation.id)
       .map(m => `${m.sender_type === 'customer' ? 'Cliente' : 'Agente'}: ${m.content}`)
       .join('\n');
 
@@ -611,7 +682,7 @@ export default function OmnichannelPage() {
       return;
     }
 
-    if (currentAccount.status !== 'ESTÁVEL') {
+    if (currentAccount.status !== 'CONNECTED') {
       toast.error('Este canal está desconectado. Reconecte antes de enviar.');
       return;
     }
@@ -619,57 +690,25 @@ export default function OmnichannelPage() {
     await safeAction(async () => {
       const originalContent = newMessage;
       const agentName = getAgentDisplayName(currentUser);
-      const formattedMessage = formatOutgoingWhatsAppMessage(originalContent, agentName);
       
       setNewMessage('');
-      const msgId = `m${Date.now()}`;
-
-      const newMsg: Message = {
-        id: msgId,
-        conversation_id: activeConversationId,
-        sender_type: 'agent',
-        sender_name: agentName,
-        content: originalContent,
-        metadata: {
-          agentName: agentName,
-          sentContent: formattedMessage
-        },
-        created_at: new Date().toISOString(),
-        message_type: 'text',
-        status: 'sending' as any
-      };
       
-      await addMessage(newMsg);
+      const baseUrl = getApiBaseUrl();
+      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          message: originalContent,
+          agentId: currentUser?.id,
+          agentName: agentName
+        })
+      });
+
+      if (!res.ok) throw await res.json();
       
-      const convUpdates: any = {
-        last_message: originalContent,
-        last_message_at: new Date().toISOString()
-      };
-
-      // Auto assign if not already assigned
-      if (!activeConversation.assigned_user_id) {
-        convUpdates.assigned_user_id = currentUser?.id;
-        convUpdates.status = 'OPEN';
-        toast.info('Atendimento atribuído a você automaticamente.');
-      }
-
-      await updateConversation(activeConversationId, convUpdates);
-
-      try {
-        const res = await fetch('/api/zapi/send-text', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone: activeCustomer?.phone, message: formattedMessage })
-        });
-        
-        if (!res.ok) throw await res.json();
-        
-        await updateMessage(msgId, { status: 'sent' });
-        toast.success('Mensagem enviada com sucesso');
-      } catch (err) {
-        await updateMessage(msgId, { status: 'failed' as any });
-        throw err;
-      }
+      await loadMessages(activeConversationId, true);
+      await loadConversations(true);
+      toast.success('Mensagem enviada com sucesso');
     }, { label: 'Erro ao enviar mensagem' });
   };
 
@@ -688,7 +727,16 @@ export default function OmnichannelPage() {
   const handleReopen = async () => {
     if (!activeConversation) return;
     await safeAction(async () => {
-      await updateConversation(activeConversation.id, { status: 'OPEN' });
+      const baseUrl = getApiBaseUrl();
+      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversation.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'OPEN' })
+      });
+
+      if (!res.ok) throw await res.json();
+      
+      await loadConversations(true);
       toast.success('Atendimento reaberto');
     }, { label: 'Erro ao reabrir atendimento' });
   };
@@ -741,76 +789,52 @@ export default function OmnichannelPage() {
     if (!selectedFile || !activeConversationId || !activeCustomer) return;
 
     setIsSendingMedia(true);
-    const msgId = `m${Date.now()}`;
     const agentName = getAgentDisplayName(currentUser);
     const formattedCaption = mediaCaption ? formatOutgoingWhatsAppMessage(mediaCaption, agentName) : '';
     
-    // Add to local history as sending
-    const newMsg: Message = {
-      id: msgId,
-      conversation_id: activeConversationId,
-      sender_type: 'agent',
-      sender_name: agentName,
-      content: mediaType === 'document' ? `${selectedFile.name}${mediaCaption ? `\n${mediaCaption}` : ''}` : (mediaCaption || `[${mediaType === 'image' ? 'Imagem' : 'Vídeo'}]`),
-      message_type: mediaType as any,
-      status: 'sending' as any,
-      media_url: mediaPreviewUrl || '',
-      created_at: new Date().toISOString(),
-      metadata: {
-        agentName,
-        sentContent: formattedCaption,
-        fileName: selectedFile.name,
-        fileSize: selectedFile.size
-      }
-    };
-
-    await addMessage(newMsg);
     setShowMediaPreview(false);
 
     await safeAction(async () => {
       const base64 = await fileToBase64(selectedFile);
+      const baseUrl = getApiBaseUrl();
       
       let endpoint = '';
       let body: any = { phone: activeCustomer.phone };
 
       if (mediaType === 'image') {
-        endpoint = '/api/zapi/send-image';
+        endpoint = `${baseUrl}/api/zapi/send-image`;
         body.image = base64;
         body.caption = formattedCaption;
       } else if (mediaType === 'video') {
-        endpoint = '/api/zapi/send-video';
+        endpoint = `${baseUrl}/api/zapi/send-video`;
         body.video = base64;
         body.caption = formattedCaption;
       } else if (mediaType === 'document') {
-        endpoint = '/api/zapi/send-document';
+        endpoint = `${baseUrl}/api/zapi/send-document`;
         body.document = base64;
         body.fileName = selectedFile.name;
         body.extension = selectedFile.name.split('.').pop() || '';
         body.caption = formattedCaption;
       }
 
-      try {
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
 
-        if (!res.ok) throw await res.json();
-        
-        await updateMessage(msgId, { status: 'sent' });
-        toast.success(`${mediaType === 'image' ? 'Foto' : (mediaType === 'video' ? 'Vídeo' : 'Documento')} enviado com sucesso!`);
-      } catch (err) {
-        await updateMessage(msgId, { status: 'failed' as any });
-        throw err;
-      }
+      if (!res.ok) throw await res.json();
+      
+      await loadMessages(activeConversationId, true);
+      await loadConversations(true);
+      toast.success(`${mediaType === 'image' ? 'Foto' : (mediaType === 'video' ? 'Vídeo' : 'Documento')} enviado com sucesso!`);
+
+      // Reset state
+      setSelectedFile(null);
+      setMediaType(null);
+      setMediaCaption('');
+      setMediaPreviewUrl(null);
     }, { label: 'Erro ao enviar mídia' });
-
-    // Reset state
-    setSelectedFile(null);
-    setMediaType(null);
-    setMediaCaption('');
-    setMediaPreviewUrl(null);
     setIsSendingMedia(false);
   };
 
@@ -818,20 +842,16 @@ export default function OmnichannelPage() {
     if (!activeCustomer?.phone) return;
 
     await safeAction(async () => {
-      await updateMessage(msg.id, { status: 'sending' as any });
-      
+      const baseUrl = getApiBaseUrl();
       let endpoint = '';
       let body: any = { phone: activeCustomer.phone };
       const sentContent = msg.metadata?.sentContent || msg.content;
 
       if (msg.message_type === 'text') {
-        endpoint = '/api/zapi/send-text';
+        endpoint = `${baseUrl}/api/zapi/send-text`;
         body.message = sentContent;
-      } else if (msg.message_type === 'image') {
-        // We'd need the base64 or URL again. For now, text is easiest to retry.
-        // If we really want to retry media, we need to store them.
+      } else {
         toast.error("Reenvio de mídia ainda não suportado. Tente enviar o arquivo novamente.");
-        await updateMessage(msg.id, { status: 'failed' as any });
         return;
       }
 
@@ -843,7 +863,7 @@ export default function OmnichannelPage() {
 
       if (!res.ok) throw await res.json();
       
-      await updateMessage(msg.id, { status: 'sent' });
+      await loadMessages(activeConversationId!, true);
       toast.success('Mensagem reenviada com sucesso');
     }, { label: 'Erro ao reenviar mensagem' });
   };
@@ -891,28 +911,28 @@ export default function OmnichannelPage() {
           
           <div className="flex bg-slate-50 p-1 rounded-xl mb-4">
             <button 
-              onClick={() => setConversationFilter('novos')}
-              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${conversationFilter === 'novos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+              onClick={() => setActiveTab('novos')}
+              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${activeTab === 'novos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              Novos
+              Novos ({conversations.filter(c => !c.assigned_user_id && !isClosedConversation(c)).length})
             </button>
             <button 
-              onClick={() => setConversationFilter('meus')}
-              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${conversationFilter === 'meus' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+              onClick={() => setActiveTab('meus')}
+              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${activeTab === 'meus' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              Meus
+              Meus ({conversations.filter(c => c.assigned_user_id === currentUser?.id && !isClosedConversation(c)).length})
             </button>
             <button 
-              onClick={() => setConversationFilter('concluidos')}
-              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${conversationFilter === 'concluidos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+              onClick={() => setActiveTab('concluidos')}
+              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${activeTab === 'concluidos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              Concluídos
+              Concluídos ({conversations.filter(c => isClosedConversation(c)).length})
             </button>
             <button 
-              onClick={() => setConversationFilter('todos')}
-              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${conversationFilter === 'todos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+              onClick={() => setActiveTab('todos')}
+              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${activeTab === 'todos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              Todos
+              Todos ({conversations.length})
             </button>
           </div>
 
@@ -932,25 +952,29 @@ export default function OmnichannelPage() {
           {filteredConversations.length === 0 ? (
             <div className="p-10 flex flex-col items-center justify-center text-center opacity-40">
               <MessageSquare className="w-12 h-12 mb-4" />
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Nenhuma conversa encontrada</p>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                {activeTab === 'novos' ? 'Nenhuma conversa nova encontrada' :
+                 activeTab === 'meus' ? 'Nenhum atendimento atribuído a você' :
+                 activeTab === 'concluidos' ? 'Nenhum atendimento concluído' :
+                 'Nenhuma conversa encontrada'}
+              </p>
             </div>
           ) : filteredConversations.map((conv) => {
             const customer = conv.customer || customers.find(c => c.id === conv.customer_id);
             const isActive = activeConversationId === conv.id;
             const team = teams.find(t => t.id === conv.queue_id);
-            const account = conv.whatsapp_account || whatsAppAccounts.find(a => a.id === conv.whatsapp_account_id);
-            const lastMsgAt = conv.last_message_at;
+            const account = whatsAppAccounts.find(a => a.id === conv.whatsapp_account_id);
+            const lastMsgAt = conv.last_message_at || conv.updated_at || conv.created_at;
+
+            const customerName = (customer?.name || (conv as any).customer_name || (conv as any).name || "Cliente") as string;
+            const lastMessage = typeof conv.last_message === 'string' ? conv.last_message : "Mensagem recebida";
 
             return (
               <button 
                 key={conv.id}
                 onClick={async () => {
                   setActiveConversationId(conv.id);
-                  if ((conv.unread_count || 0) > 0) {
-                    updateConversation(conv.id, { unread_count: 0 });
-                  }
-                  // Fetch real messages from database
-                  fetchConversationMessages(conv.id);
+                  // We don't update unread_count locally anymore, the API should handle it or we'd need a specific endpoint
                 }}
                 className={`w-full p-4 flex items-start gap-4 transition-all hover:bg-slate-50 text-left relative overflow-hidden ${isActive ? 'bg-blue-50/50' : ''}`}
               >
@@ -958,7 +982,7 @@ export default function OmnichannelPage() {
                 
                 <div className="relative shrink-0">
                   <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-600 font-bold text-lg border-2 border-white shadow-sm ring-1 ring-slate-100">
-                    {customer?.name?.charAt(0)}
+                    {customerName.charAt(0)}
                   </div>
                   <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-emerald-500 border-2 border-white rounded-full flex items-center justify-center">
                     <img src="https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg" alt="WA" className="w-3 h-3 invert pointer-events-none" />
@@ -967,7 +991,7 @@ export default function OmnichannelPage() {
 
                 <div className="flex-1 min-w-0 pr-2">
                   <div className="flex items-center justify-between gap-2 mb-1">
-                    <h3 className="font-bold text-slate-800 text-sm truncate">{customer?.name}</h3>
+                    <h3 className="font-bold text-slate-800 text-sm truncate">{customerName}</h3>
                     <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap">
                       {lastMsgAt ? new Date(lastMsgAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                     </span>
@@ -985,7 +1009,7 @@ export default function OmnichannelPage() {
                   </div>
 
                   <p className="text-xs text-slate-500 truncate leading-relaxed">
-                    {renderSafeText(conv.last_message, "O cliente iniciou uma nova conversa")}
+                    {lastMessage}
                   </p>
                 </div>
 
@@ -995,7 +1019,7 @@ export default function OmnichannelPage() {
                   </div>
                 )}
               </button>
-            )
+            );
           })}
         </div>
 
@@ -1047,7 +1071,7 @@ export default function OmnichannelPage() {
                 >
                   <ArrowRightLeft className="w-5 h-5" />
                 </button>
-                {activeConversation.status === 'RESOLVED' ? (
+                {activeConversation.status === 'RESOLVED' || activeConversation.status === 'CLOSED' || activeConversation.status === 'CONCLUIDO' || activeConversation.status === 'CONCLUÍDO' ? (
                   <button 
                     onClick={handleReopen}
                     className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl transition-all font-bold text-sm px-4"
@@ -1056,15 +1080,23 @@ export default function OmnichannelPage() {
                   </button>
                 ) : (
                   <>
-                    {!activeConversation.assigned_user_id && (
+                    {activeConversation.assigned_user_id !== currentUser?.id && (
                       <button 
                         onClick={async () => {
-                          await updateConversation(activeConversation.id, { 
-                            assigned_user_id: currentUser?.id,
-                            status: 'OPEN',
-                            updated_at: new Date().toISOString()
+                          const agentName = getAgentDisplayName(currentUser);
+                          const baseUrl = getApiBaseUrl();
+                          const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversation.id}/assign`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ userId: currentUser?.id, userName: agentName })
                           });
-                          toast.success('Atendimento iniciado e atribuído a você.');
+                          
+                          if (res.ok) {
+                            await loadConversations(true);
+                            toast.success('Atendimento iniciado e atribuído a você.');
+                          } else {
+                            toast.error('Erro ao assumir atendimento.');
+                          }
                         }}
                         className="p-2.5 bg-blue-600 text-white rounded-xl transition-all font-bold text-sm px-4 shadow-lg shadow-blue-100 hover:scale-105"
                       >
@@ -1122,11 +1154,11 @@ export default function OmnichannelPage() {
             </header>
 
             {/* Quality Banner */}
-            <div className={`px-6 py-2 border-b flex items-center justify-between gap-3 ${currentAccount?.status === 'ESTÁVEL' ? 'bg-blue-50/50 border-blue-100' : 'bg-red-50/50 border-red-100'}`}>
+            <div className={`px-6 py-2 border-b flex items-center justify-between gap-3 ${currentAccount?.status === 'CONNECTED' ? 'bg-blue-50/50 border-blue-100' : 'bg-red-50/50 border-red-100'}`}>
               <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full animate-pulse ${currentAccount?.status === 'ESTÁVEL' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
-                <p className={`text-[10px] font-bold uppercase tracking-widest ${currentAccount?.status === 'ESTÁVEL' ? 'text-blue-700' : 'text-red-700'}`}>
-                  Canal {currentAccount?.name || 'Comercial'} {currentAccount?.status === 'ESTÁVEL' ? 'conectado com qualidade ALTA' : 'DESCONECTADO'} • Atendimento {currentAccount?.status === 'ESTÁVEL' ? 'seguro' : 'PENDENTE'}
+                <div className={`w-2 h-2 rounded-full animate-pulse ${currentAccount?.status === 'CONNECTED' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+                <p className={`text-[10px] font-bold uppercase tracking-widest ${currentAccount?.status === 'CONNECTED' ? 'text-blue-700' : 'text-red-700'}`}>
+                  Canal {currentAccount?.name || 'Comercial'} {currentAccount?.status === 'CONNECTED' ? 'conectado com qualidade ALTA' : 'DESCONECTADO'} • Atendimento {currentAccount?.status === 'CONNECTED' ? 'seguro' : 'PENDENTE'}
                 </p>
               </div>
               <div className="flex items-center gap-4">
@@ -1788,7 +1820,7 @@ export default function OmnichannelPage() {
                       >
                         <option value="">Selecione um canal</option>
                         {whatsAppAccounts.map(acc => (
-                          <option key={acc.id} value={acc.id}>{acc.name} ({acc.status === 'ESTÁVEL' ? 'Ativo' : 'Off'})</option>
+                          <option key={acc.id} value={acc.id}>{acc.name} ({acc.status === 'CONNECTED' ? 'Ativo' : 'Off'})</option>
                         ))}
                       </select>
                     </div>

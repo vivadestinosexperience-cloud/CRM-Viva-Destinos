@@ -101,22 +101,22 @@ export const whatsappService = {
 
 export const customerService = {
   async list() {
-    const { data, error } = await supabase.from('customers').select('*').order('created_at', { ascending: false });
+    const { data, error } = await supabase.from('crm_customers').select('*').order('created_at', { ascending: false });
     if (error) handleError(error, 'customerService.list');
     return data;
   },
   async create(customer: any) {
-    const { data, error } = await supabase.from('customers').insert(customer).select().single();
+    const { data, error } = await supabase.from('crm_customers').insert(customer).select().single();
     if (error) handleError(error, 'customerService.create');
     return data;
   },
   async update(id: string, updates: any) {
-    const { data, error } = await supabase.from('customers').update(updates).eq('id', id).select().single();
+    const { data, error } = await supabase.from('crm_customers').update(updates).eq('id', id).select().single();
     if (error) handleError(error, 'customerService.update');
     return data;
   },
   async remove(id: string) {
-    const { error } = await supabase.from('customers').delete().eq('id', id);
+    const { error } = await supabase.from('crm_customers').delete().eq('id', id);
     if (error) handleError(error, 'customerService.remove');
   }
 };
@@ -134,12 +134,12 @@ export const conversationService = {
     }
   },
   async create(conversation: any) {
-    const { data, error } = await supabase.from('conversations').insert(conversation).select().single();
+    const { data, error } = await supabase.from('crm_conversations').insert(conversation).select().single();
     if (error) handleError(error, 'conversationService.create');
     return data;
   },
   async update(id: string, updates: any) {
-    const { data, error } = await supabase.from('conversations').update(updates).eq('id', id).select().single();
+    const { data, error } = await supabase.from('crm_conversations').update(updates).eq('id', id).select().single();
     if (error) handleError(error, 'conversationService.update');
     return data;
   }
@@ -147,7 +147,7 @@ export const conversationService = {
 
 export const messageService = {
   async list() {
-    const { data, error } = await supabase.from('messages').select('*').order('created_at', { ascending: true });
+    const { data, error } = await supabase.from('crm_messages').select('*').order('created_at', { ascending: true });
     if (error) handleError(error, 'messageService.list');
     return data;
   },
@@ -163,17 +163,17 @@ export const messageService = {
     }
   },
   async create(message: any) {
-    const { data, error } = await supabase.from('messages').insert(message).select().single();
+    const { data, error } = await supabase.from('crm_messages').insert(message).select().single();
     if (error) handleError(error, 'messageService.create');
     return data;
   },
   async update(id: string, updates: any) {
-    const { data, error } = await supabase.from('messages').update(updates).eq('id', id).select().single();
+    const { data, error } = await supabase.from('crm_messages').update(updates).eq('id', id).select().single();
     if (error) handleError(error, 'messageService.update');
     return data;
   },
   async remove(id: string) {
-    const { error } = await supabase.from('messages').delete().eq('id', id);
+    const { error } = await supabase.from('crm_messages').delete().eq('id', id);
     if (error) handleError(error, 'messageService.remove');
   }
 };
@@ -308,8 +308,8 @@ export const reportService = {
       { count: customersCount },
       { count: activeConversations }
     ] = await Promise.all([
-      supabase.from('customers').select('*', { count: 'exact', head: true }),
-      supabase.from('conversations').select('*', { count: 'exact', head: true }).neq('status', 'RESOLVED').neq('status', 'CLOSED')
+      supabase.from('crm_customers').select('*', { count: 'exact', head: true }),
+      supabase.from('crm_conversations').select('*', { count: 'exact', head: true }).neq('status', 'RESOLVED').neq('status', 'CLOSED')
     ]);
 
     return {

@@ -161,11 +161,6 @@ export default function MainLayout() {
           </div>
 
           <div className="flex items-center gap-3 lg:gap-6">
-            <button className="relative p-2.5 text-slate-500 hover:bg-slate-50 rounded-xl transition-all">
-              <Bell className="w-5 h-5" />
-              <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
-            </button>
-
             <div className="h-8 w-px bg-slate-200 hidden lg:block"></div>
 
             <div className="relative">
