@@ -10,6 +10,7 @@ import LoginPage from './pages/LoginPage';
 import MainLayout from './layouts/MainLayout';
 import OmnichannelPage from './pages/OmnichannelPage';
 import CRMPage from './pages/CRMPage';
+import CampaignsPage from './pages/CampaignsPage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
 import UserProfilePage from './pages/UserProfilePage';
@@ -110,6 +111,7 @@ export default function App() {
         >
           <Route index element={<Navigate to="atendimentos" />} />
           <Route path="atendimentos" element={<OmnichannelPage />} />
+          <Route path="campanhas" element={<CampaignsPage />} />
           <Route path="clientes/*" element={<CRMPage />} />
           <Route path="relatorios/atendimentos" element={<ReportsPage />} />
           <Route path="ajustes/*" element={<SettingsPage />} />

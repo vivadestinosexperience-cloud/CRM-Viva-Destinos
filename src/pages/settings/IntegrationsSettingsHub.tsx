@@ -23,8 +23,8 @@ export default function IntegrationsSettingsHub() {
   const integrations = [
     {
       id: 'whatsapp',
-      name: 'WhatsApp Business',
-      description: 'Conecte contas oficiais da API Cloud ou via QR Code para atendimento omnichannel.',
+      name: 'WhatsApp Z-API',
+      description: 'Conecte seu WhatsApp via QR Code Z-API para atendimento e campanhas.',
       icon: MessageSquare,
       color: 'text-emerald-600',
       bg: 'bg-emerald-50',
@@ -33,39 +33,20 @@ export default function IntegrationsSettingsHub() {
       active: true
     },
     {
-      id: 'instagram',
-      name: 'Instagram Direct',
-      description: 'Responda directs e comentários do Instagram diretamente no CRM.',
-      icon: Instagram,
-      color: 'text-pink-600',
-      bg: 'bg-pink-50',
-      status: 'EM BREVE',
-      active: false
-    },
-    {
-      id: 'facebook',
-      name: 'Facebook Messenger',
-      description: 'Centralize as mensagens da sua página do Facebook.',
-      icon: Facebook,
-      color: 'text-blue-600',
-      bg: 'bg-blue-50',
-      status: 'EM BREVE',
-      active: false
-    },
-    {
       id: 'openai',
-      name: 'OpenAI / Gemini API',
-      description: 'Ative assistentes inteligentes para sugestão de respostas e chatbots.',
+      name: 'IA Assistente',
+      description: 'Ative resumos de conversas e sugestões de respostas com Gemini API.',
       icon: Zap,
       color: 'text-orange-600',
       bg: 'bg-orange-50',
-      status: 'EM BREVE',
-      active: false
+      status: 'CONFIGURAR',
+      path: '/app/ajustes/ai',
+      active: true
     },
     {
       id: 'webhooks',
-      name: 'Webhooks de Entrada',
-      description: 'Receba dados de formulários externos e outros sistemas.',
+      name: 'Webhooks',
+      description: 'Receba leads e eventos de sistemas externos via webhook.',
       icon: Webhook,
       color: 'text-purple-600',
       bg: 'bg-purple-50',

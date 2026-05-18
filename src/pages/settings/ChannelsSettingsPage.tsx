@@ -26,16 +26,12 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }
 export default function ChannelsSettingsPage() {
   const { whatsAppAccounts, addWhatsAppAccount, updateWhatsAppAccount, deleteWhatsAppAccount, isSaving, teams, users } = useAppStore();
   const [showAddModal, setShowAddModal] = useState(false);
-  const [addStep, setAddStep] = useState<'TYPE' | 'PROVIDER' | 'CONFIG' | 'INSTRUCTIONS' | 'QR' | 'SUCCESS'>('TYPE');
-  const [selectedType, setSelectedType] = useState<'META' | 'QR' | 'INSTA' | 'FB' | null>(null);
-  const [selectedProvider, setSelectedProvider] = useState<'ZAPI' | 'EVOLUTION' | 'CLOUD' | '360' | null>(null);
+  const [addStep, setAddStep] = useState<'LIST' | 'CONFIG' | 'INSTRUCTIONS' | 'QR' | 'SUCCESS'>('LIST');
+  const [selectedProvider] = useState<'ZAPI'>('ZAPI');
 
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
-    phoneId: '',
-    businessId: '',
-    verifyToken: '',
     teamId: '',
     responsibleId: ''
   });
@@ -45,20 +41,18 @@ export default function ChannelsSettingsPage() {
   const qrIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const statusIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const [configStatus, setConfigStatus] = useState<{meta: boolean, zapi: boolean, evolution: boolean} | null>(null);
+  const [configStatus, setConfigStatus] = useState<{configured: boolean, missing: string[], provider: string} | null>(null);
 
   useEffect(() => {
-    fetch('/api/channels/config-check')
+    fetch('/api/zapi/config-status')
       .then(r => r.json())
       .then(setConfigStatus)
-      .catch(() => setConfigStatus({meta: false, zapi: false, evolution: false}));
+      .catch(() => setConfigStatus({configured: false, missing: [], provider: 'Z-API'}));
   }, []);
 
   const resetModal = () => {
     setShowAddModal(false);
-    setAddStep('TYPE');
-    setSelectedType(null);
-    setSelectedProvider(null);
+    setAddStep('LIST');
     setQrCode(null);
     setQrAttempts(0);
     if (qrIntervalRef.current) clearInterval(qrIntervalRef.current);
@@ -66,15 +60,16 @@ export default function ChannelsSettingsPage() {
     setFormData({
       name: '',
       phone: '',
-      phoneId: '',
-      businessId: '',
-      verifyToken: '',
       teamId: '',
       responsibleId: ''
     });
   };
 
   const handleStartQR = () => {
+    if (!configStatus?.configured) {
+      toast.error(`Z-API não configurada no servidor. Faltando: ${configStatus?.missing.join(', ')}`);
+      return;
+    }
     setAddStep('INSTRUCTIONS');
   };
 
@@ -92,13 +87,12 @@ export default function ChannelsSettingsPage() {
   const checkProviderStatus = async () => {
     if (addStep !== 'QR') return;
     
-    const providerPath = selectedProvider === 'ZAPI' ? 'zapi' : 'evolution';
     try {
-      const res = await fetch(`/api/channels/${providerPath}/status`);
+      const res = await fetch(`/api/zapi/status`);
       const data = await res.json();
       
-      if (data.mapped_status === 'ESTÁVEL' || data.connected === true) {
-        handleQRComplete(data.phone || data.number);
+      if (data.status === 'CONNECTED') {
+        handleQRComplete(data.phone);
       }
     } catch (err) {
       console.error('Error checking status:', err);
@@ -107,18 +101,16 @@ export default function ChannelsSettingsPage() {
 
   const generateQrCode = async () => {
     if (qrAttempts >= 3) {
-      // Show error but don't toast yet to avoid spamming
+      // Show manual refresh required
       return;
     }
 
-    const providerPath = selectedProvider === 'ZAPI' ? 'zapi' : 'evolution';
     try {
-      const res = await fetch(`/api/channels/${providerPath}/qrcode`);
+      const res = await fetch(`/api/zapi/qrcode`);
       const data = await res.json();
       
       if (data.error) {
         toast.error(data.error);
-        setAddStep('CONFIG'); // Return to config if provider error
         return;
       }
 
@@ -139,45 +131,16 @@ export default function ChannelsSettingsPage() {
     };
   }, [addStep, qrAttempts]);
 
-  const handleMetaSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formData.name) {
-      toast.error('Nome do canal é obrigatório');
-      return;
-    }
-    const newChannel: Partial<WhatsAppAccount> = {
-      id: `ch-${Date.now()}`,
-      name: formData.name,
-      type: 'WHATSAPP',
-      provider: selectedProvider === 'CLOUD' ? 'META_CLOUD' : '360DIALOG',
-      provider_type: selectedProvider === 'CLOUD' ? 'meta_cloud' : '360dialog',
-      phone_number: formData.phone,
-      instance_id: formData.phoneId,
-      status: 'ESTÁVEL', // Assuming success for now
-      team_id: formData.teamId,
-      responsible_user_id: formData.responsibleId,
-      config: {
-        phoneId: formData.phoneId,
-        businessId: formData.businessId,
-        verifyToken: formData.verifyToken
-      },
-      created_at: new Date().toISOString()
-    };
-    await addWhatsAppAccount(newChannel as WhatsAppAccount);
-    setAddStep('SUCCESS');
-    setTimeout(resetModal, 2000);
-  };
-
   const handleQRComplete = async (detectedPhone?: string) => {
      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
      if (qrIntervalRef.current) clearInterval(qrIntervalRef.current);
 
      const newChannel: Partial<WhatsAppAccount> = {
         id: `ch-${Date.now()}`,
-        name: formData.name || (selectedProvider === 'ZAPI' ? 'WhatsApp Z-API' : 'WhatsApp Evolution'),
+        name: formData.name || 'WhatsApp Z-API',
         type: 'WHATSAPP',
-        provider: selectedProvider === 'ZAPI' ? 'ZAPI' : 'EVOLUTION',
-        provider_type: selectedProvider === 'ZAPI' ? 'zapi' : 'evolution',
+        provider: 'ZAPI',
+        provider_type: 'zapi',
         phone_number: detectedPhone || formData.phone,
         status: 'ESTÁVEL',
         team_id: formData.teamId,
@@ -190,15 +153,14 @@ export default function ChannelsSettingsPage() {
   };
 
   const handleManualCheckStatus = async () => {
-    const providerPath = selectedProvider === 'ZAPI' ? 'zapi' : 'evolution';
     try {
-      const res = await fetch(`/api/channels/${providerPath}/status`);
+      const res = await fetch(`/api/zapi/status`);
       const data = await res.json();
       
-      if (data.mapped_status === 'ESTÁVEL' || data.connected === true) {
-        handleQRComplete(data.phone || data.number);
+      if (data.status === 'CONNECTED') {
+        handleQRComplete(data.phone);
       } else {
-        toast.info("Número ainda não conectado. Faça a leitura do QR Code.");
+        toast.info("Ainda aguardando leitura do QR Code.");
       }
     } catch (err) {
       toast.error('Erro ao verificar status');
@@ -244,14 +206,8 @@ export default function ChannelsSettingsPage() {
             >
               <div className="p-6 flex-1">
                 <div className="flex items-center justify-between mb-6">
-                   <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white shadow-lg ${
-                     account.type === 'INSTAGRAM' ? 'bg-gradient-to-tr from-yellow-400 via-red-500 to-purple-600' :
-                     account.type === 'FACEBOOK' ? 'bg-blue-600' :
-                     account.provider === 'ZAPI' || account.provider === 'EVOLUTION' ? 'bg-slate-800' : 'bg-blue-500'
-                   }`}>
-                     {account.type === 'INSTAGRAM' ? <Instagram className="w-6 h-6" /> :
-                      account.type === 'FACEBOOK' ? <Facebook className="w-6 h-6" /> :
-                      <MessageSquare className="w-6 h-6" />}
+                   <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-white shadow-lg bg-slate-800">
+                     <MessageSquare className="w-6 h-6" />
                    </div>
                    <div className="flex items-center gap-2">
                      <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${status.bg} ${status.color}`}>
@@ -267,7 +223,7 @@ export default function ChannelsSettingsPage() {
                   <h3 className="font-black text-slate-800 text-lg leading-tight mb-1">{account.name}</h3>
                   <div className="flex flex-col gap-1">
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">
-                      Provedor: {account.provider || 'Meta Cloud'}
+                      Provedor: Z-API
                     </p>
                     <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest leading-none">
                       Limite: /24hrs
@@ -296,23 +252,32 @@ export default function ChannelsSettingsPage() {
                     {users.find(u => u.id === account.responsible_user_id)?.name.split(' ')[0] || 'Sem Resp.'}
                   </span>
                 </div>
-                <button 
-                  onClick={() => handleDelete(account.id)}
-                  className="p-2 text-red-300 hover:text-red-500 transition-colors"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                   <button 
+                    onClick={() => { setAddStep('QR'); setShowAddModal(true); }}
+                    className="p-2 text-blue-400 hover:text-blue-600 transition-colors"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+                  <button 
+                    onClick={() => handleDelete(account.id)}
+                    className="p-2 text-red-300 hover:text-red-500 transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             </motion.div>
           );
         })}
 
-        {/* Placeholder for Instagram/Messenger if requested but not present */}
-        <div className="bg-slate-50/50 rounded-[2.5rem] border-2 border-dashed border-slate-200 p-8 flex flex-col items-center justify-center text-center opacity-60 grayscale">
-           <Instagram className="w-10 h-10 text-slate-300 mb-4" />
-           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Instagram & Messenger</p>
-           <p className="text-[9px] text-slate-400 mt-2">Clique no botão "+" para integrar novos canais Meta.</p>
-        </div>
+        {whatsAppAccounts.length === 0 && (
+          <div className="col-span-full py-20 bg-slate-50 rounded-[3rem] border-2 border-dashed border-slate-200 flex flex-col items-center justify-center text-center">
+             <Smartphone className="w-12 h-12 text-slate-300 mb-4" />
+             <h3 className="text-lg font-black text-slate-400 uppercase tracking-tight">Nenhum canal configurado</h3>
+             <p className="text-sm text-slate-400 mt-2 max-w-xs">Conecte o seu WhatsApp via Z-API para começar os atendimentos.</p>
+          </div>
+        )}
       </div>
 
       {/* Add Modal */}
@@ -335,16 +300,16 @@ export default function ChannelsSettingsPage() {
               {/* Header */}
               <div className="p-8 border-b border-slate-100 flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-4">
-                   {addStep !== 'TYPE' && (
-                     <button onClick={() => setAddStep('TYPE')} className="p-2 hover:bg-slate-50 rounded-xl transition-colors">
+                   {addStep !== 'LIST' && (
+                     <button onClick={() => setAddStep('LIST')} className="p-2 hover:bg-slate-50 rounded-xl transition-colors">
                        <ArrowLeft className="w-5 h-5 text-slate-400" />
                      </button>
                    )}
                    <div>
                      <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">
-                       {addStep === 'TYPE' ? 'Adicionar Canal' : 
-                        addStep === 'PROVIDER' ? 'Escolha o Provedor' :
+                       {addStep === 'LIST' ? 'Adicionar Canal' : 
                         addStep === 'CONFIG' ? 'Configurações' :
+                        addStep === 'INSTRUCTIONS' ? 'Instruções' :
                         addStep === 'QR' ? 'Escaneie o QR Code' : 'Concluído'}
                      </h3>
                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Viva Destinos Omnichannel</p>
@@ -357,101 +322,36 @@ export default function ChannelsSettingsPage() {
 
               {/* Steps Content */}
               <div className="flex-1 overflow-y-auto p-8">
-                {addStep === 'TYPE' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {addStep === 'LIST' && (
+                  <div className="space-y-6">
+                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">Configurar integração Z-API:</p>
+                    
                     <button 
-                      onClick={() => { setSelectedType('META'); setAddStep('PROVIDER'); }}
-                      className="p-6 bg-slate-50 rounded-[2rem] border border-slate-100 hover:border-blue-200 hover:bg-blue-50 transition-all flex items-center gap-5 group"
+                      onClick={() => setAddStep('CONFIG')}
+                      className={`w-full p-8 bg-slate-50 border border-slate-100 rounded-[2.5rem] flex items-center justify-between hover:border-emerald-200 hover:bg-emerald-50 transition-all group ${!configStatus?.configured ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
                     >
-                       <div className="w-14 h-14 bg-white rounded-2xl shadow-sm flex items-center justify-center text-blue-500 group-hover:scale-110 transition-transform">
-                          <Cloud className="w-7 h-7" />
-                       </div>
-                       <div className="text-left">
-                          <p className="text-sm font-black text-slate-800">WhatsApp Cloud API</p>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase">Oficial da Meta</p>
-                       </div>
-                    </button>
-                    <button 
-                      onClick={() => { setSelectedType('QR'); setAddStep('PROVIDER'); }}
-                      className="p-6 bg-slate-50 rounded-[2rem] border border-slate-100 hover:border-emerald-200 hover:bg-emerald-50 transition-all flex items-center gap-5 group"
-                    >
-                       <div className="w-14 h-14 bg-white rounded-2xl shadow-sm flex items-center justify-center text-emerald-500 group-hover:scale-110 transition-transform">
-                          <Smartphone className="w-7 h-7" />
-                       </div>
-                       <div className="text-left">
-                          <p className="text-sm font-black text-slate-800">WhatsApp QR Code</p>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase">Provider Externo</p>
-                       </div>
-                    </button>
-                    <button 
-                      onClick={() => { setSelectedType('INSTA'); setAddStep('CONFIG'); }}
-                      className="p-6 bg-slate-50 rounded-[2rem] border border-slate-100 hover:border-purple-200 hover:bg-purple-50 transition-all flex items-center gap-5 group"
-                    >
-                       <div className="w-14 h-14 bg-white rounded-2xl shadow-sm flex items-center justify-center text-purple-500 group-hover:scale-110 transition-transform">
-                          <Instagram className="w-7 h-7" />
-                       </div>
-                       <div className="text-left">
-                          <p className="text-sm font-black text-slate-800">Instagram</p>
-                          <p className="text-[10px] font-bold text-amber-500 uppercase">Exige Token Meta</p>
-                       </div>
-                    </button>
-                    <button 
-                      onClick={() => { setSelectedType('FB'); setAddStep('CONFIG'); }}
-                      className="p-6 bg-slate-50 rounded-[2rem] border border-slate-100 hover:border-blue-400 hover:bg-blue-50 transition-all flex items-center gap-5 group"
-                    >
-                       <div className="w-14 h-14 bg-white rounded-2xl shadow-sm flex items-center justify-center text-blue-600 group-hover:scale-110 transition-transform">
-                          <Facebook className="w-7 h-7" />
-                       </div>
-                       <div className="text-left">
-                          <p className="text-sm font-black text-slate-800">Messenger</p>
-                          <p className="text-[10px] font-bold text-amber-500 uppercase">Exige Token Meta</p>
-                       </div>
-                    </button>
-                  </div>
-                )}
-
-                {addStep === 'PROVIDER' && (
-                  <div className="space-y-4">
-                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest px-2 mb-4">Selecione o provedor de conexão:</p>
-                    {selectedType === 'META' ? (
-                      <div className="grid grid-cols-1 gap-3">
-                         <button 
-                          disabled={!configStatus?.meta}
-                          onClick={() => { setSelectedProvider('CLOUD'); setAddStep('CONFIG'); }}
-                          className={`p-6 bg-white border border-slate-100 rounded-3xl flex items-center justify-between hover:border-blue-200 hover:shadow-lg transition-all ${!configStatus?.meta ? 'opacity-50 cursor-not-allowed grayscale' : ''}`}
-                         >
-                            <div className="text-left">
-                              <span className="font-black text-slate-700 block text-sm">Cloud Meta (Oficial)</span>
-                              {!configStatus?.meta && <span className="text-[10px] text-red-500 font-bold uppercase">Credenciais Meta não configuradas no servidor.</span>}
-                            </div>
-                            <ChevronRight className={`w-5 h-5 text-slate-300 ${!configStatus?.meta ? 'hidden' : ''}`} />
-                         </button>
+                      <div className="flex items-center gap-6">
+                        <div className="w-16 h-16 bg-white rounded-3xl shadow-sm flex items-center justify-center text-emerald-500 group-hover:scale-110 transition-transform">
+                          <Smartphone className="w-8 h-8" />
+                        </div>
+                        <div className="text-left">
+                          <h4 className="text-lg font-black text-slate-800">WhatsApp via Z-API</h4>
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Conexão por QR Code</p>
+                        </div>
                       </div>
-                    ) : (
-                      <div className="grid grid-cols-1 gap-3">
-                         <button 
-                          disabled={!configStatus?.zapi}
-                          onClick={() => { setSelectedProvider('ZAPI'); setAddStep('CONFIG'); }}
-                          className={`p-6 bg-white border border-slate-100 rounded-3xl flex items-center justify-between hover:border-emerald-200 hover:shadow-lg transition-all ${!configStatus?.zapi ? 'opacity-50 cursor-not-allowed grayscale' : ''}`}
-                         >
-                            <div className="text-left">
-                              <span className="font-black text-slate-700 block text-sm">Z-API</span>
-                              {!configStatus?.zapi && <span className="text-[10px] text-red-500 font-bold uppercase">Z-API não configurada no servidor.</span>}
-                              {configStatus?.zapi && <span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[8px] font-black uppercase">Recomendado</span>}
-                            </div>
-                            <ChevronRight className={`w-5 h-5 text-slate-300 ${!configStatus?.zapi ? 'hidden' : ''}`} />
-                         </button>
-                         <button 
-                          disabled={!configStatus?.evolution}
-                          onClick={() => { setSelectedProvider('EVOLUTION'); setAddStep('CONFIG'); }}
-                          className={`p-6 bg-white border border-slate-100 rounded-3xl flex items-center justify-between hover:border-emerald-200 hover:shadow-lg transition-all ${!configStatus?.evolution ? 'opacity-50 cursor-not-allowed grayscale' : ''}`}
-                         >
-                            <div className="text-left">
-                              <span className="font-black text-slate-700 block text-sm">Evolution API</span>
-                              {!configStatus?.evolution && <span className="text-[10px] text-red-500 font-bold uppercase">Evolution não configurada no servidor.</span>}
-                            </div>
-                            <ChevronRight className={`w-5 h-5 text-slate-300 ${!configStatus?.evolution ? 'hidden' : ''}`} />
-                         </button>
+                      <ChevronRight className="w-6 h-6 text-slate-300" />
+                    </button>
+
+                    {!configStatus?.configured && (
+                      <div className="p-6 bg-red-50 border border-red-100 rounded-3xl flex items-start gap-4">
+                        <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-xs font-black text-red-600 uppercase tracking-tight">Z-API não configurada</p>
+                          <p className="text-[10px] text-red-500 font-medium mt-1">
+                            Cadastre as variáveis de ambiente no servidor para ativar a integração: 
+                            <span className="font-bold block mt-1">{configStatus?.missing.join(', ')}</span>
+                          </p>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -507,27 +407,9 @@ export default function ChannelsSettingsPage() {
                          </div>
                       </div>
 
-                      {selectedType === 'META' && (
-                        <div className="p-6 bg-blue-50 rounded-[2rem] border border-blue-100 space-y-4">
-                           <div className="flex items-center gap-3 text-blue-600 font-black text-[10px] uppercase tracking-widest mb-2">
-                              <Info className="w-4 h-4" /> Credenciais Meta Cloud
-                           </div>
-                           <div className="grid grid-cols-2 gap-4">
-                             <input type="text" placeholder="Phone Number ID" className="bg-white px-4 py-3 rounded-2xl text-xs outline-none" value={formData.phoneId} onChange={(e) => setFormData({...formData, phoneId: e.target.value})} />
-                             <input type="text" placeholder="Business Account ID" className="bg-white px-4 py-3 rounded-2xl text-xs outline-none" value={formData.businessId} onChange={(e) => setFormData({...formData, businessId: e.target.value})} />
-                             <input type="text" placeholder="Verify Token" className="bg-white px-4 py-3 rounded-2xl text-xs outline-none col-span-2" value={formData.verifyToken} onChange={(e) => setFormData({...formData, verifyToken: e.target.value})} />
-                           </div>
-                           <p className="text-[8px] text-blue-400 font-bold uppercase mt-2">O Token de Acesso (Permanente) será lido automaticamente do servidor.</p>
-                        </div>
-                      )}
-
                       <div className="flex items-center justify-end gap-4 mt-8">
-                         <button type="button" onClick={() => setAddStep('PROVIDER')} className="px-6 py-3 text-xs font-black text-slate-400 uppercase tracking-widest">Retornar</button>
-                         {selectedType === 'META' ? (
-                           <button onClick={handleMetaSave} className="px-10 py-4 bg-blue-600 text-white rounded-[1.5rem] font-black text-xs uppercase tracking-widest shadow-xl shadow-blue-100">Configurar Meta</button>
-                         ) : (
-                           <button onClick={handleStartQR} className="px-10 py-4 bg-emerald-600 text-white rounded-[1.5rem] font-black text-xs uppercase tracking-widest shadow-xl shadow-emerald-100">Próximo Passo</button>
-                         )}
+                         <button type="button" onClick={() => setAddStep('LIST')} className="px-6 py-3 text-xs font-black text-slate-400 uppercase tracking-widest">Retornar</button>
+                         <button onClick={handleStartQR} className="px-10 py-4 bg-emerald-600 text-white rounded-[1.5rem] font-black text-xs uppercase tracking-widest shadow-xl shadow-emerald-100">Próximo Passo</button>
                       </div>
                    </form>
                 )}

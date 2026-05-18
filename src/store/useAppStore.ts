@@ -12,7 +12,8 @@ import {
   Customer, 
   Conversation, 
   Message,
-  InternalMessage
+  InternalMessage,
+  Campaign
 } from '../types';
 import { 
   MOCK_USERS, 
@@ -20,7 +21,8 @@ import {
   MOCK_WHATSAPP_ACCOUNTS, 
   MOCK_CUSTOMERS, 
   MOCK_CONVERSATIONS, 
-  MOCK_MESSAGES
+  MOCK_MESSAGES,
+  MOCK_CAMPAIGNS
 } from '../data/mockData';
 import {
   profilesService,
@@ -58,6 +60,7 @@ interface AppState {
   customers: Customer[];
   conversations: Conversation[];
   messages: Message[];
+  campaigns: Campaign[];
   
   // Internal Chat
   internalMessages: InternalMessage[];
@@ -102,6 +105,11 @@ interface AppState {
   updateConversation: (id: string, updates: Partial<Conversation>) => Promise<void>;
   addConversation: (conversation: Partial<Conversation>) => Promise<void>;
   
+  // Campaigns
+  addCampaign: (campaign: Campaign) => Promise<void>;
+  updateCampaign: (campaign: Campaign) => Promise<void>;
+  deleteCampaign: (id: string) => Promise<void>;
+
   // Internal Chat Actions
   addInternalMessage: (message: InternalMessage) => void;
   
@@ -135,6 +143,7 @@ export const useAppStore = create<AppState>()(
       customers: MOCK_CUSTOMERS,
       conversations: MOCK_CONVERSATIONS,
       messages: MOCK_MESSAGES,
+      campaigns: MOCK_CAMPAIGNS,
       internalMessages: [],
       
       isLoading: false,
@@ -389,6 +398,19 @@ export const useAppStore = create<AppState>()(
           }));
           toast.warning('Conexão instável, salvo localmente');
         }
+      },
+
+      // Campaign Actions
+      addCampaign: async (campaign) => {
+        set((state) => ({ campaigns: [campaign, ...state.campaigns] }));
+      },
+      updateCampaign: async (campaign) => {
+        set((state) => ({
+          campaigns: state.campaigns.map(c => c.id === campaign.id ? campaign : c)
+        }));
+      },
+      deleteCampaign: async (id) => {
+        set((state) => ({ campaigns: state.campaigns.filter(c => c.id !== id) }));
       },
 
       resetState: () => set({

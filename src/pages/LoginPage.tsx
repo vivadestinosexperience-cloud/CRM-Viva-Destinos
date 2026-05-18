@@ -10,8 +10,8 @@ import { toast } from 'sonner';
 import Logo from '../components/Logo';
 
 export default function LoginPage({ onLogin }: { onLogin: () => void }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState('admin@viva.com');
+  const [password, setPassword] = useState('123456');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

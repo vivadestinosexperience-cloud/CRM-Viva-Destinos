@@ -266,27 +266,15 @@ export default function OmnichannelPage() {
 
     // Real send through backend
     try {
-      let endpoint = '';
-      let body: any = {};
+      // Viva Experience uses ONLY Z-API
+      const endpoint = '/api/zapi/send-text';
+      const body = { phone: activeCustomer?.phone, message: content };
 
-      if (currentAccount.provider === 'ZAPI') {
-        endpoint = '/api/channels/zapi/send-text';
-        body = { phone: activeCustomer?.phone, message: content };
-      } else if (currentAccount.provider === 'EVOLUTION') {
-        endpoint = '/api/channels/evolution/send-text';
-        body = { number: activeCustomer?.phone, text: content }; // Evolution often uses 'text'
-      } else if (currentAccount.provider_type === 'meta_cloud') {
-        // We'll use a generic webhook or specific meta send if implemented
-        endpoint = '/api/webhooks/whatsapp'; 
-      }
-
-      if (endpoint) {
-        fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-      }
+      fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
     } catch (err) {
       console.error('Real send failed:', err);
     }

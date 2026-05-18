@@ -1,4 +1,4 @@
-import { User, Team, WhatsAppAccount, Customer, Conversation, Message, Quote, TravelPackage, Reservation } from '../types';
+import { User, Team, WhatsAppAccount, Customer, Conversation, Message, Quote, TravelPackage, Reservation, Campaign } from '../types';
 
 export const MOCK_USERS: User[] = [
   { id: 'u1', name: 'Gustavo Alves', email: 'gustavo@vivaexperience.com.br', role: 'ADMIN', online: true, active: true },
@@ -23,8 +23,8 @@ export const MOCK_WHATSAPP_ACCOUNTS: WhatsAppAccount[] = [
     status: 'ESTÁVEL', 
     quality_status: 'HIGH', 
     type: 'WHATSAPP',
-    provider: 'META_CLOUD',
-    provider_type: 'meta_cloud',
+    provider: 'ZAPI',
+    provider_type: 'zapi',
     last_sync_at: new Date().toISOString()
   },
   { 
@@ -34,13 +34,13 @@ export const MOCK_WHATSAPP_ACCOUNTS: WhatsAppAccount[] = [
     status: 'ESTÁVEL', 
     quality_status: 'MEDIUM', 
     type: 'WHATSAPP',
-    provider: 'META_CLOUD',
-    provider_type: 'meta_cloud',
+    provider: 'ZAPI',
+    provider_type: 'zapi',
     last_sync_at: new Date().toISOString()
   },
   { 
     id: 'wa3', 
-    name: 'WhatsApp Financeiro', 
+    name: 'WhatsApp Suporte', 
     phone_number: '+5564999990003', 
     status: 'DISCONNECTED', 
     quality_status: 'LOW', 
@@ -111,4 +111,32 @@ export const MOCK_PACKAGES: TravelPackage[] = [
 
 export const MOCK_RESERVATIONS: Reservation[] = [
   { id: 'r1', customerId: 'c4', destination: 'Orlando, EUA', travelDate: '2026-05-20', totalValue: 15400, paidValue: 15400, paymentStatus: 'TOTAL', status: 'CONFIRMED' },
+];
+
+export const MOCK_CAMPAIGNS: Campaign[] = [
+  {
+    id: 'cp1',
+    name: 'Promoção Porto de Galinhas',
+    whatsapp_account_id: 'wa1',
+    content: 'Olá {name}, temos uma oferta imperdível para Porto de Galinhas! Confira nossos resorts.',
+    status: 'COMPLETED',
+    recipients_count: 50,
+    sent_count: 50,
+    failed_count: 0,
+    read_count: 35,
+    created_at: '2026-05-15T10:00:00Z',
+    completed_at: '2026-05-15T10:15:00Z'
+  },
+  {
+    id: 'cp2',
+    name: 'Aviso de Inverno Gramado',
+    whatsapp_account_id: 'wa2',
+    content: 'Oi {name}, o inverno chegou em Gramado! Veja nossos pacotes exclusivos.',
+    status: 'PAUSED',
+    recipients_count: 120,
+    sent_count: 45,
+    failed_count: 2,
+    read_count: 20,
+    created_at: '2026-05-17T09:00:00Z',
+  }
 ];

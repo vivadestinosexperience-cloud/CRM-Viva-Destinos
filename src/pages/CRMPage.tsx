@@ -27,7 +27,7 @@ import { useAppStore } from '../store/useAppStore';
 import { Customer } from '../types';
 
 export default function CRMPage() {
-  const { customers, addCustomer, deleteCustomer, isSaving } = useAppStore();
+  const { customers, addCustomer, updateCustomer, deleteCustomer, isSaving } = useAppStore();
   const [showNewContactModal, setShowNewContactModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
@@ -40,7 +40,7 @@ export default function CRMPage() {
     phone: '',
     email: '',
     city: '',
-    origin: 'Instagram',
+    origin: 'WhatsApp',
     temperature: 'WARM'
   });
 
@@ -65,7 +65,7 @@ export default function CRMPage() {
         phone: '',
         email: '',
         city: '',
-        origin: 'Instagram',
+        origin: 'WhatsApp',
         temperature: 'WARM'
       });
       toast.success('Cliente cadastrado com sucesso!');
@@ -80,6 +80,15 @@ export default function CRMPage() {
       toast.success('Cliente removido');
     }
     setActiveMenuId(null);
+  };
+
+  const handleToggleOptOut = async () => {
+    if (!selectedCustomer) return;
+    await updateCustomer({
+      ...selectedCustomer,
+      opt_out: !selectedCustomer.opt_out
+    });
+    toast.success(`Preferência de marketing atualizada: ${!selectedCustomer.opt_out ? 'Opt-out (Desativado)' : 'Opt-in (Ativado)'}`);
   };
 
   return (
@@ -178,7 +187,7 @@ export default function CRMPage() {
                   </td>
                   <td className="px-8 py-5">
                     <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-0.5 rounded border border-slate-100 uppercase">
-                      {customer.origin || 'Instagram'}
+                      {customer.origin || 'WhatsApp'}
                     </span>
                   </td>
                   <td className="px-8 py-5 text-right relative px-10">
@@ -320,11 +329,11 @@ export default function CRMPage() {
                           value={formData.origin}
                           onChange={(e) => setFormData({...formData, origin: e.target.value})}
                         >
-                          <option value="Instagram">Instagram</option>
-                          <option value="Facebook">Facebook</option>
+                          <option value="WhatsApp">WhatsApp</option>
                           <option value="Google">Google Ads</option>
                           <option value="Site">Site Viva</option>
                           <option value="Indicação">Indicação</option>
+                          <option value="Outros">Outros</option>
                         </select>
                      </div>
                   </div>
@@ -384,6 +393,28 @@ export default function CRMPage() {
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">E-mail</p>
                     <p className="text-sm font-bold text-slate-700 truncate">{selectedCustomer.email || 'Não informado'}</p>
                   </div>
+
+                  <div className={`p-5 rounded-2xl border transition-all ${selectedCustomer.opt_out ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-emerald-50 border-emerald-100 text-emerald-700'}`}>
+                    <div className="flex items-center justify-between mb-2">
+                       <p className="text-[10px] font-black uppercase tracking-widest">WhatsApp Marketing</p>
+                       <div className={`w-2 h-2 rounded-full ${selectedCustomer.opt_out ? 'bg-rose-500' : 'bg-emerald-500 animate-pulse'}`} />
+                    </div>
+                    <p className="text-[10px] font-bold mb-4 opacity-70">
+                      {selectedCustomer.opt_out 
+                        ? 'O cliente solicitou exclusão de listas de transmissão e campanhas.' 
+                        : 'O cliente está apto a receber novidades e ofertas via WhatsApp.'}
+                    </p>
+                    <button 
+                      onClick={handleToggleOptOut}
+                      className={`w-full py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                        selectedCustomer.opt_out 
+                        ? 'bg-rose-600 text-white shadow-lg shadow-rose-100' 
+                        : 'bg-emerald-600 text-white shadow-lg shadow-emerald-100'
+                      }`}
+                    >
+                      {selectedCustomer.opt_out ? 'Ativar Opt-in' : 'Ativar Opt-out'}
+                    </button>
+                  </div>
                 </div>
               </div>
               
@@ -399,7 +430,7 @@ export default function CRMPage() {
                          selectedCustomer.temperature === 'COLD' ? 'Baixa Prioridade' : 'Morno'}
                       </span>
                       <span className="px-4 py-1.5 bg-blue-50 text-blue-600 rounded-full text-[10px] font-black uppercase tracking-[0.2em]">
-                        {selectedCustomer.origin || 'Instagram'}
+                        {selectedCustomer.origin || 'WhatsApp'}
                       </span>
                   </div>
                   <button onClick={() => setSelectedCustomerId(null)} className="p-2 hover:bg-slate-100 rounded-xl transition-all">
