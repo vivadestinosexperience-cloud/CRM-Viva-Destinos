@@ -332,27 +332,16 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
           <div className="flex items-center gap-3">
              <button 
               onClick={async () => {
-                const res = await fetch('/api/webhooks/zapi/received', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    phone: '5564999999999',
-                    senderName: 'Cliente Teste',
-                    text: { message: 'Mensagem de teste recebida pelo webhook' },
-                    messageId: `test-${Date.now()}`,
-                    type: 'text',
-                    isTest: true
-                  })
-                });
-                if (res.ok) {
-                  toast.success("Evento de teste enviado! Verifique a aba 'Novos' em Atendimentos.");
-                } else {
-                  toast.error("Falha ao enviar evento de teste.");
-                }
+                await safeAction(async () => {
+                  const res = await fetch('/api/zapi/test-received-webhook', { method: 'POST' });
+                  const data = await res.json();
+                  if (!res.ok) throw data;
+                  toast.success(data.message || "Simulação de recebimento enviada com sucesso!");
+                }, { label: 'Falha ao testar recebimento' });
               }}
               className="flex items-center gap-2 px-6 py-4 bg-slate-50 text-slate-600 rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-100 transition-all border border-slate-200"
             >
-              Testar Webhook
+              Testar Recebimento
             </button>
             <button 
               onClick={async () => {
@@ -379,12 +368,12 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                   <input 
                     type="text" 
                     readOnly 
-                    value={`https://crm-viva-destinos-experience.onrender.com/api/webhooks/zapi/received`}
+                    value={`${window.location.origin}/api/webhooks/zapi/received`}
                     className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono text-slate-600 outline-none"
                   />
                   <button 
                     onClick={() => {
-                      navigator.clipboard.writeText(`https://crm-viva-destinos-experience.onrender.com/api/webhooks/zapi/received`);
+                      navigator.clipboard.writeText(`${window.location.origin}/api/webhooks/zapi/received`);
                       toast.success("URL copiada!");
                     }}
                     className="p-3 bg-white border border-slate-200 rounded-xl text-slate-400 hover:text-blue-600 hover:border-blue-200 transition-all"

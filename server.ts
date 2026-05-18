@@ -158,6 +158,14 @@ function normalizeZapiStatus(raw: any) {
   return "DISCONNECTED";
 }
 
+function getErrorMessage(error: any): string {
+  if (!error) return "Erro desconhecido.";
+  if (typeof error === "string") return error;
+  if (error.message) return String(error.message);
+  if (error.error) return String(error.error);
+  return "Erro inesperado no servidor.";
+}
+
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
@@ -375,44 +383,47 @@ async function startServer() {
     return res.status(result.status).json(result.data);
   });
 
-  app.post("/api/webhooks/zapi", async (req, res) => {
-    console.log("Z-API webhook recebido (generic):", JSON.stringify(req.body, null, 2));
-    return res.status(200).json({ ok: true });
-  });
-
   app.post("/api/webhooks/zapi/received", async (req, res) => {
     const payload = req.body;
-    console.log("Z-API Webhook Received Payload:", JSON.stringify(payload, null, 2));
-
-    // Respond quickly to Z-API
+    
+    // Respond quickly to Z-API to avoid retries
     res.status(200).json({ ok: true });
 
     try {
-      const { phone, senderName, text, messageId, fromMe, type } = payload;
+      const msg = normalizeZapiIncomingMessage(payload);
       
-      // We mainly care about incoming messages (fromMe === false)
-      // and text messages for this MVP
-      if (fromMe === true && !payload.isTest) return; 
+      console.log(`[ZAPI WEBHOOK] Received: ${msg.phone} - ${msg.type} - ID: ${msg.messageId}`);
 
-      const normalizedPhone = normalizePhone(phone);
-      if (!normalizedPhone) return;
+      // Ignore our own messages sent from the phone (unless for tests)
+      if (msg.fromMe && !payload.isTest) return;
+      if (!msg.phone) return;
 
-      const messageContent = text?.message || payload.caption || `[Mensagem tipo ${type}]`;
-      
-      // 1. Upsert Customer
-      let { data: customer, error: customerError } = await supabase
+      // 1. Check for Duplicate Message
+      const { data: existingMsg } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('external_message_id', msg.messageId)
+        .maybeSingle();
+
+      if (existingMsg) {
+        console.log(`[ZAPI WEBHOOK] Message ${msg.messageId} already exists. Skipping.`);
+        return;
+      }
+
+      // 2. Find or Create Customer
+      let { data: customer } = await supabase
         .from('customers')
         .select('*')
-        .eq('phone', normalizedPhone)
-        .single();
+        .eq('phone', msg.phone)
+        .maybeSingle();
 
       if (!customer) {
         const { data: newCustomer, error: createError } = await supabase
           .from('customers')
           .insert({
-            name: senderName || normalizedPhone,
-            phone: normalizedPhone,
-            origin: 'WhatsApp'
+            name: msg.name,
+            phone: msg.phone,
+            origin: 'WhatsApp Z-API'
           })
           .select()
           .single();
@@ -421,17 +432,21 @@ async function startServer() {
         customer = newCustomer;
       }
 
-      // 2. Find or Create Conversation
-      let { data: conversation, error: convError } = await supabase
+      // 3. Find or Create Open Conversation
+      // We look for NEW, OPEN or IN_PROGRESS
+      let { data: conversation } = await supabase
         .from('conversations')
         .select('*')
         .eq('customer_id', customer.id)
-        .neq('status', 'RESOLVED')
+        .in('status', ['NEW', 'OPEN', 'IN_PROGRESS'])
         .order('updated_at', { ascending: false })
         .limit(1)
-        .single();
+        .maybeSingle();
+
+      const messageContent = msg.text || `[Mensagem tipo ${msg.type}]`;
 
       if (!conversation) {
+        // Create new conversation
         const { data: newConv, error: createConvError } = await supabase
           .from('conversations')
           .insert({
@@ -461,28 +476,29 @@ async function startServer() {
         if (updateConvError) throw updateConvError;
       }
 
-      // 3. Insert Message
+      // 4. Insert Message
       const { error: msgError } = await supabase
         .from('messages')
         .insert({
           conversation_id: conversation.id,
           sender_type: 'customer',
           content: messageContent,
-          message_type: type || 'text',
-          external_message_id: messageId,
+          message_type: msg.type,
+          external_message_id: msg.messageId,
+          media_url: msg.mediaUrl,
           created_at: new Date().toISOString()
         });
 
       if (msgError) throw msgError;
 
-      console.log(`[Webhook success] Message processed for ${normalizedPhone}`);
+      console.log(`[Webhook Success] Ticket processed for ${msg.phone}. Conversation ID: ${conversation.id}`);
     } catch (err) {
       console.error("[Webhook Error]:", err);
     }
   });
 
   app.post("/api/zapi/register-webhook-received", async (req, res) => {
-    const appUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL;
+    const appUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "https://crm-viva-destinos-experience.onrender.com";
 
     if (!appUrl || appUrl.includes("localhost")) {
       return res.status(400).json({ 
@@ -492,6 +508,8 @@ async function startServer() {
 
     const webhookUrl = `${appUrl.replace(/\/$/, "")}/api/webhooks/zapi/received`;
     
+    console.log(`[ZAPI] Registering webhook: ${webhookUrl}`);
+
     const result = await callZapi("/update-webhook-received", {
       method: "PUT",
       body: JSON.stringify({ value: webhookUrl })
@@ -504,9 +522,104 @@ async function startServer() {
     return res.json({ 
       success: true, 
       message: "Webhook registrado com sucesso.",
-      url: webhookUrl 
+      url: webhookUrl,
+      zapiResponse: result.data
     });
   });
+
+  app.post("/api/zapi/test-received-webhook", async (req, res) => {
+    const testPayload = {
+      phone: "5564999999999",
+      senderName: "Cliente Teste Viva",
+      text: {
+        message: "Mensagem de teste recebida pelo webhook " + new Date().toLocaleTimeString()
+      },
+      messageId: "test-zapi-" + Date.now(),
+      type: "text",
+      isTest: true,
+      fromMe: false
+    };
+
+    try {
+      // Simulate calling the webhook route internally
+      const appUrl = process.env.APP_URL || `http://localhost:${PORT}`;
+      const resWebhook = await fetch(`${appUrl}/api/webhooks/zapi/received`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(testPayload)
+      });
+
+      if (resWebhook.ok) {
+        return res.json({ success: true, message: "Teste disparado com sucesso. Verifique Atendimentos > Novos." });
+      } else {
+        throw new Error("Falha ao disparar webhook interno");
+      }
+    } catch (err) {
+      return res.status(500).json({ error: getErrorMessage(err) });
+    }
+  });
+
+  // --- Helpers for Normalization ---
+  function normalizeZapiIncomingMessage(payload: any) {
+    const rawPhone =
+      payload?.phone ||
+      payload?.from ||
+      payload?.senderPhone ||
+      payload?.participantPhone ||
+      payload?.chatId ||
+      payload?.message?.phone ||
+      payload?.key?.remoteJid ||
+      "";
+
+    const phone = normalizePhone(rawPhone);
+
+    const name =
+      payload?.senderName ||
+      payload?.pushName ||
+      payload?.contactName ||
+      payload?.name ||
+      "Cliente";
+
+    const messageId =
+      payload?.messageId ||
+      payload?.id ||
+      payload?.message?.id ||
+      `zapi-${Date.now()}`;
+
+    const text =
+      payload?.text?.message ||
+      payload?.text ||
+      payload?.message?.text ||
+      payload?.message ||
+      payload?.body ||
+      payload?.content ||
+      "";
+
+    const type =
+      payload?.type ||
+      payload?.messageType ||
+      payload?.mediaType ||
+      "text";
+
+    const mediaUrl =
+      payload?.image?.imageUrl ||
+      payload?.video?.videoUrl ||
+      payload?.audio?.audioUrl ||
+      payload?.document?.documentUrl ||
+      payload?.mediaUrl ||
+      "";
+
+    return {
+      phone,
+      name,
+      messageId,
+      text: typeof text === "string" ? text : "",
+      type: (type as string || "text").toLowerCase(),
+      mediaUrl,
+      fromMe: payload.fromMe === true,
+      raw: payload
+    };
+  }
 
   // --- AI Routes ---
   app.post("/api/ai/summarize", async (req, res) => {
