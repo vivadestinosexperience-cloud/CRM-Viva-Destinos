@@ -88,12 +88,13 @@ export interface WhatsAppAccount {
   updated_at?: string;
 }
 
-export type ConversationStatus = 'NEW' | 'PENDING' | 'OPEN' | 'WAITING_CLIENT' | 'WAITING_AGENT' | 'RESOLVED' | 'EXPIRED' | 'TRANSFERRED';
+export type ConversationStatus = 'NEW' | 'PENDING' | 'OPEN' | 'WAITING_CLIENT' | 'WAITING_AGENT' | 'RESOLVED' | 'EXPIRED' | 'TRANSFERRED' | 'CLOSED';
 
 export interface Customer {
   id: string;
   name: string;
   phone: string;
+  phone_normalized?: string;
   email?: string;
   city?: string;
   origin?: string;
@@ -114,7 +115,7 @@ export interface Message {
   sender_name?: string;
   from_phone?: string;
   to_phone?: string;
-  message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'template';
+  message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'template' | 'internal_note';
   content: string;
   media_url?: string;
   status: 'sent' | 'delivered' | 'read' | 'failed' | 'deleted';
@@ -198,6 +199,7 @@ export interface InternalNote {
 export interface Conversation {
   id: string;
   customer_id: string;
+  customer_phone_normalized?: string;
   whatsapp_account_id?: string;
   status: ConversationStatus;
   assigned_user_id?: string;
@@ -205,6 +207,7 @@ export interface Conversation {
   last_message?: string;
   last_message_at?: string;
   unread_count?: number;
+  source?: string;
   created_at?: string;
   updated_at?: string;
 

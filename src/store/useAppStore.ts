@@ -259,9 +259,25 @@ export const useAppStore = create<AppState>()(
             const { eventType, new: newRecord, old: oldRecord } = payload;
             
             if (eventType === 'INSERT') {
-              set(state => ({
-                conversations: [newRecord as Conversation, ...state.conversations]
-              }));
+              set(state => {
+                const conv = newRecord as Conversation;
+                // Avoid duplicate phone_normalized if available
+                const exists = state.conversations.some(c => 
+                  c.id === conv.id || 
+                  (conv.customer_phone_normalized && c.customer_phone_normalized === conv.customer_phone_normalized)
+                );
+                if (exists) {
+                   return {
+                     conversations: state.conversations.map(c => 
+                        (c.id === conv.id || (conv.customer_phone_normalized && c.customer_phone_normalized === conv.customer_phone_normalized))
+                        ? { ...c, ...conv } : c
+                     )
+                   };
+                }
+                return {
+                  conversations: [conv, ...state.conversations]
+                };
+              });
               toast.info(`Nova conversa!`);
             } else if (eventType === 'UPDATE') {
               set(state => ({
@@ -285,7 +301,24 @@ export const useAppStore = create<AppState>()(
             // Add to state if not already there
             set(state => {
               if (state.messages.some(m => m.id === newMsg.id)) return state;
-              return { messages: [...state.messages, newMsg] };
+              
+              // Find conversation to update its unread count and last message if it's from customer
+              const updatedConversations = state.conversations.map(c => {
+                if (c.id === newMsg.conversation_id) {
+                  return {
+                    ...c,
+                    last_message: newMsg.content,
+                    last_message_at: newMsg.created_at || new Date().toISOString(),
+                    unread_count: newMsg.sender_type === 'customer' ? (c.unread_count || 0) + 1 : c.unread_count
+                  };
+                }
+                return c;
+              });
+
+              return { 
+                messages: [...state.messages, newMsg],
+                conversations: updatedConversations
+              };
             });
 
             if (newMsg.sender_type === 'customer') {
@@ -661,11 +694,23 @@ export const useAppStore = create<AppState>()(
         set({ isSaving: true });
         try {
           const newNote = await noteService.create(note);
+          
+          // Also create an internal message in the conversation thread
+          await messageService.create({
+            conversation_id: note.conversation_id!,
+            content: note.content!,
+            sender_type: 'system',
+            sender_name: get().currentUser?.name || 'Sistema',
+            message_type: 'internal_note' as any,
+            is_internal: true as any,
+            status: 'sent'
+          });
+
           set((state) => ({ 
             internalNotes: [...state.internalNotes, newNote],
             isSaving: false 
           }));
-          toast.success('Anotação salva com sucesso');
+          toast.success('Anotação salva e adicionada à conversa');
         } catch (err) {
           const localNote = { 
             id: `temp-${Date.now()}`, 

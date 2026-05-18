@@ -138,8 +138,18 @@ async function callZapi(pathname: string, options: RequestInit = {}) {
   }
 }
 
-function normalizePhone(phone: string) {
-  return String(phone || "").replace(/\D/g, "");
+function normalizePhone(input: any) {
+  let phone = String(input || "").replace(/\D/g, "");
+
+  if (!phone) return "";
+
+  // If phone has 10 or 11 digits and doesn't start with 55, prefix with 55
+  if ((phone.length === 10 || phone.length === 11) && !phone.startsWith("55")) {
+    phone = `55${phone}`;
+  }
+
+  // Remove WhatsApp suffix if present (e.g. @c.us)
+  return phone;
 }
 
 function normalizeZapiStatus(raw: any) {
@@ -398,6 +408,8 @@ async function startServer() {
       if (msg.fromMe && !payload.isTest) return;
       if (!msg.phone) return;
 
+      const phoneNormalized = msg.phone;
+
       // 1. Check for Duplicate Message
       const { data: existingMsg } = await supabase
         .from('messages')
@@ -410,11 +422,41 @@ async function startServer() {
         return;
       }
 
-      // 2. Find or Create Customer
+      // --- CAMPAIGN TRACKING ---
+      let campaignId = null;
+      try {
+        // Find if this customer is part of an active campaign
+        const { data: recipient } = await supabase
+          .from('campaign_recipients')
+          .select('campaign_id, id')
+          .eq('phone', phoneNormalized)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        
+        if (recipient) {
+          campaignId = recipient.campaign_id;
+          // Mark as replied
+          await supabase
+            .from('campaign_recipients')
+            .update({ 
+               replied_at: new Date().toISOString(),
+               status: 'REPLIED'
+            })
+            .eq('id', recipient.id);
+          
+          console.log(`[CAMPAIGN] Customer ${phoneNormalized} replied to campaign ${campaignId}`);
+        }
+      } catch (campErr) {
+        console.error("[CAMPAIGN ERROR] Failed to track campaign reply:", campErr);
+      }
+      // --- END CAMPAIGN TRACKING ---
+
+      // 2. Find or Create Customer by phone_normalized
       let { data: customer } = await supabase
         .from('customers')
         .select('*')
-        .eq('phone', msg.phone)
+        .or(`phone_normalized.eq.${phoneNormalized},phone.eq.${phoneNormalized}`)
         .maybeSingle();
 
       if (!customer) {
@@ -422,7 +464,8 @@ async function startServer() {
           .from('customers')
           .insert({
             name: msg.name,
-            phone: msg.phone,
+            phone: phoneNormalized,
+            phone_normalized: phoneNormalized,
             origin: 'WhatsApp Z-API'
           })
           .select()
@@ -430,18 +473,30 @@ async function startServer() {
         
         if (createError) throw createError;
         customer = newCustomer;
+      } else if (!customer.phone_normalized) {
+        // Update legacy customer with normalized phone
+        await supabase
+          .from('customers')
+          .update({ phone_normalized: phoneNormalized })
+          .eq('id', customer.id);
       }
 
-      // 3. Find or Create Open Conversation
-      // We look for NEW, OPEN or IN_PROGRESS
+      // 3. Find or Create UNIFIED Conversation for this phone
       let { data: conversation } = await supabase
         .from('conversations')
         .select('*')
-        .eq('customer_id', customer.id)
-        .in('status', ['NEW', 'OPEN', 'IN_PROGRESS'])
-        .order('updated_at', { ascending: false })
-        .limit(1)
+        .eq('customer_phone_normalized', phoneNormalized)
         .maybeSingle();
+
+      // Fallback for legacy conversations that don't have customer_phone_normalized yet
+      if (!conversation) {
+        let { data: legacyConv } = await supabase
+          .from('conversations')
+          .select('*')
+          .eq('customer_id', customer.id)
+          .maybeSingle();
+        conversation = legacyConv;
+      }
 
       const messageContent = msg.text || `[Mensagem tipo ${msg.type}]`;
 
@@ -451,10 +506,13 @@ async function startServer() {
           .from('conversations')
           .insert({
             customer_id: customer.id,
+            customer_phone_normalized: phoneNormalized,
+            campaign_id: campaignId,
             status: 'NEW',
             unread_count: 1,
             last_message: messageContent,
-            last_message_at: new Date().toISOString()
+            last_message_at: new Date().toISOString(),
+            source: 'WhatsApp Z-API'
           })
           .select()
           .single();
@@ -462,36 +520,49 @@ async function startServer() {
         if (createConvError) throw createConvError;
         conversation = newConv;
       } else {
-        // Update existing conversation
+        // Update existing conversation (unify)
+        const updates: any = {
+          last_message: messageContent,
+          last_message_at: new Date().toISOString(),
+          unread_count: (conversation.unread_count || 0) + 1,
+          updated_at: new Date().toISOString(),
+          customer_phone_normalized: phoneNormalized, // Ensure it's set
+          campaign_id: campaignId || conversation.campaign_id
+        };
+
+        // If conversation was resolved/closed, reopen it
+        if (conversation.status === 'RESOLVED' || conversation.status === 'CLOSED') {
+          updates.status = 'NEW';
+        }
+
         const { error: updateConvError } = await supabase
           .from('conversations')
-          .update({
-            last_message: messageContent,
-            last_message_at: new Date().toISOString(),
-            unread_count: (conversation.unread_count || 0) + 1,
-            updated_at: new Date().toISOString()
-          })
+          .update(updates)
           .eq('id', conversation.id);
         
         if (updateConvError) throw updateConvError;
       }
 
-      // 4. Insert Message
+      // 4. Insert Message linking to the unified conversation
       const { error: msgError } = await supabase
         .from('messages')
         .insert({
           conversation_id: conversation.id,
+          customer_phone_normalized: phoneNormalized,
           sender_type: 'customer',
+          sender_name: msg.name,
+          from_phone: msg.phone,
           content: messageContent,
           message_type: msg.type,
           external_message_id: msg.messageId,
           media_url: msg.mediaUrl,
+          status: 'received',
           created_at: new Date().toISOString()
         });
 
       if (msgError) throw msgError;
 
-      console.log(`[Webhook Success] Ticket processed for ${msg.phone}. Conversation ID: ${conversation.id}`);
+      console.log(`[Webhook Success] Unified thread updated for ${phoneNormalized}. Conv ID: ${conversation.id}`);
     } catch (err) {
       console.error("[Webhook Error]:", err);
     }

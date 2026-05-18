@@ -317,39 +317,83 @@ export default function OmnichannelPage() {
     e.preventDefault();
     
     await safeAction(async () => {
-      let targetCustomerId = newChatData.customerId;
+      let targetPhone = newChatData.newPhone;
+      let targetName = newChatData.newName;
 
-      if (!targetCustomerId) {
-        if (!newChatData.newName || !newChatData.newPhone) {
-          toast.error('Preencha nome e telefone do novo cliente');
-          return;
+      if (newChatData.customerId) {
+        const cust = customers.find(c => c.id === newChatData.customerId);
+        if (cust) {
+          targetPhone = cust.phone;
+          targetName = cust.name;
         }
-        const newCustId = `c${Date.now()}`;
-        await addCustomer({
-          id: newCustId,
-          name: newChatData.newName,
-          phone: newChatData.newPhone,
-          active: true,
-          online: false,
-          email: '',
-        } as any);
-        targetCustomerId = newCustId;
+      }
+
+      if (!targetPhone) {
+        toast.error('Informe o telefone para iniciar a conversa');
+        return;
+      }
+
+      const phoneNormalized = String(targetPhone).replace(/\D/g, "");
+      // Re-apply our rule: if 10/11 and no 55, add 55
+      let finalNormalized = phoneNormalized;
+      if ((finalNormalized.length === 10 || finalNormalized.length === 11) && !finalNormalized.startsWith("55")) {
+        finalNormalized = `55${finalNormalized}`;
+      }
+
+      // Check if conversation already exists for this normalized phone
+      const existingConv = conversations.find(c => c.customer_phone_normalized === finalNormalized);
+
+      if (existingConv) {
+        setActiveConversationId(existingConv.id);
+        setShowNewChatModal(false);
+        toast.success('Conversa existente localizada para este telefone.');
+        
+        // If it was resolved, optionally reopen it? 
+        // User said: "If a conversation already exists, open it."
+        if (existingConv.status === 'RESOLVED' || existingConv.status === 'CLOSED') {
+          await updateConversation(existingConv.id, { status: 'OPEN' });
+        }
+        return;
+      }
+
+      // If not exists, proceed with creation (but we should findOrCreate customer first)
+      let targetCustomerId = newChatData.customerId;
+      if (!targetCustomerId) {
+        const existingCustomer = customers.find(c => c.phone_normalized === finalNormalized || c.phone === finalNormalized);
+        if (existingCustomer) {
+          targetCustomerId = existingCustomer.id;
+        } else {
+          const newCustId = `c${Date.now()}`;
+          await addCustomer({
+            id: newCustId,
+            name: targetName || 'Cliente',
+            phone: targetPhone,
+            phone_normalized: finalNormalized,
+            origin: 'Manual'
+          } as any);
+          targetCustomerId = newCustId;
+        }
       }
 
       const selectedAccount = whatsAppAccounts.find(a => a.id === newChatData.accountId) || whatsAppAccounts[0];
       const selectedTeam = teams.find(t => t.id === newChatData.teamId) || teams[0];
 
+      const newId = `conv-${Date.now()}`;
       const newConv: Partial<Conversation> = {
+        id: newId,
         customer_id: targetCustomerId,
+        customer_phone_normalized: finalNormalized,
         whatsapp_account_id: selectedAccount?.id || '',
         queue_id: selectedTeam?.id || '',
         status: 'OPEN',
         last_message: 'Atendimento manual iniciado',
         unread_count: 0,
+        source: 'Manual',
         created_at: new Date().toISOString()
       };
 
       await addConversation(newConv);
+      setActiveConversationId(newId);
       setShowNewChatModal(false);
       toast.success('Atendimento iniciado com sucesso!');
     }, { label: 'Erro ao criar conversa' });
@@ -940,11 +984,29 @@ export default function OmnichannelPage() {
             <div className="flex-1 overflow-y-auto p-6 space-y-6 relative">
               {activeChatMessages.map((msg: Message) => {
                 const isMine = msg.sender_type === 'agent' || msg.sender_type === 'system';
+                const isInternal = (msg as any).is_internal || msg.message_type === 'internal_note';
                 const content = msg.content;
                 const timestamp = msg.created_at;
                 const status = msg.status;
                 const type = msg.message_type;
                 
+                if (isInternal) {
+                  return (
+                    <div key={msg.id} className="flex justify-center my-4">
+                      <div className="bg-amber-50 border border-amber-100 rounded-2xl px-6 py-3 max-w-[80%] shadow-sm">
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <Info className="w-3.5 h-3.5 text-amber-500" />
+                          <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Anotação Interna</span>
+                          <span className="text-[9px] text-amber-400 font-bold ml-auto">{msg.sender_name || 'Sistema'} • {timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                        </div>
+                        <p className="text-xs text-amber-800 leading-relaxed font-medium">
+                          {content}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                }
+
                 return (
                   <div key={msg.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[70%] lg:max-w-[60%] flex gap-3 ${isMine ? 'flex-row-reverse' : ''}`}>
