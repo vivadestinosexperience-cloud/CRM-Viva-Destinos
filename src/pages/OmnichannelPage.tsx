@@ -344,23 +344,28 @@ export default function OmnichannelPage() {
     }, { label: 'Erro ao enviar áudio' });
     setIsSendingMedia(false);
   };
-  const filteredConversations = conversations.filter(conv => {
-    // Filter by status/owner
-    if (conversationFilter === 'meus') {
-      if (conv.status === 'RESOLVED') return false;
-      if (conv.assigned_user_id && conv.assigned_user_id !== currentUser?.id) return false;
-    } else if (conversationFilter === 'novos') {
-      const hasNoAgent = !conv.assigned_user_id;
-      const isNew = ["NEW", "OPEN", "PENDING"].includes(String(conv.status).toUpperCase());
-      const hasUnread = Number(conv.unread_count || 0) > 0;
-      
-      if (!(hasNoAgent && (isNew || hasUnread))) return false;
-    } else if (conversationFilter === 'concluidos') {
-      if (conv.status !== 'RESOLVED') return false;
-    } else if (conversationFilter === 'todos') {
-      // Show all except maybe very old ones if needed
-    }
+  function getConversationTab(conv: Conversation, currentUserId: string | undefined): 'novos' | 'meus' | 'concluidos' | 'outros' {
+    const status = String(conv.status || "").toUpperCase();
+    const assignedUserId = conv.assigned_user_id;
 
+    const isClosed = ["CLOSED", "RESOLVED", "CONCLUIDO", "CONCLUÍDO"].includes(status);
+    if (isClosed) return "concluidos";
+
+    if (assignedUserId && assignedUserId === currentUserId) return "meus";
+
+    if (!assignedUserId) return "novos";
+
+    return "outros";
+  }
+
+  const filteredConversations = conversations.filter(conv => {
+    const tab = getConversationTab(conv, currentUser?.id);
+    
+    if (conversationFilter === 'novos') return tab === 'novos';
+    if (conversationFilter === 'meus') return tab === 'meus';
+    if (conversationFilter === 'concluidos') return tab === 'concluidos';
+    // 'todos' shows everything except maybe deleted
+    
     // Filter by search
     if (searchTerm) {
       const customer = conv.customer || customers.find(c => c.id === conv.customer_id);
@@ -449,10 +454,15 @@ export default function OmnichannelPage() {
         setShowNewChatModal(false);
         toast.success('Conversa existente localizada para este telefone.');
         
-        // If it was resolved, optionally reopen it? 
-        // User said: "If a conversation already exists, open it."
-        if (existingConv.status === 'RESOLVED' || existingConv.status === 'CLOSED') {
-          await updateConversation(existingConv.id, { status: 'OPEN' });
+        // Reopen and assign if needed
+        const currentStatus = String(existingConv.status || "").toUpperCase();
+        const isClosed = ["RESOLVED", "CLOSED", "CONCLUIDO", "CONCLUÍDO"].includes(currentStatus);
+        
+        if (isClosed || existingConv.assigned_user_id !== currentUser?.id) {
+          await updateConversation(existingConv.id, { 
+            status: 'OPEN',
+            assigned_user_id: currentUser?.id
+          });
         }
         return;
       }
@@ -486,6 +496,7 @@ export default function OmnichannelPage() {
         customer_phone_normalized: finalNormalized,
         whatsapp_account_id: selectedAccount?.id || '',
         queue_id: selectedTeam?.id || '',
+        assigned_user_id: currentUser?.id,
         status: 'OPEN',
         last_message: 'Atendimento manual iniciado',
         unread_count: 0,
@@ -615,10 +626,19 @@ export default function OmnichannelPage() {
       
       await addMessage(newMsg);
       
-      await updateConversation(activeConversationId, {
+      const convUpdates: any = {
         last_message: originalContent,
         last_message_at: new Date().toISOString()
-      });
+      };
+
+      // Auto assign if not already assigned
+      if (!activeConversation.assigned_user_id) {
+        convUpdates.assigned_user_id = currentUser?.id;
+        convUpdates.status = 'OPEN';
+        toast.info('Atendimento atribuído a você automaticamente.');
+      }
+
+      await updateConversation(activeConversationId, convUpdates);
 
       try {
         const res = await fetch('/api/zapi/send-text', {
@@ -1018,12 +1038,29 @@ export default function OmnichannelPage() {
                     Reabrir
                   </button>
                 ) : (
-                  <button 
-                    onClick={() => setShowCloseModal(true)}
-                    className="p-2.5 bg-blue-50 text-blue-600 rounded-xl transition-all font-bold text-sm px-4"
-                  >
-                    Concluir
-                  </button>
+                  <>
+                    {!activeConversation.assigned_user_id && (
+                      <button 
+                        onClick={async () => {
+                          await updateConversation(activeConversation.id, { 
+                            assigned_user_id: currentUser?.id,
+                            status: 'OPEN',
+                            updated_at: new Date().toISOString()
+                          });
+                          toast.success('Atendimento iniciado e atribuído a você.');
+                        }}
+                        className="p-2.5 bg-blue-600 text-white rounded-xl transition-all font-bold text-sm px-4 shadow-lg shadow-blue-100 hover:scale-105"
+                      >
+                        Assumir Atendimento
+                      </button>
+                    )}
+                    <button 
+                      onClick={() => setShowCloseModal(true)}
+                      className="p-2.5 bg-blue-50 text-blue-600 rounded-xl transition-all font-bold text-sm px-4"
+                    >
+                      Concluir
+                    </button>
+                  </>
                 )}
                 <div className="relative">
                   <button 

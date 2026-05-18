@@ -122,12 +122,25 @@ export default function ChannelsSettingsPage() {
   const qrIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const statusIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  const safeReadJson = async (response: Response) => {
+    const text = await response.text();
+    if (!text) {
+      return { success: false, error: "Resposta vazia do servidor.", status: response.status };
+    }
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      return { success: false, error: "Resposta inválida do servidor.", raw: text, status: response.status };
+    }
+  };
+
   const refreshWebhookLogs = async () => {
     setIsLoadingLogs(true);
     await safeAction(async () => {
       const res = await fetch('/api/zapi/webhook-logs');
-      const data = await res.json();
-      setWebhookLogs(Array.isArray(data) ? data : []);
+      const data = await safeReadJson(res);
+      if (!res.ok) throw data;
+      setWebhookLogs(Array.isArray(data.logs) ? data.logs : []);
       setShowLogsModal(true);
     }, { label: 'Erro ao buscar logs de webhook' });
     setIsLoadingLogs(false);
@@ -140,9 +153,12 @@ export default function ChannelsSettingsPage() {
         fetch('/api/webhook-info')
       ]);
       
-      const statusData = await statusRes.json();
-      const infoData = await infoRes.json();
+      const statusData = await safeReadJson(statusRes);
+      const infoData = await safeReadJson(infoRes);
       
+      if (!statusRes.ok) throw statusData;
+      if (!infoRes.ok) throw infoData;
+
       setConfigStatus(statusData);
       setWebhookUrl(infoData.webhookUrl || `${window.location.origin}/api/webhooks/zapi/received`);
       
@@ -178,7 +194,7 @@ export default function ChannelsSettingsPage() {
       setQrError(null);
 
       const response = await fetch("/api/zapi/config-status");
-      const data = await response.json();
+      const data = await safeReadJson(response);
 
       setConfigStatus(data);
 
@@ -203,7 +219,7 @@ export default function ChannelsSettingsPage() {
       setQrCodeData(null);
 
       const statusResponse = await fetch("/api/zapi/config-status");
-      const statusData = await statusResponse.json();
+      const statusData = await safeReadJson(statusResponse);
 
       if (!statusResponse.ok || !statusData.configured) {
         const missing = Array.isArray(statusData.missing) ? statusData.missing.filter(Boolean) : [];
@@ -212,7 +228,7 @@ export default function ChannelsSettingsPage() {
       }
 
       const response = await fetch("/api/zapi/qrcode");
-      const data = await response.json();
+      const data = await safeReadJson(response);
 
       console.log("QR Code response:", data);
 
@@ -243,7 +259,7 @@ export default function ChannelsSettingsPage() {
     statusIntervalRef.current = setInterval(async () => {
       await safeAction(async () => {
         const res = await fetch(`/api/zapi/status`);
-        const data = await res.json();
+        const data = await safeReadJson(res);
         
         if (data.status === 'CONNECTED') {
           handleConnectComplete(data.phone);
@@ -278,7 +294,7 @@ export default function ChannelsSettingsPage() {
   const checkExistingAccountStatus = async (account: WhatsAppAccount) => {
     await safeAction(async () => {
       const res = await fetch(`/api/zapi/status`);
-      const data = await res.json();
+      const data = await safeReadJson(res);
       
       if (data.status === 'CONNECTED') {
         updateWhatsAppAccount({ ...account, status: 'ESTÁVEL' });
@@ -357,8 +373,8 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
               onClick={async () => {
                 await safeAction(async () => {
                   const res = await fetch('/api/zapi/test-received-webhook', { method: 'POST' });
-                  const data = await res.json();
-                  if (!res.ok) throw data;
+                  const data = await safeReadJson(res);
+                  if (!res.ok || !data.success) throw data;
                   toast.success(data.message || "Simulação de recebimento enviada com sucesso!");
                 }, { label: 'Falha ao testar recebimento' });
               }}
@@ -370,8 +386,8 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
               onClick={async () => {
                 await safeAction(async () => {
                   const res = await fetch('/api/zapi/register-webhook-received', { method: 'POST' });
-                  const data = await res.json();
-                  if (!res.ok) throw data;
+                  const data = await safeReadJson(res);
+                  if (!res.ok || !data.success) throw data;
                   toast.success("Webhook principal registrado na Z-API com sucesso!");
                 }, { label: 'Falha ao registrar webhook' });
               }}
@@ -426,8 +442,8 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                   onClick={async () => {
                     await safeAction(async () => {
                       const res = await fetch('/api/zapi/test-received-webhook', { method: 'POST' });
-                      const data = await res.json();
-                      if (!res.ok) throw data;
+                      const data = await safeReadJson(res);
+                      if (!res.ok || !data.success) throw data;
                       toast.success("Webhook de teste disparado!");
                     }, { label: 'Erro no teste de webhook' });
                   }}

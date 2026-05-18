@@ -256,34 +256,24 @@ export const useAppStore = create<AppState>()(
         const conversationChannel = supabase
           .channel('conversations-realtime')
           .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations' }, (payload) => {
-            console.log('Conversation change received:', payload);
             const { eventType, new: newRecord, old: oldRecord } = payload;
             
-            if (eventType === 'INSERT') {
+            if (eventType === 'INSERT' || eventType === 'UPDATE') {
               set(state => {
                 const conv = newRecord as Conversation;
-                // Avoid duplicate phone_normalized if available
-                const exists = state.conversations.some(c => 
+                const phoneMatchIndex = state.conversations.findIndex(c => 
                   c.id === conv.id || 
                   (conv.customer_phone_normalized && c.customer_phone_normalized === conv.customer_phone_normalized)
                 );
-                if (exists) {
-                   return {
-                     conversations: state.conversations.map(c => 
-                        (c.id === conv.id || (conv.customer_phone_normalized && c.customer_phone_normalized === conv.customer_phone_normalized))
-                        ? { ...c, ...conv } : c
-                     )
-                   };
+
+                if (phoneMatchIndex > -1) {
+                  const updatedConversations = [...state.conversations];
+                  updatedConversations[phoneMatchIndex] = { ...updatedConversations[phoneMatchIndex], ...conv };
+                  return { conversations: updatedConversations };
                 }
-                return {
-                  conversations: [conv, ...state.conversations]
-                };
+                return { conversations: [conv, ...state.conversations] };
               });
-              toast.info(`Nova conversa!`);
-            } else if (eventType === 'UPDATE') {
-              set(state => ({
-                conversations: state.conversations.map(c => c.id === newRecord.id ? { ...c, ...newRecord } : c)
-              }));
+              if (eventType === 'INSERT') toast.info(`Novo atendimento recebido`);
             } else if (eventType === 'DELETE') {
               set(state => ({
                 conversations: state.conversations.filter(c => c.id !== oldRecord.id)
