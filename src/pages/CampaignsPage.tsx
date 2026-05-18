@@ -73,7 +73,8 @@ export default function CampaignsPage() {
     whatsAppAccounts, 
     customers,
     currentUser,
-    teams
+    teams,
+    tags
   } = useAppStore();
   
   const [showAddModal, setShowAddModal] = useState(false);
@@ -663,7 +664,7 @@ export default function CampaignsPage() {
                                >
                                   <option value="">Selecione um canal...</option>
                                   {whatsAppAccounts.map(acc => (
-                                    <option key={acc.id} value={acc.id}>{acc.name} ({acc.phone})</option>
+                                    <option key={acc.id} value={acc.id}>{acc.name} ({acc.phone_number || acc.number})</option>
                                   ))}
                                </select>
                             </div>
@@ -733,7 +734,7 @@ export default function CampaignsPage() {
                                <div className="space-y-2">
                                   <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Filtrar por Etiquetas</label>
                                   <div className="flex flex-wrap gap-2 p-6 bg-slate-50 border border-slate-100 rounded-3xl min-h-[100px]">
-                                     {Array.from(new Set(tags)).map(tag => (
+                                     {tags.map(tag => (
                                         <button 
                                           key={tag.id}
                                           onClick={() => {

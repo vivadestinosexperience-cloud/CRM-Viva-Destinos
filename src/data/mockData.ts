@@ -117,6 +117,7 @@ export const MOCK_CAMPAIGNS: Campaign[] = [
   {
     id: 'cp1',
     name: 'Promoção Porto de Galinhas',
+    type: 'Promoção',
     whatsapp_account_id: 'wa1',
     content: 'Olá {name}, temos uma oferta imperdível para Porto de Galinhas! Confira nossos resorts.',
     status: 'COMPLETED',
@@ -124,12 +125,20 @@ export const MOCK_CAMPAIGNS: Campaign[] = [
     sent_count: 50,
     failed_count: 0,
     read_count: 35,
+    replied_count: 5,
+    opt_out_count: 0,
+    created_by: 'u1',
     created_at: '2026-05-15T10:00:00Z',
-    completed_at: '2026-05-15T10:15:00Z'
+    updated_at: '2026-05-15T10:15:00Z',
+    completed_at: '2026-05-15T10:15:00Z',
+    interval_seconds: 15,
+    batch_size: 10,
+    batch_interval_minutes: 5
   },
   {
     id: 'cp2',
     name: 'Aviso de Inverno Gramado',
+    type: 'Promoção',
     whatsapp_account_id: 'wa2',
     content: 'Oi {name}, o inverno chegou em Gramado! Veja nossos pacotes exclusivos.',
     status: 'PAUSED',
@@ -137,6 +146,13 @@ export const MOCK_CAMPAIGNS: Campaign[] = [
     sent_count: 45,
     failed_count: 2,
     read_count: 20,
+    replied_count: 2,
+    opt_out_count: 1,
+    created_by: 'u1',
     created_at: '2026-05-17T09:00:00Z',
+    updated_at: '2026-05-17T09:00:00Z',
+    interval_seconds: 20,
+    batch_size: 20,
+    batch_interval_minutes: 10
   }
 ];
