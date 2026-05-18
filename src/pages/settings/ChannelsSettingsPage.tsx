@@ -7,7 +7,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, Smartphone, Cloud, Trash2, RefreshCw, CheckCircle2, AlertCircle,
   MoreVertical, Key, Globe, Database, Briefcase, Instagram, Facebook, MessageSquare, Info,
-  ArrowLeft, ChevronRight, X, User as UserIcon, Smartphone as MobileIcon, Layers
+  ArrowLeft, ChevronRight, X, User as UserIcon, Smartphone as MobileIcon, Layers, Activity, History
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { QRCodeSVG } from 'qrcode.react';
@@ -115,9 +115,23 @@ export default function ChannelsSettingsPage() {
   const [qrError, setQrError] = useState<string | null>(null);
   const [configStatus, setConfigStatus] = useState<any | null>(null);
   const [webhookUrl, setWebhookUrl] = useState<string>('');
+  const [webhookLogs, setWebhookLogs] = useState<any[]>([]);
+  const [showLogsModal, setShowLogsModal] = useState(false);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
 
   const qrIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const statusIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const refreshWebhookLogs = async () => {
+    setIsLoadingLogs(true);
+    await safeAction(async () => {
+      const res = await fetch('/api/zapi/webhook-logs');
+      const data = await res.json();
+      setWebhookLogs(Array.isArray(data) ? data : []);
+      setShowLogsModal(true);
+    }, { label: 'Erro ao buscar logs de webhook' });
+    setIsLoadingLogs(false);
+  };
 
   const refreshConfigStatus = async () => {
     return safeAction(async () => {
@@ -406,6 +420,31 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                   </div>
                 );
               })}
+              
+              <div className="pt-4 flex flex-wrap gap-3">
+                <button 
+                  onClick={async () => {
+                    await safeAction(async () => {
+                      const res = await fetch('/api/zapi/test-received-webhook', { method: 'POST' });
+                      const data = await res.json();
+                      if (!res.ok) throw data;
+                      toast.success("Webhook de teste disparado!");
+                    }, { label: 'Erro no teste de webhook' });
+                  }}
+                  className="flex items-center gap-2 px-6 py-4 bg-blue-600 text-white rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 transition-all shadow-lg shadow-blue-100"
+                >
+                  <Activity className="w-4 h-4" />
+                  Testar Recebimento
+                </button>
+                <button 
+                  onClick={refreshWebhookLogs}
+                  disabled={isLoadingLogs}
+                  className="flex items-center gap-2 px-6 py-4 bg-slate-100 text-slate-600 rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-200 transition-all disabled:opacity-50"
+                >
+                  <History className="w-4 h-4" />
+                  {isLoadingLogs ? 'Buscando...' : 'Ver últimos webhooks'}
+                </button>
+              </div>
            </div>
 
            <div className="space-y-6">
@@ -436,6 +475,86 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
            </div>
         </div>
       </section>
+
+      {/* Webhook Logs Modal */}
+      {showLogsModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col overflow-hidden"
+          >
+            <div className="p-8 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Logs de Diagnóstico</h3>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Últimos 50 eventos recebidos da Z-API</p>
+              </div>
+              <button 
+                onClick={() => setShowLogsModal(false)}
+                className="w-10 h-10 bg-slate-50 text-slate-400 rounded-full flex items-center justify-center hover:bg-slate-100 hover:text-slate-600 transition-all"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4">
+              {webhookLogs.length === 0 ? (
+                <div className="h-64 flex flex-col items-center justify-center text-slate-400 space-y-4">
+                  <Activity className="w-12 h-12 opacity-20" />
+                  <p className="text-sm font-bold uppercase tracking-widest">Nenhum log encontrado</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {webhookLogs.map((log) => (
+                    <div key={log.id} className="p-4 bg-slate-50 rounded-2xl border border-slate-100 grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
+                      <div className="space-y-1">
+                        <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-tight ${
+                          log.event_type === 'received' ? 'bg-blue-100 text-blue-700' :
+                          log.event_type === 'connected' ? 'bg-emerald-100 text-emerald-700' :
+                          'bg-slate-200 text-slate-700'
+                        }`}>
+                          {log.event_type}
+                        </span>
+                        <p className="text-[10px] text-slate-400 font-medium">
+                          {new Date(log.created_at).toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="font-mono text-[10px] text-slate-600">
+                        {log.phone || '-'}
+                      </div>
+                      <div>
+                        {log.processed ? (
+                          <span className="flex items-center gap-1.5 text-emerald-600 text-[10px] font-black uppercase tracking-tight">
+                            <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-pulse" />
+                            Processado
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1.5 text-amber-600 text-[10px] font-black uppercase tracking-tight">
+                            <div className="w-1.5 h-1.5 bg-amber-600 rounded-full" />
+                            {log.error ? 'Erro' : 'Pendente'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-500 line-clamp-1 italic">
+                        {log.error || 'Nenhum erro registrado'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button 
+                onClick={() => setShowLogsModal(false)}
+                className="px-8 py-3 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-800 transition-all"
+              >
+                Fechar
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
 
       {/* Grid of Channels */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

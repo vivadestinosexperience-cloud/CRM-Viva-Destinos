@@ -205,6 +205,32 @@ async function startServer() {
     }
   });
 
+  async function saveWebhookLog(data: { event_type: string, payload: any, phone?: string, message_id?: string, processed?: boolean, error?: string }) {
+    try {
+      await supabase.from('zapi_webhook_logs').insert({
+        event_type: data.event_type,
+        payload: data.payload,
+        phone: data.phone || null,
+        message_id: data.message_id || null,
+        processed: data.processed || false,
+        error: data.error || null,
+        created_at: new Date().toISOString()
+      });
+    } catch (err) {
+      console.error("[LOGGING ERROR]: Failed to save webhook log to zapi_webhook_logs table.", err);
+      // Fallback to whatsapp_events if zapi_webhook_logs doesn't exist yet
+      try {
+        await supabase.from('whatsapp_events').insert({
+          event_type: data.event_type,
+          payload: data.payload,
+          description: `[FALLBACK LOG] ${data.event_type}: ${data.error || 'No error'}`
+        });
+      } catch (innerErr) {
+        console.error("[CRITICAL LOGGING ERROR]: Both logging tables failed.", innerErr);
+      }
+    }
+  }
+
   function getLastMessageText(msg: any) {
     if (msg.type === "image") return msg.text || "Imagem recebida";
     if (msg.type === "audio") return "Áudio recebido";
@@ -218,132 +244,132 @@ async function startServer() {
     const msg = normalizeZapiIncomingMessage(payload);
     
     if (!msg.phone) {
+      await saveWebhookLog({
+        event_type: 'received',
+        payload,
+        processed: false,
+        error: 'Telefone não identificado no payload'
+      });
       throw new Error("Telefone não identificado no payload do webhook.");
     }
 
     const phoneNormalized = msg.phone;
     console.log(`[PROCESS MESSAGE] Processing for ${phoneNormalized}. Type: ${msg.type}`);
 
-    // --- CAMPAIGN TRACKING ---
-    let campaignId = null;
     try {
-      const { data: recipient } = await supabase
-        .from('campaign_recipients')
-        .select('campaign_id, id')
-        .eq('phone', phoneNormalized)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      
-      if (recipient) {
-        campaignId = recipient.campaign_id;
-        await supabase
-          .from('campaign_recipients')
-          .update({ 
-             replied_at: new Date().toISOString(),
-             status: 'REPLIED'
-          })
-          .eq('id', recipient.id);
-      }
-    } catch (campErr) {
-      console.error("[CAMPAIGN ERROR] Failed to track campaign reply:", campErr);
-    }
-
-    // 1. Find or Create Customer
-    let { data: customer } = await supabase
-      .from('customers')
-      .select('*')
-      .eq('phone_normalized', phoneNormalized)
-      .maybeSingle();
-
-    if (!customer) {
-      const { data: newCustomer, error: createError } = await supabase
+      // 1. Find or Create Customer
+      let { data: customer } = await supabase
         .from('customers')
-        .insert({
-          name: msg.name || 'Cliente',
-          phone: phoneNormalized,
-          phone_normalized: phoneNormalized,
-          origin: msg.raw?.isTest ? 'Teste Interno' : 'WhatsApp Z-API'
-        })
-        .select()
-        .single();
-      
-      if (createError) throw createError;
-      customer = newCustomer;
-    }
+        .select('*')
+        .eq('phone_normalized', phoneNormalized)
+        .maybeSingle();
 
-    // 2. Find or Create UNIFIED Conversation
-    let { data: conversation } = await supabase
-      .from('conversations')
-      .select('*')
-      .eq('customer_phone_normalized', phoneNormalized)
-      .maybeSingle();
-
-    const messageContent = msg.text || (msg.type === 'text' ? '' : getLastMessageText(msg));
-
-    if (!conversation) {
-      const { data: newConv, error: createConvError } = await supabase
-        .from('conversations')
-        .insert({
-          customer_id: customer.id,
-          customer_phone_normalized: phoneNormalized,
-          campaign_id: campaignId,
-          status: 'NEW',
-          unread_count: 1,
-          last_message: messageContent || "Mensagem recebida",
-          last_message_at: new Date().toISOString(),
-          source: msg.raw?.isTest ? 'Teste Interno' : 'WhatsApp Z-API'
-        })
-        .select()
-        .single();
-      
-      if (createConvError) throw createConvError;
-      conversation = newConv;
-    } else {
-      const updates: any = {
-        last_message: messageContent || "Mensagem recebida",
-        last_message_at: new Date().toISOString(),
-        unread_count: (conversation.unread_count || 0) + 1,
-        updated_at: new Date().toISOString(),
-        customer_phone_normalized: phoneNormalized,
-        campaign_id: campaignId || conversation.campaign_id
-      };
-
-      if (conversation.status === 'RESOLVED' || conversation.status === 'CLOSED') {
-        updates.status = 'NEW';
+      if (!customer) {
+        const { data: newCustomer, error: createError } = await supabase
+          .from('customers')
+          .insert({
+            name: msg.name || 'Cliente',
+            phone: phoneNormalized,
+            phone_normalized: phoneNormalized,
+            origin: msg.raw?.isTest ? 'Teste Interno' : 'WhatsApp Z-API'
+          })
+          .select()
+          .single();
+        
+        if (createError) throw createError;
+        customer = newCustomer;
       }
 
-      const { error: updateConvError } = await supabase
+      // 2. Find or Create UNIFIED Conversation
+      let { data: conversation } = await supabase
         .from('conversations')
-        .update(updates)
-        .eq('id', conversation.id);
-      
-      if (updateConvError) throw updateConvError;
+        .select('*')
+        .eq('customer_phone_normalized', phoneNormalized)
+        .maybeSingle();
+
+      const messageContent = msg.text || (msg.type === 'text' ? '' : getLastMessageText(msg)) || "Mensagem recebida";
+
+      if (!conversation) {
+        const { data: newConv, error: createConvError } = await supabase
+          .from('conversations')
+          .insert({
+            customer_id: customer.id,
+            customer_phone_normalized: phoneNormalized,
+            status: 'NEW',
+            unread_count: 1,
+            last_message: messageContent,
+            last_message_at: new Date().toISOString(),
+            source: msg.raw?.isTest ? 'Teste Interno' : 'WhatsApp Z-API'
+          })
+          .select()
+          .single();
+        
+        if (createConvError) throw createConvError;
+        conversation = newConv;
+      } else {
+        const updates: any = {
+          last_message: messageContent,
+          last_message_at: new Date().toISOString(),
+          unread_count: (conversation.unread_count || 0) + 1,
+          updated_at: new Date().toISOString(),
+          customer_phone_normalized: phoneNormalized
+        };
+
+        if (!conversation.assigned_user_id || conversation.status === 'RESOLVED' || conversation.status === 'CLOSED') {
+          updates.status = 'NEW';
+        }
+
+        const { error: updateConvError } = await supabase
+          .from('conversations')
+          .update(updates)
+          .eq('id', conversation.id);
+        
+        if (updateConvError) throw updateConvError;
+      }
+
+      // 3. Insert Message
+      const { data: message, error: msgError } = await supabase
+        .from('messages')
+        .insert({
+          conversation_id: conversation.id,
+          customer_phone_normalized: phoneNormalized,
+          sender_type: 'customer',
+          sender_name: msg.name,
+          from_phone: phoneNormalized,
+          content: messageContent,
+          message_type: msg.type,
+          external_message_id: msg.messageId,
+          media_url: msg.mediaUrl,
+          status: 'received',
+          raw_payload: msg.raw,
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (msgError) throw msgError;
+
+      // Success log
+      await saveWebhookLog({
+        event_type: 'received',
+        payload,
+        phone: phoneNormalized,
+        message_id: msg.messageId,
+        processed: true
+      });
+
+      return { customer, conversation, message };
+    } catch (err) {
+      await saveWebhookLog({
+        event_type: 'received',
+        payload,
+        phone: phoneNormalized,
+        message_id: msg.messageId,
+        processed: false,
+        error: getErrorMessage(err)
+      });
+      throw err;
     }
-
-    // 3. Insert Message
-    const { data: message, error: msgError } = await supabase
-      .from('messages')
-      .insert({
-        conversation_id: conversation.id,
-        customer_phone_normalized: phoneNormalized,
-        sender_type: 'customer',
-        sender_name: msg.name,
-        from_phone: phoneNormalized,
-        content: messageContent || "Mensagem recebida",
-        message_type: msg.type,
-        external_message_id: msg.messageId,
-        media_url: msg.mediaUrl,
-        status: 'received',
-        raw_payload: msg.raw,
-        created_at: new Date().toISOString()
-      })
-      .select()
-      .single();
-
-    if (msgError) throw msgError;
-
-    return { customer, conversation, message };
   }
 
   // --- Webhook Helpers ---
@@ -367,6 +393,30 @@ async function startServer() {
       webhookUrl: getWebhookUrl(),
       appUrl: getPublicAppUrl()
     });
+  });
+
+  app.get("/api/zapi/webhook-logs", async (req, res) => {
+    try {
+      const { data, error } = await supabase
+        .from('zapi_webhook_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(50);
+      
+      if (error) {
+        // Try fallback if table doesn't exist
+        const { data: fallbackData } = await supabase
+          .from('whatsapp_events')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(50);
+        return res.json(fallbackData || []);
+      }
+      
+      return res.json(data);
+    } catch (err) {
+      return res.status(500).json({ error: getErrorMessage(err) });
+    }
   });
 
   // --- Z-API Routes ---

@@ -350,7 +350,11 @@ export default function OmnichannelPage() {
       if (conv.status === 'RESOLVED') return false;
       if (conv.assigned_user_id && conv.assigned_user_id !== currentUser?.id) return false;
     } else if (conversationFilter === 'novos') {
-      if (conv.status !== 'NEW' && conv.status !== 'PENDING') return false;
+      const hasNoAgent = !conv.assigned_user_id;
+      const isNew = ["NEW", "OPEN", "PENDING"].includes(String(conv.status).toUpperCase());
+      const hasUnread = Number(conv.unread_count || 0) > 0;
+      
+      if (!(hasNoAgent && (isNew || hasUnread))) return false;
     } else if (conversationFilter === 'concluidos') {
       if (conv.status !== 'RESOLVED') return false;
     } else if (conversationFilter === 'todos') {
