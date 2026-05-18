@@ -133,6 +133,17 @@ export interface Message {
   senderId?: string;
 }
 
+export interface InternalNote {
+  id: string;
+  conversation_id: string;
+  content: string;
+  pinned: boolean;
+  created_by: string;
+  created_by_name?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Conversation {
   id: string;
   customer_id: string;
@@ -145,6 +156,9 @@ export interface Conversation {
   unread_count?: number;
   created_at?: string;
   updated_at?: string;
+
+  // Internal Note
+  internal_note?: InternalNote;
 
   // Joins & UI compatibility
   customer?: Customer;

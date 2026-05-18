@@ -317,6 +317,119 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
         </div>
       </header>
 
+      {/* Webhook Configuration Section */}
+      <section className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden p-8 space-y-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center">
+              <Globe className="w-6 h-6" />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight">Webhook de Recebimento</h2>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Integração automática com Z-API</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+             <button 
+              onClick={async () => {
+                const res = await fetch('/api/webhooks/zapi/received', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    phone: '5564999999999',
+                    senderName: 'Cliente Teste',
+                    text: { message: 'Mensagem de teste recebida pelo webhook' },
+                    messageId: `test-${Date.now()}`,
+                    type: 'text',
+                    isTest: true
+                  })
+                });
+                if (res.ok) {
+                  toast.success("Evento de teste enviado! Verifique a aba 'Novos' em Atendimentos.");
+                } else {
+                  toast.error("Falha ao enviar evento de teste.");
+                }
+              }}
+              className="flex items-center gap-2 px-6 py-4 bg-slate-50 text-slate-600 rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-100 transition-all border border-slate-200"
+            >
+              Testar Webhook
+            </button>
+            <button 
+              onClick={async () => {
+                await safeAction(async () => {
+                  const res = await fetch('/api/zapi/register-webhook-received', { method: 'POST' });
+                  const data = await res.json();
+                  if (!res.ok) throw data;
+                  toast.success("Webhook registrado na Z-API com sucesso!");
+                }, { label: 'Falha ao registrar webhook' });
+              }}
+              className="flex items-center gap-2 px-6 py-4 bg-emerald-600 text-white rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              Registrar Webhook na Z-API
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4">
+           <div className="space-y-4">
+              <div className="p-6 bg-slate-50 rounded-3xl border border-slate-100">
+                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">URL do Webhook (Endpoint da Aplicação)</label>
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="text" 
+                    readOnly 
+                    value={`https://crm-viva-destinos-experience.onrender.com/api/webhooks/zapi/received`}
+                    className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono text-slate-600 outline-none"
+                  />
+                  <button 
+                    onClick={() => {
+                      navigator.clipboard.writeText(`https://crm-viva-destinos-experience.onrender.com/api/webhooks/zapi/received`);
+                      toast.success("URL copiada!");
+                    }}
+                    className="p-3 bg-white border border-slate-200 rounded-xl text-slate-400 hover:text-blue-600 hover:border-blue-200 transition-all"
+                  >
+                    <Layers className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-5 bg-amber-50 rounded-3xl border border-amber-100 flex items-start gap-4">
+                 <Info className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                 <div className="space-y-1">
+                    <p className="text-[10px] font-black text-amber-700 uppercase tracking-tight">Importante</p>
+                    <p className="text-[10px] text-amber-600 font-medium leading-relaxed">
+                      Ao registrar o webhook, a Z-API passará a enviar todas as mensagens recebidas para esta aplicação. 
+                      Certifique-se de que a instância do WhatsApp esteja conectada.
+                    </p>
+                 </div>
+              </div>
+           </div>
+
+           <div className="p-6 bg-slate-900 rounded-[2rem] text-white flex flex-col justify-center">
+              <h4 className="text-sm font-black uppercase tracking-tight mb-4 flex items-center gap-2">
+                <Cloud className="w-5 h-5 text-blue-400" />
+                Como funciona?
+              </h4>
+              <ul className="space-y-3">
+                {[
+                  "A Z-API recebe a mensagem do seu cliente.",
+                  "A Z-API dispara um POST para a URL configurada acima.",
+                  "Nossa aplicação processa o remetente e o conteúdo.",
+                  "O cliente é cadastrado e a conversa aparece em tempo real."
+                ].map((step, i) => (
+                  <li key={i} className="flex items-start gap-3">
+                    <span className="w-5 h-5 rounded-full bg-slate-800 text-[10px] font-black flex items-center justify-center shrink-0 border border-slate-700">
+                      {i + 1}
+                    </span>
+                    <span className="text-[11px] font-medium text-slate-300">{step}</span>
+                  </li>
+                ))}
+              </ul>
+           </div>
+        </div>
+      </section>
+
       {/* Grid of Channels */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {whatsAppAccounts.map((account) => {

@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -175,6 +176,17 @@ async function startServer() {
     });
   }
 
+  // --- Supabase Admin/Service Setup ---
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || "";
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "";
+  
+  const supabase = createClient(supabaseUrl, supabaseKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  });
+
   // --- Health ---
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
@@ -299,9 +311,201 @@ async function startServer() {
     return res.status(result.status).json(result.data);
   });
 
+  app.post("/api/zapi/send-image", async (req, res) => {
+    const phone = normalizePhone(req.body?.phone);
+    const image = req.body?.image; // URL or base64
+    const caption = String(req.body?.caption || "").trim();
+
+    if (!phone) return res.status(400).json({ error: "Telefone obrigatório." });
+    if (!image) return res.status(400).json({ error: "Imagem obrigatória." });
+
+    const result = await callZapi("/send-image", {
+      method: "POST",
+      body: JSON.stringify({ phone, image, caption }),
+    });
+
+    return res.status(result.status).json(result.data);
+  });
+
+  app.post("/api/zapi/send-video", async (req, res) => {
+    const phone = normalizePhone(req.body?.phone);
+    const video = req.body?.video; // URL or base64
+    const caption = String(req.body?.caption || "").trim();
+
+    if (!phone) return res.status(400).json({ error: "Telefone obrigatório." });
+    if (!video) return res.status(400).json({ error: "Vídeo obrigatório." });
+
+    const result = await callZapi("/send-video", {
+      method: "POST",
+      body: JSON.stringify({ phone, video, caption }),
+    });
+
+    return res.status(result.status).json(result.data);
+  });
+
+  app.post("/api/zapi/send-document", async (req, res) => {
+    const phone = normalizePhone(req.body?.phone);
+    const document = req.body?.document; // URL or base64
+    const extension = String(req.body?.extension || "").trim();
+    const fileName = String(req.body?.fileName || "documento").trim();
+
+    if (!phone) return res.status(400).json({ error: "Telefone obrigatório." });
+    if (!document) return res.status(400).json({ error: "Documento obrigatório." });
+
+    const result = await callZapi(`/send-document/${extension}`, {
+      method: "POST",
+      body: JSON.stringify({ phone, document, fileName }),
+    });
+
+    return res.status(result.status).json(result.data);
+  });
+
+  app.post("/api/zapi/send-audio", async (req, res) => {
+    const phone = normalizePhone(req.body?.phone);
+    const audio = req.body?.audio; // URL or base64
+
+    if (!phone) return res.status(400).json({ error: "Telefone obrigatório." });
+    if (!audio) return res.status(400).json({ error: "Áudio obrigatório." });
+
+    const result = await callZapi("/send-audio", {
+      method: "POST",
+      body: JSON.stringify({ phone, audio }),
+    });
+
+    return res.status(result.status).json(result.data);
+  });
+
   app.post("/api/webhooks/zapi", async (req, res) => {
-    console.log("Z-API webhook recebido:", JSON.stringify(req.body, null, 2));
+    console.log("Z-API webhook recebido (generic):", JSON.stringify(req.body, null, 2));
     return res.status(200).json({ ok: true });
+  });
+
+  app.post("/api/webhooks/zapi/received", async (req, res) => {
+    const payload = req.body;
+    console.log("Z-API Webhook Received Payload:", JSON.stringify(payload, null, 2));
+
+    // Respond quickly to Z-API
+    res.status(200).json({ ok: true });
+
+    try {
+      const { phone, senderName, text, messageId, fromMe, type } = payload;
+      
+      // We mainly care about incoming messages (fromMe === false)
+      // and text messages for this MVP
+      if (fromMe === true && !payload.isTest) return; 
+
+      const normalizedPhone = normalizePhone(phone);
+      if (!normalizedPhone) return;
+
+      const messageContent = text?.message || payload.caption || `[Mensagem tipo ${type}]`;
+      
+      // 1. Upsert Customer
+      let { data: customer, error: customerError } = await supabase
+        .from('customers')
+        .select('*')
+        .eq('phone', normalizedPhone)
+        .single();
+
+      if (!customer) {
+        const { data: newCustomer, error: createError } = await supabase
+          .from('customers')
+          .insert({
+            name: senderName || normalizedPhone,
+            phone: normalizedPhone,
+            origin: 'WhatsApp'
+          })
+          .select()
+          .single();
+        
+        if (createError) throw createError;
+        customer = newCustomer;
+      }
+
+      // 2. Find or Create Conversation
+      let { data: conversation, error: convError } = await supabase
+        .from('conversations')
+        .select('*')
+        .eq('customer_id', customer.id)
+        .neq('status', 'RESOLVED')
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (!conversation) {
+        const { data: newConv, error: createConvError } = await supabase
+          .from('conversations')
+          .insert({
+            customer_id: customer.id,
+            status: 'NEW',
+            unread_count: 1,
+            last_message: messageContent,
+            last_message_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+        
+        if (createConvError) throw createConvError;
+        conversation = newConv;
+      } else {
+        // Update existing conversation
+        const { error: updateConvError } = await supabase
+          .from('conversations')
+          .update({
+            last_message: messageContent,
+            last_message_at: new Date().toISOString(),
+            unread_count: (conversation.unread_count || 0) + 1,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', conversation.id);
+        
+        if (updateConvError) throw updateConvError;
+      }
+
+      // 3. Insert Message
+      const { error: msgError } = await supabase
+        .from('messages')
+        .insert({
+          conversation_id: conversation.id,
+          sender_type: 'customer',
+          content: messageContent,
+          message_type: type || 'text',
+          external_message_id: messageId,
+          created_at: new Date().toISOString()
+        });
+
+      if (msgError) throw msgError;
+
+      console.log(`[Webhook success] Message processed for ${normalizedPhone}`);
+    } catch (err) {
+      console.error("[Webhook Error]:", err);
+    }
+  });
+
+  app.post("/api/zapi/register-webhook-received", async (req, res) => {
+    const appUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL;
+
+    if (!appUrl || appUrl.includes("localhost")) {
+      return res.status(400).json({ 
+        error: "APP_URL não configurada corretamente. Cadastre a URL pública (Render) nas variáveis de ambiente." 
+      });
+    }
+
+    const webhookUrl = `${appUrl.replace(/\/$/, "")}/api/webhooks/zapi/received`;
+    
+    const result = await callZapi("/update-webhook-received", {
+      method: "PUT",
+      body: JSON.stringify({ value: webhookUrl })
+    });
+
+    if (!result.ok) {
+      return res.status(result.status).json(result.data);
+    }
+
+    return res.json({ 
+      success: true, 
+      message: "Webhook registrado com sucesso.",
+      url: webhookUrl 
+    });
   });
 
   // --- AI Routes ---

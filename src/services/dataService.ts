@@ -159,6 +159,37 @@ export const messageService = {
     const { data, error } = await supabase.from('messages').insert(message).select().single();
     if (error) handleError(error, 'messageService.create');
     return data;
+  },
+  async update(id: string, updates: any) {
+    const { data, error } = await supabase.from('messages').update(updates).eq('id', id).select().single();
+    if (error) handleError(error, 'messageService.update');
+    return data;
+  },
+  async remove(id: string) {
+    const { error } = await supabase.from('messages').delete().eq('id', id);
+    if (error) handleError(error, 'messageService.remove');
+  }
+};
+
+export const noteService = {
+  async listByConversation(conversationId: string) {
+    const { data, error } = await supabase.from('conversation_notes').select('*').eq('conversation_id', conversationId).order('created_at', { ascending: false });
+    if (error) handleError(error, 'noteService.listByConversation');
+    return data;
+  },
+  async create(note: any) {
+    const { data, error } = await supabase.from('conversation_notes').insert(note).select().single();
+    if (error) handleError(error, 'noteService.create');
+    return data;
+  },
+  async update(id: string, updates: any) {
+    const { data, error } = await supabase.from('conversation_notes').update(updates).eq('id', id).select().single();
+    if (error) handleError(error, 'noteService.update');
+    return data;
+  },
+  async remove(id: string) {
+    const { error } = await supabase.from('conversation_notes').delete().eq('id', id);
+    if (error) handleError(error, 'noteService.remove');
   }
 };
 

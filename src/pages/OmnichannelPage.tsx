@@ -22,9 +22,19 @@ import {
   Sparkles,
   RefreshCw,
   FileText,
-  Copy
+  Copy,
+  Image as ImageIcon,
+  Video as VideoIcon,
+  File as FileIcon,
+  X,
+  Mic,
+  Square,
+  RotateCcw,
+  AlertCircle,
+  Smile
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
 import { Conversation, Message, Customer, Team } from '../types';
 import { supabase } from '../integrations/supabase/client';
 import { useAppStore } from '../store/useAppStore';
@@ -39,6 +49,7 @@ export default function OmnichannelPage() {
     conversations, 
     messages, 
     addMessage, 
+    updateMessage,
     addConversation, 
     updateConversation,
     whatsAppAccounts,
@@ -46,12 +57,32 @@ export default function OmnichannelPage() {
     customers,
     users,
     currentUser,
-    addCustomer
+    addCustomer,
+    internalNotes,
+    addInternalNote,
+    updateInternalNote,
+    deleteInternalNote
   } = useAppStore();
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState('');
   const [showIAPanel, setShowIAPanel] = useState(false);
+  const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
+  const [showMediaPreview, setShowMediaPreview] = useState(false);
+  const [showNoteModal, setShowNoteModal] = useState(false);
+  const [noteContent, setNoteContent] = useState('');
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [mediaType, setMediaType] = useState<'image' | 'video' | 'document' | null>(null);
+  const [mediaCaption, setMediaCaption] = useState('');
+  const [mediaPreviewUrl, setMediaPreviewUrl] = useState<string | null>(null);
+  const [isSendingMedia, setIsSendingMedia] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [showAudioRecorder, setShowAudioRecorder] = useState(false);
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
@@ -64,6 +95,13 @@ export default function OmnichannelPage() {
   const [searchTerm, setSearchTerm] = useState('');
   
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
+  const emojiPickerRef = useRef<HTMLDivElement>(null);
+  const messageInputRef = useRef<HTMLTextAreaElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const timerRef = useRef<number | null>(null);
 
   const activeConversation = conversations.find(c => c.id === activeConversationId);
   const activeCustomer = activeConversation?.customer || customers.find(c => c.id === activeConversation?.customer_id);
@@ -71,6 +109,145 @@ export default function OmnichannelPage() {
   const currentAccount = whatsAppAccounts.find(a => a.id === activeConversation?.whatsapp_account_id);
 
   // Filtered Conversations
+  useEffect(() => {
+    if (isRecording) {
+      timerRef.current = window.setInterval(() => {
+        setRecordingTime(t => t + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [isRecording]);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(event.target as Node)) {
+        setShowEmojiPicker(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const handleEmojiClick = (emojiData: EmojiClickData) => {
+    const emoji = emojiData.emoji;
+    const input = messageInputRef.current;
+    
+    if (!input) {
+      setNewMessage(prev => prev + emoji);
+      return;
+    }
+
+    const start = input.selectionStart || 0;
+    const end = input.selectionEnd || 0;
+    const text = newMessage;
+    const before = text.substring(0, start);
+    const after = text.substring(end, text.length);
+
+    setNewMessage(before + emoji + after);
+    
+    // Reset focus and cursor position after state update
+    setTimeout(() => {
+      input.focus();
+      const newPos = start + emoji.length;
+      input.setSelectionRange(newPos, newPos);
+    }, 0);
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const getSupportedAudioMimeType = () => {
+    const types = ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+    return types.find(type => MediaRecorder.isTypeSupported(type)) || "";
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = getSupportedAudioMimeType();
+      const recorder = new MediaRecorder(stream, { mimeType });
+      
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: mimeType });
+        setAudioBlob(blob);
+        setAudioUrl(URL.createObjectURL(blob));
+      };
+
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+      setAudioUrl(null);
+      setAudioBlob(null);
+    } catch (err) {
+      console.error("Error accessing microphone:", err);
+      toast.error("Permissão de microfone negada ou não suportada.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      setIsRecording(false);
+    }
+  };
+
+  const handleSendAudio = async () => {
+    if (!audioBlob || !activeConversationId || !activeCustomer) return;
+    
+    // Max 16MB
+    if (audioBlob.size > 16 * 1024 * 1024) {
+      toast.error("Áudio muito grande (máximo 16MB)");
+      return;
+    }
+
+    setIsSendingMedia(true);
+    await safeAction(async () => {
+      const base64 = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = () => resolve(reader.result as string);
+      });
+
+      const res = await fetch('/api/zapi/send-audio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: activeCustomer.phone, audio: base64 })
+      });
+
+      if (!res.ok) throw await res.json();
+
+      const agentName = getAgentDisplayName(currentUser);
+      await addMessage({
+        id: `m${Date.now()}`,
+        conversation_id: activeConversationId,
+        sender_type: 'agent',
+        sender_name: agentName,
+        content: `Áudio enviado`,
+        message_type: 'audio',
+        status: 'sent',
+        media_url: audioUrl || '',
+        created_at: new Date().toISOString(),
+        metadata: { duration: recordingTime, agentName }
+      });
+
+      setShowAudioRecorder(false);
+      setAudioUrl(null);
+      setAudioBlob(null);
+      toast.success('Áudio enviado com sucesso!');
+    }, { label: 'Erro ao enviar áudio' });
+    setIsSendingMedia(false);
+  };
   const filteredConversations = conversations.filter(conv => {
     // Filter by status/owner
     if (conversationFilter === 'meus') {
@@ -270,9 +447,10 @@ export default function OmnichannelPage() {
       const formattedMessage = formatOutgoingWhatsAppMessage(originalContent, agentName);
       
       setNewMessage('');
+      const msgId = `m${Date.now()}`;
 
       const newMsg: Message = {
-        id: `m${Date.now()}`,
+        id: msgId,
         conversation_id: activeConversationId,
         sender_type: 'agent',
         sender_name: agentName,
@@ -283,7 +461,7 @@ export default function OmnichannelPage() {
         },
         created_at: new Date().toISOString(),
         message_type: 'text',
-        status: 'sent'
+        status: 'sending' as any
       };
       
       await addMessage(newMsg);
@@ -293,20 +471,20 @@ export default function OmnichannelPage() {
         last_message_at: new Date().toISOString()
       });
 
-      // Real send through backend
-      // Viva Experience uses ONLY Z-API
-      const endpoint = '/api/zapi/send-text';
-      const body = { phone: activeCustomer?.phone, message: formattedMessage };
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      
-      if (!res.ok) {
-        const data = await res.json();
-        throw data;
+      try {
+        const res = await fetch('/api/zapi/send-text', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone: activeCustomer?.phone, message: formattedMessage })
+        });
+        
+        if (!res.ok) throw await res.json();
+        
+        await updateMessage(msgId, { status: 'sent' });
+        toast.success('Mensagem enviada com sucesso');
+      } catch (err) {
+        await updateMessage(msgId, { status: 'failed' as any });
+        throw err;
       }
     }, { label: 'Erro ao enviar mensagem' });
   };
@@ -330,6 +508,184 @@ export default function OmnichannelPage() {
       toast.success('Atendimento reaberto');
     }, { label: 'Erro ao reabrir atendimento' });
   };
+  
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        const result = reader.result as string;
+        // Z-API expects base64 WITH or WITHOUT data prefix depending on implementation, 
+        // usually it accepts the full data URI.
+        resolve(result);
+      };
+      reader.onerror = error => reject(error);
+    });
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>, type: 'image' | 'video' | 'document') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Size limits
+    const limits = {
+      image: 5 * 1024 * 1024,   // 5MB
+      video: 25 * 1024 * 1024,  // 25MB
+      document: 20 * 1024 * 1024 // 20MB
+    };
+
+    if (file.size > (limits[type] || limits.document)) {
+      toast.error(`Arquivo muito grande para envio (máximo ${type === 'image' ? '5MB' : (type === 'video' ? '25MB' : '20MB')})`);
+      return;
+    }
+
+    setSelectedFile(file);
+    setMediaType(type);
+    setShowAttachmentMenu(false);
+    
+    if (type === 'image' || type === 'video') {
+      const url = URL.createObjectURL(file);
+      setMediaPreviewUrl(url);
+      setShowMediaPreview(true);
+    } else {
+      setMediaPreviewUrl(null);
+      setShowMediaPreview(true);
+    }
+  };
+
+  const handleSendMedia = async () => {
+    if (!selectedFile || !activeConversationId || !activeCustomer) return;
+
+    setIsSendingMedia(true);
+    const msgId = `m${Date.now()}`;
+    const agentName = getAgentDisplayName(currentUser);
+    const formattedCaption = mediaCaption ? formatOutgoingWhatsAppMessage(mediaCaption, agentName) : '';
+    
+    // Add to local history as sending
+    const newMsg: Message = {
+      id: msgId,
+      conversation_id: activeConversationId,
+      sender_type: 'agent',
+      sender_name: agentName,
+      content: mediaType === 'document' ? `${selectedFile.name}${mediaCaption ? `\n${mediaCaption}` : ''}` : (mediaCaption || `[${mediaType === 'image' ? 'Imagem' : 'Vídeo'}]`),
+      message_type: mediaType as any,
+      status: 'sending' as any,
+      media_url: mediaPreviewUrl || '',
+      created_at: new Date().toISOString(),
+      metadata: {
+        agentName,
+        sentContent: formattedCaption,
+        fileName: selectedFile.name,
+        fileSize: selectedFile.size
+      }
+    };
+
+    await addMessage(newMsg);
+    setShowMediaPreview(false);
+
+    await safeAction(async () => {
+      const base64 = await fileToBase64(selectedFile);
+      
+      let endpoint = '';
+      let body: any = { phone: activeCustomer.phone };
+
+      if (mediaType === 'image') {
+        endpoint = '/api/zapi/send-image';
+        body.image = base64;
+        body.caption = formattedCaption;
+      } else if (mediaType === 'video') {
+        endpoint = '/api/zapi/send-video';
+        body.video = base64;
+        body.caption = formattedCaption;
+      } else if (mediaType === 'document') {
+        endpoint = '/api/zapi/send-document';
+        body.document = base64;
+        body.fileName = selectedFile.name;
+        body.extension = selectedFile.name.split('.').pop() || '';
+        body.caption = formattedCaption;
+      }
+
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        if (!res.ok) throw await res.json();
+        
+        await updateMessage(msgId, { status: 'sent' });
+        toast.success(`${mediaType === 'image' ? 'Foto' : (mediaType === 'video' ? 'Vídeo' : 'Documento')} enviado com sucesso!`);
+      } catch (err) {
+        await updateMessage(msgId, { status: 'failed' as any });
+        throw err;
+      }
+    }, { label: 'Erro ao enviar mídia' });
+
+    // Reset state
+    setSelectedFile(null);
+    setMediaType(null);
+    setMediaCaption('');
+    setMediaPreviewUrl(null);
+    setIsSendingMedia(false);
+  };
+
+  const retryMessage = async (msg: Message) => {
+    if (!activeCustomer?.phone) return;
+
+    await safeAction(async () => {
+      await updateMessage(msg.id, { status: 'sending' as any });
+      
+      let endpoint = '';
+      let body: any = { phone: activeCustomer.phone };
+      const sentContent = msg.metadata?.sentContent || msg.content;
+
+      if (msg.message_type === 'text') {
+        endpoint = '/api/zapi/send-text';
+        body.message = sentContent;
+      } else if (msg.message_type === 'image') {
+        // We'd need the base64 or URL again. For now, text is easiest to retry.
+        // If we really want to retry media, we need to store them.
+        toast.error("Reenvio de mídia ainda não suportado. Tente enviar o arquivo novamente.");
+        await updateMessage(msg.id, { status: 'failed' as any });
+        return;
+      }
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      if (!res.ok) throw await res.json();
+      
+      await updateMessage(msg.id, { status: 'sent' });
+      toast.success('Mensagem reenviada com sucesso');
+    }, { label: 'Erro ao reenviar mensagem' });
+  };
+
+  const handleSaveNote = async () => {
+    if (!noteContent.trim() || !activeConversationId) return;
+
+    await safeAction(async () => {
+      if (editingNoteId) {
+        await updateInternalNote(editingNoteId, { content: noteContent });
+      } else {
+        await addInternalNote({
+          conversation_id: activeConversationId,
+          content: noteContent,
+          created_by: currentUser?.id,
+          created_by_name: getAgentDisplayName(currentUser),
+          pinned: true
+        });
+      }
+      setShowNoteModal(false);
+      setNoteContent('');
+      setEditingNoteId(null);
+    }, { label: 'Erro ao salvar anotação' });
+  };
+
+  const currentNote = internalNotes.find(n => n.conversation_id === activeConversationId);
 
   return (
     <div className="flex h-full w-full bg-white overflow-hidden">
@@ -404,7 +760,12 @@ export default function OmnichannelPage() {
             return (
               <button 
                 key={conv.id}
-                onClick={() => setActiveConversationId(conv.id)}
+                onClick={() => {
+                  setActiveConversationId(conv.id);
+                  if ((conv.unread_count || 0) > 0) {
+                    updateConversation(conv.id, { unread_count: 0 });
+                  }
+                }}
                 className={`w-full p-4 flex items-start gap-4 transition-all hover:bg-slate-50 text-left relative overflow-hidden ${isActive ? 'bg-blue-50/50' : ''}`}
               >
                 {isActive && <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-600"></div>}
@@ -592,14 +953,48 @@ export default function OmnichannelPage() {
                           {msg.sender_type === 'system' ? 'Sistema' : (isMine ? (msg.sender_name || 'Agente') : (activeCustomer?.name || 'Cliente'))}
                         </div>
                         <div className={`px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed transition-all ${isMine ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-white text-slate-700 rounded-tl-none border border-slate-100'} ${status === 'failed' ? 'border-red-300 bg-red-50 text-red-600' : ''}`}>
-                          {content}
+                          {type === 'image' && msg.media_url && (
+                            <img src={msg.media_url} alt="Imagem enviada" className="max-w-full rounded-lg mb-2 cursor-pointer hover:opacity-90 transition-opacity" onClick={() => window.open(msg.media_url, '_blank')} />
+                          )}
+                          {type === 'video' && msg.media_url && (
+                             <div className="relative group cursor-pointer" onClick={() => window.open(msg.media_url, '_blank')}>
+                               <video src={msg.media_url} className="max-w-full rounded-lg mb-2" />
+                               <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg">
+                                 <VideoIcon className="w-10 h-10 text-white" />
+                               </div>
+                             </div>
+                          )}
+                          {type === 'audio' && msg.media_url && (
+                            <div className="min-w-[200px]">
+                              <audio src={msg.media_url} controls className={`h-8 w-full ${isMine ? 'brightness-200 contrast-50' : ''}`} />
+                            </div>
+                          )}
+                          {type === 'document' && (
+                             <div className="flex items-center gap-3 p-3 bg-black/5 rounded-xl mb-2 cursor-pointer hover:bg-black/10 transition-colors" onClick={() => msg.media_url && window.open(msg.media_url, '_blank')}>
+                               <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${isMine ? 'bg-blue-500' : 'bg-slate-100'}`}>
+                                 <FileIcon className={`w-5 h-5 ${isMine ? 'text-white' : 'text-slate-500'}`} />
+                               </div>
+                               <div className="min-w-0">
+                                 <p className="text-[11px] font-bold truncate max-w-[150px] leading-tight">{msg.metadata?.fileName || content}</p>
+                                 <p className="text-[9px] opacity-60 uppercase font-black">{msg.metadata?.fileSize ? (msg.metadata.fileSize / 1024 / 1024).toFixed(2) + ' MB' : 'Documento'}</p>
+                               </div>
+                             </div>
+                          )}
+                          {(type === 'image' || type === 'video' || type === 'document') ? content : content}
                         </div>
                         <div className={`flex items-center gap-1.5 px-1 ${isMine ? 'flex-row-reverse justify-end' : ''}`}>
                           <span className="text-[9px] font-medium text-slate-400 uppercase">
                             {timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'}
                           </span>
                           {isMine && status === 'read' && <CheckCheck className="w-3 h-3 text-blue-500" />}
-                          {isMine && status === 'failed' && <span className="text-[8px] text-red-500 font-bold uppercase">Erro</span>}
+                          {isMine && status === 'sent' && <CheckCheck className="w-3 h-3 text-slate-300" />}
+                          {isMine && (status as any) === 'sending' && <RefreshCw className="w-3 h-3 text-blue-400 animate-spin" />}
+                          {isMine && status === 'failed' && (
+                            <button onClick={() => retryMessage(msg)} className="flex items-center gap-1 group">
+                               <AlertCircle className="w-3 h-3 text-red-500" />
+                               <span className="text-[8px] text-red-500 font-bold uppercase hover:underline">Falhou • Tentar novamente</span>
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -703,20 +1098,121 @@ export default function OmnichannelPage() {
                 </div>
               ) : (
                 <form onSubmit={handleSendMessage} className="max-w-4xl mx-auto flex items-end gap-3 bg-slate-50 border border-slate-200 p-3 rounded-2xl focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent transition-all shadow-sm">
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 relative">
                     <button 
                       type="button" 
-                      onClick={() => {
-                          toast.info("Funcionalidade de anotações internas vindo em breve.");
-                      }}
-                      className="p-2 text-slate-400 hover:bg-white hover:text-blue-600 rounded-xl transition-all"
-                      title="Adicionar anotação"
+                      onClick={() => setShowAttachmentMenu(!showAttachmentMenu)}
+                      className={`p-2 rounded-xl transition-all ${showAttachmentMenu ? 'bg-blue-600 text-white scale-110' : 'text-slate-400 hover:bg-white hover:text-blue-600'}`}
+                      title="Adicionar anexo"
                     >
-                      <Plus className="w-5 h-5" />
+                      <Plus className={`w-5 h-5 transition-transform duration-300 ${showAttachmentMenu ? 'rotate-45' : ''}`} />
                     </button>
+
+                    <AnimatePresence>
+                      {showAttachmentMenu && (
+                        <motion.div 
+                          initial={{ opacity: 0, y: -20, scale: 0.9 }}
+                          animate={{ opacity: 1, y: -10, scale: 1 }}
+                          exit={{ opacity: 0, y: -20, scale: 0.9 }}
+                          className="absolute bottom-full left-0 mb-4 w-48 bg-white rounded-2xl shadow-2xl border border-slate-100 p-2 z-[60]"
+                        >
+                           <button 
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
+                           >
+                              <ImageIcon className="w-4 h-4 text-emerald-500" /> Foto / Imagem
+                           </button>
+                           <button 
+                            type="button"
+                            onClick={() => videoInputRef.current?.click()}
+                            className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
+                           >
+                              <VideoIcon className="w-4 h-4 text-blue-500" /> Vídeo
+                           </button>
+                           <button 
+                            type="button"
+                            onClick={() => {
+                              if (!activeConversation) return toast.info("Selecione uma conversa antes de enviar arquivos.");
+                              if (!activeCustomer?.phone) return toast.info("Cliente sem telefone válido.");
+                              if (!currentAccount) return toast.info("Canal WhatsApp não configurado.");
+                              docInputRef.current?.click();
+                            }}
+                            className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
+                           >
+                              <FileIcon className="w-4 h-4 text-orange-500" /> Documento
+                           </button>
+                           <button 
+                            type="button"
+                            onClick={() => {
+                              if (!activeConversation) return toast.info("Selecione uma conversa antes de gravar áudio.");
+                              if (!activeCustomer?.phone) return toast.info("Cliente sem telefone válido.");
+                              if (!currentAccount) return toast.info("Canal WhatsApp não configurado.");
+                              setShowAudioRecorder(true);
+                              setShowAttachmentMenu(false);
+                            }}
+                            className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
+                           >
+                              <Mic className="w-4 h-4 text-rose-500" /> Gravar Áudio
+                           </button>
+                           <button 
+                            type="button"
+                            onClick={() => {
+                              setShowAttachmentMenu(false);
+                              if (currentNote) {
+                                setNoteContent(currentNote.content);
+                                setEditingNoteId(currentNote.id);
+                              } else {
+                                setNoteContent('');
+                                setEditingNoteId(null);
+                              }
+                              setShowNoteModal(true);
+                            }}
+                            className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
+                           >
+                              <FileText className="w-4 h-4 text-slate-400" /> Anotação Interna
+                           </button>
+                           
+                           <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={(e) => handleFileSelect(e, 'image')} />
+                           <input type="file" ref={videoInputRef} className="hidden" accept="video/*" onChange={(e) => handleFileSelect(e, 'video')} />
+                           <input type="file" ref={docInputRef} className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip" onChange={(e) => handleFileSelect(e, 'document')} />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    <button 
+                      type="button" 
+                      onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                      className={`p-2 rounded-xl transition-all ${showEmojiPicker ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-white hover:text-blue-600'}`}
+                      title="Emojis"
+                    >
+                      <Smile className="w-5 h-5" />
+                    </button>
+
+                    <AnimatePresence>
+                      {showEmojiPicker && (
+                        <motion.div 
+                          ref={emojiPickerRef}
+                          initial={{ opacity: 0, y: -20, scale: 0.9 }}
+                          animate={{ opacity: 1, y: -10, scale: 1 }}
+                          exit={{ opacity: 0, y: -20, scale: 0.9 }}
+                          className="absolute bottom-full left-0 mb-4 z-[100] shadow-2xl rounded-2xl overflow-hidden bg-white border border-slate-200"
+                        >
+                          <EmojiPicker
+                            onEmojiClick={handleEmojiClick}
+                            searchDisabled={false}
+                            skinTonesDisabled={false}
+                            previewConfig={{ showPreview: false }}
+                            width={340}
+                            height={420}
+                          />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                   
                   <textarea 
+                    ref={messageInputRef}
                     rows={1}
                     placeholder="Escreva sua mensagem..."
                     className="flex-1 bg-transparent border-none outline-none text-sm py-2 resize-none max-h-40 min-h-[40px] px-2 font-medium"
@@ -833,6 +1329,72 @@ export default function OmnichannelPage() {
                   ))}
                 </div>
               </section>
+
+              <section className="bg-amber-50/50 border border-amber-100 rounded-2xl p-4 mt-2">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Paperclip className="w-4 h-4 text-amber-600 rotate-45" />
+                    <h4 className="text-xs font-bold text-amber-800 uppercase tracking-wider">Anotação Interna</h4>
+                  </div>
+                  <span className="px-1.5 py-0.5 bg-amber-200 text-amber-800 rounded text-[8px] font-black uppercase tracking-tighter">Operação</span>
+                </div>
+
+                {currentNote ? (
+                  <div className="space-y-4">
+                    <div className="relative">
+                      <p className="text-xs text-amber-900 leading-relaxed font-medium italic">
+                        "{currentNote.content}"
+                      </p>
+                      <div className="mt-3 pt-3 border-t border-amber-100 flex items-center justify-between">
+                         <div className="min-w-0">
+                           <p className="text-[10px] text-amber-700 font-bold truncate">{currentNote.created_by_name || 'Agente'}</p>
+                           <p className="text-[9px] text-amber-600/60 font-medium">
+                             {currentNote.updated_at ? new Date(currentNote.updated_at).toLocaleString() : ''}
+                           </p>
+                         </div>
+                         <div className="flex items-center gap-1">
+                           <button 
+                             onClick={() => {
+                               setNoteContent(currentNote.content);
+                               setEditingNoteId(currentNote.id);
+                               setShowNoteModal(true);
+                             }}
+                             className="p-1.5 hover:bg-amber-100 rounded-lg text-amber-700 transition-colors"
+                           >
+                             <FileText className="w-3.5 h-3.5" />
+                           </button>
+                           <button 
+                             onClick={() => {
+                               if (window.confirm('Excluir esta anotação interna?')) {
+                                 deleteInternalNote(currentNote.id);
+                               }
+                             }}
+                             className="p-1.5 hover:bg-red-100 rounded-lg text-red-600 transition-colors"
+                           >
+                             <X className="w-3.5 h-3.5" />
+                           </button>
+                         </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="py-4 text-center">
+                    <p className="text-[10px] text-amber-700/50 italic mb-3 font-medium">Nenhuma anotação registrada para este cliente.</p>
+                    <button 
+                      onClick={() => {
+                        setNoteContent('');
+                        setEditingNoteId(null);
+                        setShowNoteModal(true);
+                      }}
+                      className="text-[10px] font-black text-amber-600 uppercase tracking-widest hover:underline"
+                    >
+                      + Criar Anotação
+                    </button>
+                  </div>
+                )}
+                
+                <p className="text-[8px] text-amber-600 opacity-60 mt-3 text-center font-bold uppercase tracking-widest">⚠️ Visível apenas internamente</p>
+              </section>
             </div>
           </div>
         ) : (
@@ -843,8 +1405,178 @@ export default function OmnichannelPage() {
         )}
       </div>
 
-      {/* New Chat Modal */}
+      {/* Modals & Overlays */}
       <AnimatePresence>
+        {/* Audio Recorder Modal */}
+        {showAudioRecorder && (
+          <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+            <motion.div 
+               initial={{ opacity: 0 }}
+               animate={{ opacity: 1 }}
+               exit={{ opacity: 0 }}
+               className="absolute inset-0 bg-slate-900/80 backdrop-blur-md"
+               onClick={() => !isSendingMedia && setShowAudioRecorder(false)}
+            />
+            <motion.div 
+               initial={{ opacity: 0, scale: 0.9, y: 20 }}
+               animate={{ opacity: 1, scale: 1, y: 0 }}
+               exit={{ opacity: 0, scale: 0.9, y: 20 }}
+               className="relative w-full max-md bg-white rounded-[2.5rem] shadow-2xl overflow-hidden p-10"
+            >
+               <div className="flex flex-col items-center text-center space-y-6">
+                  <div className={`w-24 h-24 rounded-full flex items-center justify-center transition-all duration-500 ${isRecording ? 'bg-red-500 scale-110 shadow-2xl shadow-red-200 animate-pulse' : 'bg-blue-50 text-blue-600'}`}>
+                    {isRecording ? <Square className="w-8 h-8 text-white cursor-pointer" onClick={stopRecording} /> : <Mic className="w-10 h-10" />}
+                  </div>
+                  
+                  <div>
+                    <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">{isRecording ? 'Gravando Áudio' : (audioUrl ? 'Prévia do Áudio' : 'Gravar Mensagem de Voz')}</h3>
+                    <p className="text-4xl font-black text-slate-800 mt-2 font-mono">{formatTime(recordingTime)}</p>
+                  </div>
+
+                  {audioUrl && !isRecording && (
+                    <div className="w-full bg-slate-50 p-4 rounded-3xl border border-slate-100">
+                      <audio src={audioUrl} controls className="w-full" />
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-4 w-full">
+                    {!isRecording && !audioUrl ? (
+                      <button 
+                        onClick={startRecording}
+                        className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-blue-100 hover:scale-105 transition-all"
+                      >
+                        Iniciar Gravação
+                      </button>
+                    ) : isRecording ? (
+                      <button 
+                        onClick={stopRecording}
+                        className="flex-1 py-4 bg-red-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-red-100 hover:scale-105 transition-all"
+                      >
+                        Parar Gravação
+                      </button>
+                    ) : (
+                      <>
+                        <button 
+                          onClick={() => { setAudioUrl(null); setAudioBlob(null); setRecordingTime(0); }}
+                          disabled={isSendingMedia}
+                          className="p-4 bg-slate-100 text-slate-500 rounded-2xl hover:bg-slate-200 transition-all font-bold"
+                        >
+                          Regravar
+                        </button>
+                        <button 
+                          onClick={handleSendAudio}
+                          disabled={isSendingMedia}
+                          className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-blue-100 hover:scale-105 transition-all flex items-center justify-center gap-3"
+                        >
+                          {isSendingMedia ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                          {isSendingMedia ? 'Enviando...' : 'Enviar Áudio'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  
+                  <button 
+                    onClick={() => setShowAudioRecorder(false)}
+                    disabled={isSendingMedia}
+                    className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-red-500 transition-colors"
+                  >
+                    Fechar
+                  </button>
+               </div>
+            </motion.div>
+          </div>
+        )}
+
+        {showMediaPreview && (
+          <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+            <motion.div 
+               initial={{ opacity: 0 }}
+               animate={{ opacity: 1 }}
+               exit={{ opacity: 0 }}
+               onClick={() => { if (!isSendingMedia) setShowMediaPreview(false); }}
+               className="absolute inset-0 bg-slate-900/80 backdrop-blur-md"
+            />
+            <motion.div 
+               initial={{ opacity: 0, scale: 0.9, y: 20 }}
+               animate={{ opacity: 1, scale: 1, y: 0 }}
+               exit={{ opacity: 0, scale: 0.9, y: 20 }}
+               className="relative w-full max-w-2xl bg-white rounded-[2.5rem] shadow-2xl overflow-hidden"
+            >
+               <div className="p-8 border-b border-slate-50 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Enviar {mediaType === 'image' ? 'Foto' : (mediaType === 'video' ? 'Vídeo' : 'Documento')}</h3>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Viva Destinos Omnichannel</p>
+                  </div>
+                  <button onClick={() => setShowMediaPreview(false)} className="p-3 hover:bg-red-50 text-slate-300 hover:text-red-500 rounded-2xl transition-all">
+                    <X className="w-6 h-6" />
+                  </button>
+               </div>
+
+               <div className="p-8 space-y-6">
+                  {mediaType !== 'document' && mediaPreviewUrl && (
+                    <div className="w-full aspect-video bg-slate-50 rounded-3xl border border-slate-100 overflow-hidden flex items-center justify-center">
+                      {mediaType === 'image' ? (
+                        <img src={mediaPreviewUrl} className="max-w-full max-h-full object-contain" alt="Preview" />
+                      ) : (
+                        <video src={mediaPreviewUrl} controls className="max-w-full max-h-full" />
+                      )}
+                    </div>
+                  )}
+
+                  {mediaType === 'document' && selectedFile && (
+                    <div className="p-8 bg-blue-50 border border-blue-100 rounded-3xl flex flex-col items-center gap-4">
+                       <div className="w-20 h-20 bg-white rounded-2xl shadow-md flex items-center justify-center text-blue-600">
+                          <FileIcon className="w-10 h-10" />
+                       </div>
+                       <div className="text-center">
+                          <p className="font-bold text-slate-800">{selectedFile.name}</p>
+                          <p className="text-xs text-slate-400 font-medium uppercase tracking-widest mt-1">{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                       </div>
+                    </div>
+                  )}
+
+                  {(mediaType === 'image' || mediaType === 'video') && (
+                    <div className="space-y-2">
+                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2">Legenda Opcional</label>
+                       <textarea 
+                         rows={2}
+                         className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-3xl focus:ring-4 focus:ring-blue-500/10 outline-none transition-all font-bold text-sm resize-none"
+                         placeholder="Digite uma legenda para a sua mídia..."
+                         value={mediaCaption}
+                         onChange={(e) => setMediaCaption(e.target.value)}
+                       />
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-4 pt-4">
+                    <button 
+                      onClick={() => setShowMediaPreview(false)}
+                      disabled={isSendingMedia}
+                      className="flex-1 p-5 text-xs font-black text-slate-400 uppercase tracking-widest hover:text-slate-600 transition-colors"
+                    >
+                      Cancelar
+                    </button>
+                    <button 
+                      onClick={handleSendMedia}
+                      disabled={isSendingMedia}
+                      className="flex-[2] p-5 bg-blue-600 text-white rounded-[1.5rem] text-xs font-black uppercase tracking-widest shadow-xl shadow-blue-100 hover:scale-[1.02] transition-all flex items-center justify-center gap-3"
+                    >
+                      {isSendingMedia ? (
+                         <>
+                           <RefreshCw className="w-4 h-4 animate-spin" /> Enviando...
+                         </>
+                      ) : (
+                        <>
+                          <Send className="w-4 h-4" /> Enviar Agora
+                        </>
+                      )}
+                    </button>
+                  </div>
+               </div>
+            </motion.div>
+          </div>
+        )}
+
         {showNewChatModal && (
           <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
             <motion.div 
@@ -1029,6 +1761,76 @@ export default function OmnichannelPage() {
               <div className="flex justify-end gap-3 mt-8">
                  <button onClick={() => setShowCloseModal(false)} className="px-4 py-2 text-slate-500 font-bold text-xs uppercase">Cancelar</button>
                  <button onClick={handleClose} className="px-6 py-2 bg-emerald-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest">Finalizar Agora</button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      {/* Note Modal */}
+      <AnimatePresence>
+        {showNoteModal && (
+          <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowNoteModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }} 
+              animate={{ opacity: 1, scale: 1, y: 0 }} 
+              exit={{ opacity: 0, scale: 0.95, y: 20 }} 
+              className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden"
+            >
+              <div className="p-6 border-b border-slate-50 bg-amber-50/30 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-black text-amber-900 uppercase tracking-tight flex items-center gap-2">
+                    <FileText className="w-5 h-5" /> 
+                    {editingNoteId ? 'Editar Anotação Interna' : 'Nova Anotação Interna'}
+                  </h2>
+                  <p className="text-[10px] font-bold text-amber-700/60 uppercase tracking-widest mt-1">Esta informação nunca será enviada ao cliente</p>
+                </div>
+                <button onClick={() => setShowNoteModal(false)} className="text-slate-400 hover:text-slate-600">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Conteúdo da Observação</label>
+                  <textarea 
+                    autoFocus
+                    placeholder="Digite observações importantes sobre este atendimento ou perfil do cliente..." 
+                    className="w-full p-5 bg-slate-50 border border-slate-100 rounded-2xl text-sm min-h-[160px] outline-none focus:ring-2 focus:ring-amber-500 transition-all resize-none font-medium text-slate-700"
+                    value={noteContent}
+                    onChange={(e) => setNoteContent(e.target.value)}
+                    maxLength={1000}
+                  />
+                  <div className="flex justify-between items-center px-1">
+                    <span className="text-[9px] font-bold text-slate-400 uppercase">Limite: 1.000 caracteres</span>
+                    <span className={`text-[9px] font-bold uppercase ${noteContent.length > 900 ? 'text-red-500' : 'text-slate-400'}`}>
+                      {noteContent.length} / 1000
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 flex items-start gap-3">
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <p className="text-[10px] text-amber-800 font-medium leading-relaxed">
+                    Anotações internas ajudam outros operadores a entenderem o contexto deste cliente caso o atendimento seja transferido futuramente.
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-6 border-t border-slate-50 flex justify-end gap-3 bg-slate-50/30">
+                 <button 
+                  onClick={() => setShowNoteModal(false)} 
+                  className="px-5 py-2.5 text-slate-500 font-black text-[10px] uppercase tracking-widest hover:bg-slate-100 rounded-xl transition-all"
+                 >
+                  Cancelar
+                 </button>
+                 <button 
+                  onClick={handleSaveNote} 
+                  disabled={!noteContent.trim()}
+                  className={`px-8 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all shadow-lg ${noteContent.trim() ? 'bg-amber-600 text-white shadow-amber-100 hover:scale-105' : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-50'}`}
+                 >
+                   {editingNoteId ? 'Salvar Alterações' : 'Fixar Anotação'}
+                 </button>
               </div>
             </motion.div>
           </div>

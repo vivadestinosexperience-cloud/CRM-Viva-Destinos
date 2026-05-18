@@ -5,6 +5,7 @@
 
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
+import { supabase } from '../integrations/supabase/client';
 import { 
   User, 
   Team, 
@@ -14,7 +15,8 @@ import {
   Message,
   InternalMessage,
   Campaign,
-  Tag
+  Tag,
+  InternalNote
 } from '../types';
 import { 
   MOCK_USERS, 
@@ -33,7 +35,8 @@ import {
   customerService,
   conversationService,
   messageService,
-  tagService
+  tagService,
+  noteService
 } from '../services/dataService';
 import { toast } from 'sonner';
 
@@ -64,6 +67,7 @@ interface AppState {
   messages: Message[];
   campaigns: Campaign[];
   tags: Tag[];
+  internalNotes: InternalNote[];
   
   // Internal Chat
   internalMessages: InternalMessage[];
@@ -82,6 +86,7 @@ interface AppState {
   // Initialization & Sync
   initializeAppData: () => Promise<void>;
   refreshData: () => Promise<void>;
+  setupRealtimeListeners: () => void;
 
   // User CRUD
   addUser: (user: User) => Promise<void>;
@@ -105,6 +110,7 @@ interface AppState {
 
   // Conversations
   addMessage: (message: Message) => Promise<void>;
+  updateMessage: (id: string, updates: Partial<Message>) => Promise<void>;
   updateConversation: (id: string, updates: Partial<Conversation>) => Promise<void>;
   addConversation: (conversation: Partial<Conversation>) => Promise<void>;
   
@@ -118,6 +124,11 @@ interface AppState {
   updateTag: (tag: Tag) => Promise<void>;
   deleteTag: (id: string) => Promise<void>;
 
+  // Internal Note Actions
+  addInternalNote: (note: Partial<InternalNote>) => Promise<void>;
+  updateInternalNote: (id: string, updates: Partial<InternalNote>) => Promise<void>;
+  deleteInternalNote: (id: string) => Promise<void>;
+  
   // Internal Chat Actions
   addInternalMessage: (message: InternalMessage) => void;
   
@@ -153,6 +164,7 @@ export const useAppStore = create<AppState>()(
       messages: MOCK_MESSAGES,
       campaigns: MOCK_CAMPAIGNS,
       tags: [],
+      internalNotes: [],
       internalMessages: [],
       
       isLoading: false,
@@ -191,6 +203,15 @@ export const useAppStore = create<AppState>()(
             tagService.list()
           ]);
 
+          // Fetch all notes
+          let allNotes: InternalNote[] = [];
+          try {
+            const { data } = await supabase.from('conversation_notes').select('*');
+            allNotes = data || [];
+          } catch (e) {
+            console.warn('Could not fetch all notes', e);
+          }
+
           set({
             users: users?.length ? users : MOCK_USERS,
             teams: teams?.length ? (teams as Team[]) : get().teams,
@@ -199,13 +220,80 @@ export const useAppStore = create<AppState>()(
             conversations: (conversations as Conversation[])?.length ? (conversations as Conversation[]) : MOCK_CONVERSATIONS,
             messages: messages?.length ? messages : MOCK_MESSAGES,
             tags: tags?.length ? (tags as Tag[]) : [],
+            internalNotes: allNotes,
             lastSyncAt: new Date().toISOString(),
             isLoading: false
           });
+
+          // Setup realtime listeners after initial load
+          get().setupRealtimeListeners();
         } catch (err) {
           console.error('Failed to initialize app data from Supabase, using local/mock data', err);
           set({ isLoading: false, error: 'Falha ao sincronizar com servidor. Usando dados locais.' });
         }
+      },
+
+      setupRealtimeListeners: () => {
+        // Avoid duplicate subscriptions
+        supabase.removeAllChannels();
+
+        // 1. Listen to Conversations
+        const conversationChannel = supabase
+          .channel('conversations-realtime')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations' }, (payload) => {
+            console.log('Conversation change received:', payload);
+            const { eventType, new: newRecord, old: oldRecord } = payload;
+            
+            if (eventType === 'INSERT') {
+              set(state => ({
+                conversations: [newRecord as Conversation, ...state.conversations]
+              }));
+              toast.info(`Nova conversa!`);
+            } else if (eventType === 'UPDATE') {
+              set(state => ({
+                conversations: state.conversations.map(c => c.id === newRecord.id ? { ...c, ...newRecord } : c)
+              }));
+            } else if (eventType === 'DELETE') {
+              set(state => ({
+                conversations: state.conversations.filter(c => c.id !== oldRecord.id)
+              }));
+            }
+          })
+          .subscribe();
+
+        // 2. Listen to Messages
+        const messageChannel = supabase
+          .channel('messages-realtime')
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
+            console.log('Message insert received:', payload);
+            const newMsg = payload.new as Message;
+            
+            // Add to state if not already there
+            set(state => {
+              if (state.messages.some(m => m.id === newMsg.id)) return state;
+              return { messages: [...state.messages, newMsg] };
+            });
+
+            if (newMsg.sender_type === 'customer') {
+              toast.info(`Nova mensagem recebida`);
+            }
+          })
+          .subscribe();
+
+        // 3. Listen to Customers
+        const customerChannel = supabase
+          .channel('customers-realtime')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, (payload) => {
+            const { eventType, new: newRecord, old: oldRecord } = payload;
+            if (eventType === 'INSERT') {
+              set(state => ({ customers: [...state.customers, newRecord as Customer] }));
+            } else if (eventType === 'UPDATE') {
+              set(state => ({
+                customers: state.customers.map(c => c.id === newRecord.id ? { ...c, ...newRecord } : c)
+              }));
+            }
+          })
+          .subscribe();
       },
 
       refreshData: async () => {
@@ -385,6 +473,17 @@ export const useAppStore = create<AppState>()(
           console.error('Message only saved locally', err);
         }
       },
+
+      updateMessage: async (id, updates) => {
+        set((state) => ({
+          messages: state.messages.map(m => m.id === id ? { ...m, ...updates } : m)
+        }));
+        try {
+          await messageService.update(id, updates);
+        } catch (err) {
+          console.error('Message update only local', err);
+        }
+      },
       
       updateConversation: async (id, updates) => {
         set((state) => ({
@@ -460,6 +559,66 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set((state) => ({ tags: state.tags.filter(t => t.id !== id), isSaving: false }));
           toast.warning('Etiqueta removida localmente');
+        }
+      },
+
+      // Internal Note Actions
+      addInternalNote: async (note) => {
+        set({ isSaving: true });
+        try {
+          const newNote = await noteService.create(note);
+          set((state) => ({ 
+            internalNotes: [...state.internalNotes, newNote],
+            isSaving: false 
+          }));
+          toast.success('Anotação salva com sucesso');
+        } catch (err) {
+          const localNote = { 
+            id: `temp-${Date.now()}`, 
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            pinned: true,
+            ...note 
+          } as InternalNote;
+          set((state) => ({ 
+            internalNotes: [...state.internalNotes, localNote],
+            isSaving: false 
+          }));
+          toast.warning('Salvo localmente');
+        }
+      },
+      updateInternalNote: async (id, updates) => {
+        set({ isSaving: true });
+        try {
+          const updated = await noteService.update(id, updates);
+          set((state) => ({
+            internalNotes: state.internalNotes.map(n => n.id === id ? updated : n),
+            isSaving: false
+          }));
+          toast.success('Anotação atualizada');
+        } catch (err) {
+          set((state) => ({
+            internalNotes: state.internalNotes.map(n => n.id === id ? { ...n, ...updates, updated_at: new Date().toISOString() } : n),
+            isSaving: false
+          }));
+          toast.warning('Atualizado localmente');
+        }
+      },
+      deleteInternalNote: async (id) => {
+        set({ isSaving: true });
+        try {
+          await noteService.remove(id);
+          set((state) => ({ 
+            internalNotes: state.internalNotes.filter(n => n.id !== id),
+            isSaving: false 
+          }));
+          toast.success('Anotação removida');
+        } catch (err) {
+          set((state) => ({ 
+            internalNotes: state.internalNotes.filter(n => n.id !== id),
+            isSaving: false 
+          }));
+          toast.warning('Removido localmente');
         }
       },
 
