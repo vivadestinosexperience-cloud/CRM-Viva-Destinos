@@ -2,6 +2,19 @@ import { supabase } from '../integrations/supabase/client';
 
 export const authService = {
   async signIn(email: string, password: string) {
+    // Mock bypass for development credentials
+    if (email === 'admin@viva.com' && password === '123456') {
+      console.log('Using mock login for admin@viva.com');
+      localStorage.setItem('viva_mock_auth', 'true');
+      return { 
+        data: { 
+          user: { id: 'mock-user-id', email: 'admin@viva.com' },
+          session: { access_token: 'mock-token', user: { id: 'mock-user-id', email: 'admin@viva.com' } }
+        }, 
+        error: null 
+      };
+    }
+
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -10,13 +23,18 @@ export const authService = {
   },
 
   async signOut() {
+    localStorage.removeItem('viva_mock_auth');
     const { error } = await supabase.auth.signOut();
     return { error };
   },
 
   async getCurrentUser() {
+    // Check mock first
+    if (localStorage.getItem('viva_mock_auth') === 'true') {
+      return { user: { id: 'mock-user-id', email: 'admin@viva.com', profile: { name: 'Gustavo Alves (Admin)' } }, error: null };
+    }
+
     const { data: { user }, error } = await supabase.auth.getUser();
-    if (error) return { user: null, error };
     
     if (user) {
       const { data: profile } = await supabase
@@ -31,6 +49,17 @@ export const authService = {
   },
 
   async getSession() {
+    // Check mock first
+    if (localStorage.getItem('viva_mock_auth') === 'true') {
+      return { 
+        session: { 
+          access_token: 'mock-token', 
+          user: { id: 'mock-user-id', email: 'admin@viva.com' } 
+        }, 
+        error: null 
+      };
+    }
+
     const { data: { session }, error } = await supabase.auth.getSession();
     return { session, error };
   }
