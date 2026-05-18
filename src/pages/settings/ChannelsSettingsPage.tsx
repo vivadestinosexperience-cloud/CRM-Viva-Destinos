@@ -7,7 +7,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, Smartphone, Cloud, Trash2, RefreshCw, CheckCircle2, AlertCircle,
   MoreVertical, Key, Globe, Database, Briefcase, Instagram, Facebook, MessageSquare, Info,
-  ArrowLeft, ChevronRight, X, User as UserIcon, Smartphone as MobileIcon, Layers, Activity, History
+  ArrowLeft, ChevronRight, X, User as UserIcon, Smartphone as MobileIcon, Layers, Activity, History,
+  RotateCcw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { QRCodeSVG } from 'qrcode.react';

@@ -96,6 +96,20 @@ export default function OmnichannelPage() {
   const [searchTerm, setSearchTerm] = useState('');
   
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-refresh data on mount as requested
+  useEffect(() => {
+    const refreshDataAtendimentos = async () => {
+      // Re-initialize only what's needed for this page to avoid heavy reloading
+      try {
+        const { initializeAppData } = useAppStore.getState();
+        await initializeAppData();
+      } catch (err) {
+        console.error("Mount refresh failed", err);
+      }
+    };
+    refreshDataAtendimentos();
+  }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);

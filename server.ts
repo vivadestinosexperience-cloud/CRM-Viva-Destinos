@@ -235,10 +235,18 @@ async function startServer() {
     });
   }
 
+const TABLES = {
+  customers: 'customers',
+  conversations: 'conversations',
+  messages: 'messages',
+  logs: 'zapi_webhook_logs'
+};
+
   async function saveWebhookLog(data: any) {
     try {
-      const { data: log, error } = await supabase.from('zapi_webhook_logs').insert({
+      const { data: log, error } = await supabase.from(TABLES.logs).insert({
         ...data,
+        processed: false,
         created_at: new Date().toISOString()
       }).select().single();
       if (error) console.error("Error saving log", error);
@@ -251,7 +259,15 @@ async function startServer() {
   async function updateWebhookLog(id: string, data: any) {
     if (!id) return;
     try {
-      await supabase.from('zapi_webhook_logs').update(data).eq('id', id);
+      // Ensure processed is false if IDs are missing for received events
+      if (data.event_type === 'received' || id) {
+        const isActuallyProcessed = !!(data.customer_id && data.conversation_id && data.message_db_id);
+        if (data.processed === true && !isActuallyProcessed) {
+           data.processed = false;
+           data.error = data.error || "Faltou gerar IDs de atendimento.";
+        }
+      }
+      await supabase.from(TABLES.logs).update(data).eq('id', id);
     } catch (err) {
       console.error("Update log error", err);
     }
@@ -267,11 +283,11 @@ async function startServer() {
 
     try {
       // 1. Customer
-      let { data: customer, error: custFetchErr } = await supabase.from('customers').select('*').eq('phone_normalized', normalized.phone).maybeSingle();
+      let { data: customer, error: custFetchErr } = await supabase.from(TABLES.customers).select('*').eq('phone_normalized', normalized.phone).maybeSingle();
       if (custFetchErr) throw new Error(`Erro ao buscar cliente: ${custFetchErr.message}`);
 
       if (!customer) {
-        const { data: newCust, error: custErr } = await supabase.from('customers').insert({
+        const { data: newCust, error: custErr } = await supabase.from(TABLES.customers).insert({
           name: normalized.name || 'Cliente',
           phone: normalized.phone,
           phone_normalized: normalized.phone,
@@ -281,21 +297,21 @@ async function startServer() {
         customer = newCust;
       } else if ((customer.name === 'Cliente' || !customer.name) && normalized.name && normalized.name !== 'Cliente') {
         // Atualizar nome se for o default ou vazio
-        await supabase.from('customers').update({ name: normalized.name }).eq('id', customer.id);
+        await supabase.from(TABLES.customers).update({ name: normalized.name }).eq('id', customer.id);
         customer.name = normalized.name;
       }
 
       if (!customer?.id) throw new Error("Falha crítica: Cliente sem ID após criação/busca.");
 
       // 2. Conversation
-      let { data: conversation, error: convFetchErr } = await supabase.from('conversations').select('*').eq('customer_phone_normalized', normalized.phone).maybeSingle();
+      let { data: conversation, error: convFetchErr } = await supabase.from(TABLES.conversations).select('*').eq('customer_phone_normalized', normalized.phone).maybeSingle();
       if (convFetchErr) throw new Error(`Erro ao buscar conversa: ${convFetchErr.message}`);
 
       const lastMsgText = getLastMessageText(normalized);
       let finalConv: any = null;
 
       if (!conversation) {
-        const { data: newConv, error: convErr } = await supabase.from('conversations').insert({
+        const { data: newConv, error: convErr } = await supabase.from(TABLES.conversations).insert({
           customer_id: customer.id,
           customer_phone_normalized: normalized.phone,
           status: 'NEW',
@@ -323,7 +339,7 @@ async function startServer() {
           updates.assigned_user_id = null;
         }
 
-        const { data: updatedConv, error: updateErr } = await supabase.from('conversations').update(updates).eq('id', conversation.id).select().single();
+        const { data: updatedConv, error: updateErr } = await supabase.from(TABLES.conversations).update(updates).eq('id', conversation.id).select().single();
         if (updateErr) throw new Error(`Erro ao atualizar conversa: ${updateErr.message}`);
         finalConv = updatedConv;
       }
@@ -331,11 +347,11 @@ async function startServer() {
       if (!finalConv?.id) throw new Error("Falha crítica: Conversa sem ID.");
 
       // 3. Message (Verificar duplicidade)
-      const { data: existingMsg } = await supabase.from('messages').select('id').eq('external_message_id', normalized.messageId).maybeSingle();
+      const { data: existingMsg } = await supabase.from(TABLES.messages).select('id').eq('external_message_id', normalized.messageId).maybeSingle();
       
       let finalMessage = null;
       if (!existingMsg) {
-        const { data: message, error: msgErr } = await supabase.from('messages').insert({
+        const { data: message, error: msgErr } = await supabase.from(TABLES.messages).insert({
           conversation_id: finalConv.id,
           customer_phone_normalized: normalized.phone,
           external_message_id: normalized.messageId,
@@ -352,7 +368,8 @@ async function startServer() {
         if (msgErr) throw new Error(`Erro ao inserir mensagem: ${msgErr.message}`);
         finalMessage = message;
       } else {
-        finalMessage = { id: existingMsg.id, alreadyExists: true };
+        const { data: fullExistingMsg } = await supabase.from(TABLES.messages).select('*').eq('id', existingMsg.id).single();
+        finalMessage = fullExistingMsg;
       }
 
       // 4. Real-time Broadcast
@@ -514,28 +531,25 @@ async function startServer() {
     }
   });
 
-  app.get("/api/zapi/receive-debug", async (req, res) => {
+  app.get("/api/omnichannel/debug", async (req, res) => {
     try {
-      const { data: logs } = await supabase.from('zapi_webhook_logs').select('*').order('created_at', { ascending: false }).limit(10);
-      const { data: convs } = await supabase.from('conversations').select('*, customer:customer_id(*)').order('last_message_at', { ascending: false }).limit(5);
-      const { data: msgs } = await supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(5);
+      const { data: logs } = await supabase.from(TABLES.logs).select('*').order('created_at', { ascending: false }).limit(10);
+      const { data: convs } = await supabase.from(TABLES.conversations).select('*, customer:customer_id(*)').order('last_message_at', { ascending: false }).limit(5);
+      const { data: msgs } = await supabase.from(TABLES.messages).select('*').order('created_at', { ascending: false }).limit(5);
       
-      const { count: logsCount } = await supabase.from('zapi_webhook_logs').select('*', { count: 'exact', head: true });
-      const { count: convsCount } = await supabase.from('conversations').select('*', { count: 'exact', head: true });
-      const { count: msgsCount } = await supabase.from('messages').select('*', { count: 'exact', head: true });
+      const { count: logsCount } = await supabase.from(TABLES.logs).select('*', { count: 'exact', head: true });
+      const { count: convsCount } = await supabase.from(TABLES.conversations).select('*', { count: 'exact', head: true });
+      const { count: msgsCount } = await supabase.from(TABLES.messages).select('*', { count: 'exact', head: true });
+      const { count: custsCount } = await supabase.from(TABLES.customers).select('*', { count: 'exact', head: true });
 
       return res.json({
         success: true,
-        tablesUsed: {
-          customers: 'customers',
-          conversations: 'conversations',
-          messages: 'messages',
-          logs: 'zapi_webhook_logs'
-        },
+        tablesUsed: TABLES,
         counts: {
           logs: logsCount,
           conversations: convsCount,
-          messages: msgsCount
+          messages: msgsCount,
+          customers: custsCount
         },
         lastLogs: logs || [],
         lastConversations: convs || [],
@@ -548,7 +562,7 @@ async function startServer() {
 
   app.get("/api/omnichannel/conversations", async (req, res) => {
     try {
-      const { data: convs, error } = await supabase.from('conversations').select(`
+      const { data: convs, error } = await supabase.from(TABLES.conversations).select(`
         *,
         customer:customer_id(*)
       `).order('last_message_at', { ascending: false });
@@ -568,7 +582,7 @@ async function startServer() {
   app.get("/api/omnichannel/conversations/:id/messages", async (req, res) => {
     const { id } = req.params;
     try {
-      const { data: msgs, error } = await supabase.from('messages')
+      const { data: msgs, error } = await supabase.from(TABLES.messages)
         .select('*')
         .eq('conversation_id', id)
         .order('created_at', { ascending: true });
@@ -588,7 +602,7 @@ async function startServer() {
   app.post("/api/zapi/webhook-logs/:id/reprocess", async (req, res) => {
     const { id } = req.params;
     try {
-      const { data: log, error: logFetchErr } = await supabase.from('zapi_webhook_logs').select('*').eq('id', id).single();
+      const { data: log, error: logFetchErr } = await supabase.from(TABLES.logs).select('*').eq('id', id).single();
       if (logFetchErr) throw new Error(`Falha ao buscar log: ${logFetchErr.message}`);
       if (!log || !log.payload) throw new Error("Log sem payload.");
 
@@ -623,7 +637,7 @@ async function startServer() {
 
   app.get("/api/zapi/webhook-logs", async (req, res) => {
     try {
-      const { data, error } = await supabase.from('zapi_webhook_logs')
+      const { data, error } = await supabase.from(TABLES.logs)
         .select('*')
         .order('created_at', { ascending: false })
         .limit(50);
