@@ -93,13 +93,69 @@ function getLastMessageText(msg: any) {
 }
 
 function normalizeZapiIncomingMessage(payload: any) {
-  const rawPhone = payload?.phone || payload?.from || payload?.senderPhone || payload?.participantPhone || payload?.chatId || payload?.key?.remoteJid || payload?.sender?.phone || payload?.message?.phone || payload?.message?.from || "";
+  const rawPhone =
+    payload?.phone ||
+    payload?.from ||
+    payload?.senderPhone ||
+    payload?.participantPhone ||
+    payload?.chatId ||
+    payload?.key?.remoteJid ||
+    payload?.sender?.phone ||
+    payload?.message?.phone ||
+    payload?.message?.from ||
+    payload?.data?.phone ||
+    payload?.data?.from ||
+    "";
+
   const phone = normalizePhone(rawPhone);
-  const name = payload?.senderName || payload?.pushName || payload?.contactName || payload?.name || payload?.sender?.name || "Cliente";
-  const messageId = payload?.messageId || payload?.id || payload?.message?.id || payload?.key?.id || `zapi-${Date.now()}`;
-  const text = payload?.text?.message || payload?.text || payload?.message?.text || payload?.message?.body || payload?.message || payload?.body || payload?.content || "";
-  const type = payload?.type || payload?.messageType || payload?.mediaType || "text";
-  const mediaUrl = payload?.image?.imageUrl || payload?.video?.videoUrl || payload?.audio?.audioUrl || payload?.document?.documentUrl || payload?.mediaUrl || "";
+
+  const name =
+    payload?.senderName ||
+    payload?.pushName ||
+    payload?.contactName ||
+    payload?.name ||
+    payload?.sender?.name ||
+    payload?.data?.senderName ||
+    payload?.data?.pushName ||
+    "Cliente";
+
+  const messageId =
+    payload?.messageId ||
+    payload?.id ||
+    payload?.message?.id ||
+    payload?.key?.id ||
+    payload?.data?.messageId ||
+    payload?.data?.id ||
+    `zapi-${Date.now()}`;
+
+  const text =
+    payload?.text?.message ||
+    payload?.text ||
+    payload?.message?.text ||
+    payload?.message?.body ||
+    payload?.message ||
+    payload?.body ||
+    payload?.content ||
+    payload?.data?.text?.message ||
+    payload?.data?.text ||
+    payload?.data?.body ||
+    "";
+
+  const type =
+    payload?.type ||
+    payload?.messageType ||
+    payload?.mediaType ||
+    payload?.data?.type ||
+    "text";
+
+  const mediaUrl =
+    payload?.image?.imageUrl ||
+    payload?.video?.videoUrl ||
+    payload?.audio?.audioUrl ||
+    payload?.document?.documentUrl ||
+    payload?.mediaUrl ||
+    payload?.data?.mediaUrl ||
+    "";
 
   return {
     phone,
@@ -194,7 +250,7 @@ async function startServer() {
           customer_phone_normalized: normalized.phone,
           status: 'NEW',
           unread_count: 1,
-          last_message: lastMsgText,
+          last_message: String(lastMsgText),
           last_message_at: new Date().toISOString(),
           source: 'WhatsApp Z-API'
         }).select().single();
@@ -203,7 +259,7 @@ async function startServer() {
         finalConv = newConv;
       } else {
         const updates: any = {
-          last_message: lastMsgText,
+          last_message: String(lastMsgText),
           last_message_at: new Date().toISOString(),
           unread_count: (conversation.unread_count || 0) + 1,
           updated_at: new Date().toISOString()
@@ -214,20 +270,21 @@ async function startServer() {
           updates.status = 'NEW';
           updates.assigned_user_id = null;
         }
-        await supabase.from('conversations').update(updates).eq('id', conversation.id);
-        finalConv = { ...conversation, ...updates };
+        const { data: updatedConv, error: updateErr } = await supabase.from('conversations').update(updates).eq('id', conversation.id).select().single();
+        if (updateErr) throw updateErr;
+        finalConv = updatedConv;
       }
 
       // 3. Message
       const { data: message, error: msgErr } = await supabase.from('messages').insert({
-        conversation_id: conversation?.id,
+        conversation_id: finalConv?.id,
         customer_phone_normalized: normalized.phone,
         external_message_id: normalized.messageId,
         sender_type: 'customer',
         sender_name: normalized.name,
         from_phone: normalized.phone,
         message_type: normalized.type,
-        content: normalized.text || lastMsgText,
+        content: String(normalized.text || lastMsgText),
         media_url: normalized.mediaUrl,
         status: 'received',
         raw_payload: payload,
@@ -382,14 +439,24 @@ async function startServer() {
       const result = await processIncomingZapiMessage({
         phone: "5564999999999",
         senderName: "Cliente Teste",
-        text: { message: "Mensagem de teste " + new Date().toLocaleTimeString() },
-        messageId: "test-" + Date.now(),
+        text: {
+          message: "Mensagem de teste recebida pelo webhook"
+        },
+        messageId: "test-message-" + Date.now(),
         type: "text",
         isTest: true
       });
-      return res.json({ success: true, message: "Webhook interno processado com sucesso.", result });
+      return res.json({ 
+        success: true, 
+        message: "Webhook manual processado com sucesso. Verifique a aba 'Novos' no Omnichannel.", 
+        result 
+      });
     } catch (err) {
-      return res.status(500).json({ success: false, error: "Falha ao processar webhook interno.", details: getErrorMessage(err) });
+      return res.status(200).json({ 
+        success: false, 
+        message: "Falha ao processar webhook de teste.", 
+        error: getErrorMessage(err) 
+      });
     }
   });
 
