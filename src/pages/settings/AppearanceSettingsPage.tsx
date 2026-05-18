@@ -7,12 +7,15 @@ import React from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import { Palette, Sun, Moon, Monitor, Layout, ArrowLeft, Save } from 'lucide-react';
 import { toast } from 'sonner';
+import { safeAction } from '../../utils/safeAction';
 
 export default function AppearanceSettingsPage() {
   const { appearance, setAppearance, isSaving } = useAppStore();
 
   const handleSave = () => {
-    toast.success('Configurações de aparência salvas com sucesso!');
+    safeAction(async () => {
+      toast.success('Configurações de aparência salvas com sucesso!');
+    });
   };
 
   const colors = [

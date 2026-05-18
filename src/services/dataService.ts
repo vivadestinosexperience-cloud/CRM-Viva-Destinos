@@ -188,6 +188,28 @@ export const templateService = {
   }
 };
 
+export const tagService = {
+  async list() {
+    const { data, error } = await supabase.from('tags').select('*').order('name');
+    if (error) handleError(error, 'tagService.list');
+    return data;
+  },
+  async create(tag: any) {
+    const { data, error } = await supabase.from('tags').insert(tag).select().single();
+    if (error) handleError(error, 'tagService.create');
+    return data;
+  },
+  async update(id: string, updates: any) {
+    const { data, error } = await supabase.from('tags').update(updates).eq('id', id).select().single();
+    if (error) handleError(error, 'tagService.update');
+    return data;
+  },
+  async remove(id: string) {
+    const { error } = await supabase.from('tags').delete().eq('id', id);
+    if (error) handleError(error, 'tagService.remove');
+  }
+};
+
 export const reportService = {
   async getSummary() {
     const [

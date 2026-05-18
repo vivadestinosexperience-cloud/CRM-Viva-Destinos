@@ -12,7 +12,8 @@ import {
   ShieldCheck, 
   Settings, 
   Briefcase,
-  Palette
+  Palette,
+  Tag as TagIcon
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -59,6 +60,14 @@ export default function SettingsHub() {
       icon: Settings,
       color: 'bg-slate-500',
       path: '/app/ajustes/conta'
+    },
+    {
+      id: 'tags',
+      name: 'Etiquetas (Tags)',
+      description: 'Crie e organize etiquetas para segmentar seus clientes e conversas.',
+      icon: TagIcon,
+      color: 'bg-amber-500',
+      path: '/app/ajustes/tags'
     },
     {
       id: 'aparencia',

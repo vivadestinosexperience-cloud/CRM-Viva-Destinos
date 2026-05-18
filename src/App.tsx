@@ -14,11 +14,13 @@ import CampaignsPage from './pages/CampaignsPage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
 import UserProfilePage from './pages/UserProfilePage';
+import DebugPage from './pages/DebugPage';
 import { authService } from './services/authService';
 import Logo from './components/Logo';
 import { useAppStore } from './store/useAppStore';
 
 import { Toaster } from 'sonner';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
@@ -48,15 +50,18 @@ export default function App() {
     document.documentElement.style.setProperty('--primary-color-dark', darkShade);
 
     // Theme handling
-    if (appearance.theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else if (appearance.theme === 'light') {
-      document.documentElement.classList.remove('dark');
-    } else {
-      // System
-      const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      document.documentElement.classList.toggle('dark', isDark);
-    }
+    const applyTheme = () => {
+      if (appearance.theme === 'dark') {
+        document.documentElement.classList.add('dark');
+      } else if (appearance.theme === 'light') {
+        document.documentElement.classList.remove('dark');
+      } else {
+        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.classList.toggle('dark', isDark);
+      }
+    };
+
+    applyTheme();
 
     // Density handling
     if (appearance.density === 'compact') {
@@ -64,6 +69,17 @@ export default function App() {
     } else {
       document.body.classList.remove('density-compact');
     }
+
+    // Listen for system theme changes if in 'system' mode
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const listener = () => {
+      if (appearance.theme === 'system') {
+        applyTheme();
+      }
+    };
+
+    mediaQuery.addEventListener('change', listener);
+    return () => mediaQuery.removeEventListener('change', listener);
   }, [appearance]);
 
   const handleLogin = () => {
@@ -98,28 +114,31 @@ export default function App() {
   }
 
   return (
-    <BrowserRouter>
-      <Toaster position="top-right" richColors closeButton />
-      <Routes>
-        <Route 
-          path="/login" 
-          element={!isAuthenticated ? <LoginPage onLogin={handleLogin} /> : <Navigate to="/app/atendimentos" />} 
-        />
-        <Route 
-          path="/app" 
-          element={isAuthenticated ? <MainLayout /> : <Navigate to="/login" />}
-        >
-          <Route index element={<Navigate to="atendimentos" />} />
-          <Route path="atendimentos" element={<OmnichannelPage />} />
-          <Route path="campanhas" element={<CampaignsPage />} />
-          <Route path="clientes/*" element={<CRMPage />} />
-          <Route path="relatorios/atendimentos" element={<ReportsPage />} />
-          <Route path="ajustes/*" element={<SettingsPage />} />
-          <Route path="meu-perfil" element={<UserProfilePage />} />
-          <Route path="*" element={<Navigate to="atendimentos" />} />
-        </Route>
-        <Route path="/" element={<Navigate to={isAuthenticated ? "/app" : "/login"} />} />
-      </Routes>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <Toaster position="top-right" richColors closeButton />
+        <Routes>
+          <Route 
+            path="/login" 
+            element={!isAuthenticated ? <LoginPage onLogin={handleLogin} /> : <Navigate to="/app/atendimentos" />} 
+          />
+          <Route 
+            path="/app" 
+            element={isAuthenticated ? <MainLayout /> : <Navigate to="/login" />}
+          >
+            <Route index element={<Navigate to="atendimentos" />} />
+            <Route path="atendimentos" element={<OmnichannelPage />} />
+            <Route path="campanhas" element={<CampaignsPage />} />
+            <Route path="clientes/*" element={<CRMPage />} />
+            <Route path="relatorios/atendimentos" element={<ReportsPage />} />
+            <Route path="ajustes/*" element={<SettingsPage />} />
+            <Route path="meu-perfil" element={<UserProfilePage />} />
+            <Route path="debug" element={<DebugPage />} />
+            <Route path="*" element={<Navigate to="atendimentos" />} />
+          </Route>
+          <Route path="/" element={<Navigate to={isAuthenticated ? "/app" : "/login"} />} />
+        </Routes>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }

@@ -26,6 +26,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
 import { toast } from 'sonner';
+import { safeAction } from '../utils/safeAction';
 import { motion, AnimatePresence } from 'motion/react';
 
 export default function UserProfilePage() {
@@ -47,36 +48,37 @@ export default function UserProfilePage() {
     confirm: ''
   });
 
-  const handleSaveProfile = (e: React.FormEvent) => {
+  const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (currentUser) {
-      const updatedUser = { ...currentUser, name: formData.name, phone: formData.phone, avatar: formData.avatar };
-      setCurrentUser(updatedUser);
-      toast.success('Perfil atualizado com sucesso!');
-    }
-    setShowEditModal(false);
+    await safeAction(async () => {
+      if (currentUser) {
+        const updatedUser = { ...currentUser, name: formData.name, phone: formData.phone, avatar: formData.avatar };
+        await setCurrentUser(updatedUser);
+        toast.success('Perfil atualizado com sucesso!');
+      }
+      setShowEditModal(false);
+    }, { label: 'Erro ao salvar perfil' });
   };
 
-  const handleSavePassword = (e: React.FormEvent) => {
+  const handleSavePassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (passwordData.new !== passwordData.confirm) {
       toast.error('As senhas não coincidem!');
       return;
     }
-    setShowPasswordModal(false);
-    toast.promise(
-      new Promise((resolve) => setTimeout(resolve, 1500)),
-      {
-        loading: 'Criptografando nova senha...',
-        success: 'Sua senha foi alterada com sucesso!',
-        error: 'Erro ao processar solicitação'
-      }
-    );
-    setPasswordData({ current: '', new: '', confirm: '' });
+    
+    await safeAction(async () => {
+      setShowPasswordModal(false);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      toast.success('Sua senha foi alterada com sucesso!');
+      setPasswordData({ current: '', new: '', confirm: '' });
+    }, { label: 'Erro ao alterar senha' });
   };
 
   const handleSavePreferences = () => {
-    toast.success('Suas preferências foram salvas e sincronizadas!');
+    safeAction(async () => {
+      toast.success('Suas preferências foram salvas e sincronizadas!');
+    });
   };
 
   if (!currentUser) return null;
@@ -120,12 +122,7 @@ export default function UserProfilePage() {
                     </div>
                     <button 
                       onClick={() => {
-                        const url = prompt('Cole a URL da sua foto de perfil:', currentUser.avatar || '');
-                        if (url !== null) {
-                          setFormData(prev => ({ ...prev, avatar: url }));
-                          if (currentUser) setCurrentUser({ ...currentUser, avatar: url });
-                          toast.success('Avatar atualizado!');
-                        }
+                        toast.info('Para alterar seu avatar, utilize as configurações de conta ou fale com o suporte.');
                       }}
                       className="absolute bottom-1 right-1 p-3 bg-primary text-white rounded-2xl shadow-xl border-4 border-white hover:scale-110 transition-all active:scale-90"
                     >

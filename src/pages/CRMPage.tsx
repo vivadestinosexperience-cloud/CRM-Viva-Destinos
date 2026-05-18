@@ -25,6 +25,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import { useAppStore } from '../store/useAppStore';
 import { Customer } from '../types';
+import { getErrorMessage } from '../utils/getErrorMessage';
+import { safeAction } from '../utils/safeAction';
 
 export default function CRMPage() {
   const { customers, addCustomer, updateCustomer, deleteCustomer, isSaving } = useAppStore();
@@ -57,7 +59,7 @@ export default function CRMPage() {
       return;
     }
 
-    try {
+    await safeAction(async () => {
       await addCustomer(formData as Customer);
       setShowNewContactModal(false);
       setFormData({
@@ -69,26 +71,28 @@ export default function CRMPage() {
         temperature: 'WARM'
       });
       toast.success('Cliente cadastrado com sucesso!');
-    } catch (err) {
-      toast.error('Erro ao cadastrar cliente');
-    }
+    }, { label: 'Erro ao cadastrar cliente' });
   };
 
-  const handleDelete = (id: string, name: string) => {
-    if (confirm(`Remover permanentemente ${name}?`)) {
-      deleteCustomer(id);
-      toast.success('Cliente removido');
-    }
-    setActiveMenuId(null);
+  const handleDelete = (e: React.MouseEvent, id: string, name: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    safeAction(async () => {
+      await deleteCustomer(id);
+      toast.success(`Cliente ${name} removido`);
+      setActiveMenuId(null);
+    });
   };
 
   const handleToggleOptOut = async () => {
     if (!selectedCustomer) return;
-    await updateCustomer({
-      ...selectedCustomer,
-      opt_out: !selectedCustomer.opt_out
-    });
-    toast.success(`Preferência de marketing atualizada: ${!selectedCustomer.opt_out ? 'Opt-out (Desativado)' : 'Opt-in (Ativado)'}`);
+    await safeAction(async () => {
+      await updateCustomer({
+        ...selectedCustomer,
+        opt_out: !selectedCustomer.opt_out
+      });
+      toast.success(`Preferência de marketing atualizada: ${!selectedCustomer.opt_out ? 'Opt-out (Desativado)' : 'Opt-in (Ativado)'}`);
+    }, { label: 'Erro ao atualizar preferência' });
   };
 
   return (
@@ -215,7 +219,7 @@ export default function CRMPage() {
                             </button>
                             <div className="h-px bg-slate-50 my-1 mx-2" />
                             <button 
-                             onClick={() => handleDelete(customer.id, customer.name)}
+                             onClick={(e) => handleDelete(e, customer.id, customer.name)}
                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-red-50 rounded-xl transition-all text-xs font-bold text-red-600"
                             >
                                <Trash2 className="w-4 h-4 text-red-300" />

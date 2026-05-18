@@ -12,6 +12,7 @@ import TeamsSettingsPage from './settings/TeamsSettingsPage';
 import PermissionsSettingsPage from './settings/PermissionsSettingsPage';
 import AccountSettingsPage from './settings/AccountSettingsPage';
 import AppearanceSettingsPage from './settings/AppearanceSettingsPage';
+import TagsSettingsPage from './settings/TagsSettingsPage';
 
 export default function SettingsPage() {
   return (
@@ -25,6 +26,7 @@ export default function SettingsPage() {
         <Route path="equipes" element={<TeamsSettingsPage />} />
         <Route path="permissoes" element={<PermissionsSettingsPage />} />
         <Route path="conta" element={<AccountSettingsPage />} />
+        <Route path="tags" element={<TagsSettingsPage />} />
         <Route path="aparencia" element={<AppearanceSettingsPage />} />
         <Route path="*" element={<Navigate to="." replace />} />
       </Routes>

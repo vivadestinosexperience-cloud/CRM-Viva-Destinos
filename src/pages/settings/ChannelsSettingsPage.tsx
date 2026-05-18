@@ -10,9 +10,83 @@ import {
   ArrowLeft, ChevronRight, X, User as UserIcon, Smartphone as MobileIcon, Layers
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { QRCodeSVG } from 'qrcode.react';
 import { useAppStore } from '../../store/useAppStore';
 import { WhatsAppAccount } from '../../types';
 import { toast } from 'sonner';
+import { getErrorMessage as getGlobalErrorMessage } from '../../utils/getErrorMessage';
+import { safeAction } from '../../utils/safeAction';
+
+function getErrorMessage(error: any): string {
+  if (!error) return "Erro desconhecido.";
+  if (typeof error === "string") return error;
+  if (error.message) return String(error.message);
+  if (error.error) return String(error.error);
+
+  if (error.details) {
+    if (typeof error.details === "string") return error.details;
+    if (error.details.error) return String(error.details.error);
+    if (error.details.message) return String(error.details.message);
+
+    try {
+      return JSON.stringify(error.details, null, 2);
+    } catch {
+      return "Erro detalhado indisponível.";
+    }
+  }
+
+  try {
+    return JSON.stringify(error, null, 2);
+  } catch {
+    return "Erro desconhecido.";
+  }
+}
+
+function normalizeQrCodeValue(data: any): { value: string; type: 'IMAGE' | 'RAW' } | null {
+  const possibleValue =
+    data?.value ||
+    data?.qrCode ||
+    data?.qrcode ||
+    data?.base64 ||
+    data?.image ||
+    data?.src ||
+    null;
+
+  if (!possibleValue) return null;
+
+  const value = String(possibleValue).trim();
+
+  if (!value) return null;
+
+  // Se for uma imagem base64 ou URL de imagem (extensões comuns)
+  if (value.startsWith("data:image")) {
+    return { value, type: 'IMAGE' };
+  }
+
+  // Links do WhatsApp são PAYLOADS para serem transformados em QR Code, não são imagens
+  if (value.startsWith("https://wa.me/")) {
+    return { value, type: 'RAW' };
+  }
+
+  // URLs comuns de imagem
+  if (value.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
+    return { value, type: 'IMAGE' };
+  }
+
+  if (value.startsWith("http://") || value.startsWith("https://")) {
+    // Se for URL mas não sabermos se é imagem, tentamos RAW se não terminar em extensão de imagem
+    // mas Z-API costuma mandar o link wa.me como payload
+    return { value, type: 'RAW' };
+  }
+
+  // se vier apenas base64 puro sem prefixo, assumimos imagem
+  if (value.length > 100 && !value.includes(" ")) {
+     return { value: `data:image/png;base64,${value}`, type: 'IMAGE' };
+  }
+
+  // fallback para RAW
+  return { value, type: 'RAW' };
+}
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
   'ESTÁVEL': { label: 'Estável', color: 'text-emerald-600', bg: 'bg-emerald-50' },
@@ -25,9 +99,8 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }
 
 export default function ChannelsSettingsPage() {
   const { whatsAppAccounts, addWhatsAppAccount, updateWhatsAppAccount, deleteWhatsAppAccount, isSaving, teams, users } = useAppStore();
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [addStep, setAddStep] = useState<'LIST' | 'CONFIG' | 'INSTRUCTIONS' | 'QR' | 'SUCCESS'>('LIST');
-  const [selectedProvider] = useState<'ZAPI'>('ZAPI');
+  const [showZapiModal, setShowZapiModal] = useState(false);
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -36,25 +109,36 @@ export default function ChannelsSettingsPage() {
     responsibleId: ''
   });
 
-  const [qrCode, setQrCode] = useState<string | null>(null);
-  const [qrAttempts, setQrAttempts] = useState(0);
+  const [isCheckingConfig, setIsCheckingConfig] = useState(false);
+  const [isLoadingQr, setIsLoadingQr] = useState(false);
+  const [qrCodeData, setQrCodeData] = useState<{ value: string; type: 'IMAGE' | 'RAW' } | null>(null);
+  const [qrError, setQrError] = useState<string | null>(null);
+  const [configStatus, setConfigStatus] = useState<any | null>(null);
+
   const qrIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const statusIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const [configStatus, setConfigStatus] = useState<{configured: boolean, missing: string[], provider: string} | null>(null);
+  const refreshConfigStatus = async () => {
+    return safeAction(async () => {
+      const res = await fetch('/api/zapi/config-status');
+      const data = await res.json();
+      setConfigStatus(data);
+      return data;
+    }, { label: 'Erro ao verificar configuração', showToast: false });
+  };
 
   useEffect(() => {
-    fetch('/api/zapi/config-status')
-      .then(r => r.json())
-      .then(setConfigStatus)
-      .catch(() => setConfigStatus({configured: false, missing: [], provider: 'Z-API'}));
+    refreshConfigStatus();
+    return () => {
+      if (qrIntervalRef.current) clearInterval(qrIntervalRef.current);
+      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
+    };
   }, []);
 
   const resetModal = () => {
-    setShowAddModal(false);
-    setAddStep('LIST');
-    setQrCode(null);
-    setQrAttempts(0);
+    setShowZapiModal(false);
+    setQrCodeData(null);
+    setQrError(null);
     if (qrIntervalRef.current) clearInterval(qrIntervalRef.current);
     if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
     setFormData({
@@ -65,114 +149,144 @@ export default function ChannelsSettingsPage() {
     });
   };
 
-  const handleStartQR = () => {
-    if (!configStatus?.configured) {
-      toast.error(`Z-API não configurada no servidor. Faltando: ${configStatus?.missing.join(', ')}`);
-      return;
-    }
-    setAddStep('INSTRUCTIONS');
-  };
-
-  const handleShowQRPage = () => {
-    setAddStep('QR');
-    generateQrCode();
-    startStatusPolling();
-  };
-
-  const startStatusPolling = () => {
-    if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
-    statusIntervalRef.current = setInterval(checkProviderStatus, 5000);
-  };
-
-  const checkProviderStatus = async () => {
-    if (addStep !== 'QR') return;
-    
+  async function handleCheckConfig() {
     try {
-      const res = await fetch(`/api/zapi/status`);
-      const data = await res.json();
-      
-      if (data.status === 'CONNECTED') {
-        handleQRComplete(data.phone);
-      }
-    } catch (err) {
-      console.error('Error checking status:', err);
-    }
-  };
+      setIsCheckingConfig(true);
+      setQrError(null);
 
-  const generateQrCode = async () => {
-    if (qrAttempts >= 3) {
-      // Show manual refresh required
-      return;
-    }
+      const response = await fetch("/api/zapi/config-status");
+      const data = await response.json();
 
-    try {
-      const res = await fetch(`/api/zapi/qrcode`);
-      const data = await res.json();
-      
-      if (data.error) {
-        toast.error(data.error);
+      setConfigStatus(data);
+
+      if (!response.ok || !data.configured) {
+        const missing = Array.isArray(data.missing) ? data.missing.filter(Boolean) : [];
+        setQrError(data.message || `Variáveis faltantes: ${missing.join(", ") || "não identificadas"}`);
         return;
       }
 
-      setQrCode(data.value || data.qrcode || data.base64); 
-      setQrAttempts(prev => prev + 1);
-    } catch (err) {
-      toast.error('Erro ao conectar com o servidor backend');
+      toast.success("Z-API configurada no servidor.");
+    } catch (error) {
+      setQrError(getErrorMessage(error));
+    } finally {
+      setIsCheckingConfig(false);
     }
+  }
+
+  async function handleGenerateQrCode() {
+    try {
+      setIsLoadingQr(true);
+      setQrError(null);
+      setQrCodeData(null);
+
+      const statusResponse = await fetch("/api/zapi/config-status");
+      const statusData = await statusResponse.json();
+
+      if (!statusResponse.ok || !statusData.configured) {
+        const missing = Array.isArray(statusData.missing) ? statusData.missing.filter(Boolean) : [];
+        setQrError(statusData.message || `Variáveis faltantes: ${missing.join(", ") || "não identificadas"}`);
+        return;
+      }
+
+      const response = await fetch("/api/zapi/qrcode");
+      const data = await response.json();
+
+      console.log("QR Code response:", data);
+
+      if (!response.ok) {
+        throw data;
+      }
+
+      const normalized = normalizeQrCodeValue(data);
+
+      if (!normalized) {
+        throw {
+          message: "A Z-API não retornou o QR Code em um formato válido.",
+          details: data
+        };
+      }
+
+      setQrCodeData(normalized);
+      startStatusPolling();
+    } catch (error) {
+      setQrError(getErrorMessage(error));
+    } finally {
+      setIsLoadingQr(false);
+    }
+  }
+
+  const startStatusPolling = () => {
+    if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
+    statusIntervalRef.current = setInterval(async () => {
+      await safeAction(async () => {
+        const res = await fetch(`/api/zapi/status`);
+        const data = await res.json();
+        
+        if (data.status === 'CONNECTED') {
+          handleConnectComplete(data.phone);
+        }
+      }, { showToast: false });
+    }, 5000);
   };
 
-  useEffect(() => {
-    if (addStep === 'QR' && !qrIntervalRef.current) {
-      qrIntervalRef.current = setInterval(generateQrCode, 20000);
-    }
-    return () => {
-      if (qrIntervalRef.current) clearInterval(qrIntervalRef.current);
-      qrIntervalRef.current = null;
-    };
-  }, [addStep, qrAttempts]);
-
-  const handleQRComplete = async (detectedPhone?: string) => {
+  const handleConnectComplete = async (detectedPhone?: string) => {
      if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
      if (qrIntervalRef.current) clearInterval(qrIntervalRef.current);
 
-     const newChannel: Partial<WhatsAppAccount> = {
-        id: `ch-${Date.now()}`,
-        name: formData.name || 'WhatsApp Z-API',
-        type: 'WHATSAPP',
-        provider: 'ZAPI',
-        provider_type: 'zapi',
-        phone_number: detectedPhone || formData.phone,
-        status: 'ESTÁVEL',
-        team_id: formData.teamId,
-        responsible_user_id: formData.responsibleId,
-        created_at: new Date().toISOString()
-     };
-     await addWhatsAppAccount(newChannel as WhatsAppAccount);
-     setAddStep('SUCCESS');
-     setTimeout(resetModal, 2000);
+     await safeAction(async () => {
+       const newChannel: Partial<WhatsAppAccount> = {
+          id: `ch-${Date.now()}`,
+          name: formData.name || 'WhatsApp Z-API',
+          type: 'WHATSAPP',
+          provider: 'ZAPI',
+          provider_type: 'zapi',
+          phone_number: detectedPhone || formData.phone,
+          status: 'ESTÁVEL',
+          team_id: formData.teamId,
+          responsible_user_id: formData.responsibleId,
+          created_at: new Date().toISOString()
+       };
+       await addWhatsAppAccount(newChannel as WhatsAppAccount);
+       toast.success("Canal conectado com sucesso!");
+       resetModal();
+     });
   };
 
-  const handleManualCheckStatus = async () => {
-    try {
+  const checkExistingAccountStatus = async (account: WhatsAppAccount) => {
+    await safeAction(async () => {
       const res = await fetch(`/api/zapi/status`);
       const data = await res.json();
       
       if (data.status === 'CONNECTED') {
-        handleQRComplete(data.phone);
+        updateWhatsAppAccount({ ...account, status: 'ESTÁVEL' });
+        toast.success(`Canal ${account.name} está Estável!`);
       } else {
-        toast.info("Ainda aguardando leitura do QR Code.");
+        updateWhatsAppAccount({ ...account, status: data.status === 'WAITING_QR' ? 'WAITING_QR' : 'DISCONNECTED' });
+        toast.error(`Canal ${account.name} não está conectado.`);
       }
-    } catch (err) {
-      toast.error('Erro ao verificar status');
-    }
+    }, { label: 'Falha ao consultar status na Z-API' });
   };
 
-  const handleDelete = (id: string) => {
-    if (confirm('Deseja realmente remover este canal?')) {
-      deleteWhatsAppAccount(id);
+  const handleDelete = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    safeAction(async () => {
+      await deleteWhatsAppAccount(id);
       toast.success('Canal removido com sucesso');
-    }
+    });
   };
+
+  const handleCopySupportMessage = () => {
+    const message = `Olá, preciso localizar ou gerar o Client Token / Token de Segurança da conta da Z-API.
+No painel da instância só aparecem ID da instância e Token da instância.
+A documentação informa que o endpoint /qr-code exige o header Client-Token.
+Onde consigo gerar esse Client Token na minha conta trial?`;
+    
+    navigator.clipboard.writeText(message);
+    toast.success("Mensagem copiada para a área de transferência.");
+  };
+
+  const isMissingClientToken = qrError?.toLowerCase().includes("client token");
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-10 animate-in fade-in duration-500">
@@ -186,12 +300,21 @@ export default function ChannelsSettingsPage() {
           </h1>
           <p className="text-slate-500 mt-2 font-medium">Configure os canais usados para atendimento omnichannel da Viva Destinos.</p>
         </div>
-        <button 
-          onClick={() => setShowAddModal(true)}
-          className="bg-blue-600 text-white p-4 rounded-3xl shadow-xl shadow-blue-200 hover:scale-105 active:scale-95 transition-all group"
-        >
-          <Plus className="w-8 h-8 group-hover:rotate-90 transition-transform duration-500" />
-        </button>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={refreshConfigStatus}
+            className="flex items-center gap-2 px-6 py-4 bg-white border border-slate-200 text-slate-600 rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-50 transition-all shadow-sm"
+          >
+            <RefreshCw className="w-4 h-4 text-emerald-500" />
+            Verificar Configuração
+          </button>
+          <button 
+            onClick={() => setShowZapiModal(true)}
+            className="bg-blue-600 text-white p-4 rounded-3xl shadow-xl shadow-blue-200 hover:scale-105 active:scale-95 transition-all group"
+          >
+            <Plus className="w-8 h-8 group-hover:rotate-90 transition-transform duration-500" />
+          </button>
+        </div>
       </header>
 
       {/* Grid of Channels */}
@@ -213,9 +336,51 @@ export default function ChannelsSettingsPage() {
                      <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${status.bg} ${status.color}`}>
                         {status.label}
                      </span>
-                     <button className="p-2 hover:bg-slate-50 rounded-xl text-slate-300 transition-colors">
-                       <MoreVertical className="w-4 h-4" />
-                     </button>
+                     <div className="relative">
+                       <button 
+                        onClick={() => setActiveMenuId(activeMenuId === account.id ? null : account.id)}
+                        className={`p-2 transition-all rounded-xl ${activeMenuId === account.id ? 'bg-blue-50 text-blue-600 border border-blue-100' : 'hover:bg-slate-50 text-slate-300'}`}
+                       >
+                         <MoreVertical className="w-4 h-4" />
+                       </button>
+
+                       <AnimatePresence>
+                        {activeMenuId === account.id && (
+                          <motion.div 
+                            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                            className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-2xl border border-slate-100 p-2 z-50 overflow-hidden"
+                          >
+                             <button 
+                              onClick={() => { setActiveMenuId(null); toast.info('Funcionalidade em desenvolvimento'); }}
+                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
+                             >
+                                <Info className="w-3.5 h-3.5" /> Informações Técnicas
+                             </button>
+                             <button 
+                              onClick={() => { setActiveMenuId(null); toast.info('Configurando Webhook...'); }}
+                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
+                             >
+                                <Globe className="w-3.5 h-3.5" /> Configurar Webhook
+                             </button>
+                             <div className="h-px bg-slate-50 my-1 mx-2" />
+                             <button 
+                              onClick={() => { setActiveMenuId(null); toast.warning('Sessão desconectada remotamente'); }}
+                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-amber-50 rounded-xl text-xs font-bold text-amber-600 transition-colors"
+                             >
+                                <X className="w-3.5 h-3.5" /> Desconectar Sessão
+                             </button>
+                             <button 
+                              onClick={(e) => { setActiveMenuId(null); handleDelete(e, account.id); }}
+                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-red-50 rounded-xl text-xs font-bold text-red-600 transition-colors"
+                             >
+                                <Trash2 className="w-3.5 h-3.5" /> Excluir Canal
+                             </button>
+                          </motion.div>
+                        )}
+                       </AnimatePresence>
+                     </div>
                    </div>
                 </div>
 
@@ -254,13 +419,21 @@ export default function ChannelsSettingsPage() {
                 </div>
                 <div className="flex items-center gap-2">
                    <button 
-                    onClick={() => { setAddStep('QR'); setShowAddModal(true); }}
+                    onClick={() => checkExistingAccountStatus(account)}
+                    title="Verificar conexão"
+                    className="p-2 text-emerald-400 hover:text-emerald-600 transition-colors bg-white rounded-xl shadow-sm border border-emerald-100"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                  </button>
+                   <button 
+                    onClick={() => setShowZapiModal(true)}
+                    title="Novo QR Code"
                     className="p-2 text-blue-400 hover:text-blue-600 transition-colors"
                   >
                     <RefreshCw className="w-4 h-4" />
                   </button>
                   <button 
-                    onClick={() => handleDelete(account.id)}
+                    onClick={(e) => handleDelete(e, account.id)}
                     className="p-2 text-red-300 hover:text-red-500 transition-colors"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -280,9 +453,9 @@ export default function ChannelsSettingsPage() {
         )}
       </div>
 
-      {/* Add Modal */}
+      {/* Z-API Modal */}
       <AnimatePresence>
-        {showAddModal && (
+        {showZapiModal && (
           <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0 }}
@@ -299,215 +472,146 @@ export default function ChannelsSettingsPage() {
             >
               {/* Header */}
               <div className="p-8 border-b border-slate-100 flex items-center justify-between shrink-0">
-                <div className="flex items-center gap-4">
-                   {addStep !== 'LIST' && (
-                     <button onClick={() => setAddStep('LIST')} className="p-2 hover:bg-slate-50 rounded-xl transition-colors">
-                       <ArrowLeft className="w-5 h-5 text-slate-400" />
-                     </button>
-                   )}
-                   <div>
-                     <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">
-                       {addStep === 'LIST' ? 'Adicionar Canal' : 
-                        addStep === 'CONFIG' ? 'Configurações' :
-                        addStep === 'INSTRUCTIONS' ? 'Instruções' :
-                        addStep === 'QR' ? 'Escaneie o QR Code' : 'Concluído'}
-                     </h3>
-                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Viva Destinos Omnichannel</p>
-                   </div>
+                <div>
+                   <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Adicionar Canal</h3>
+                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">WhatsApp via Z-API</p>
                 </div>
                 <button onClick={resetModal} className="p-2 hover:bg-red-50 text-slate-300 hover:text-red-500 rounded-xl transition-colors">
                   <X className="w-6 h-6" />
                 </button>
               </div>
 
-              {/* Steps Content */}
-              <div className="flex-1 overflow-y-auto p-8">
-                {addStep === 'LIST' && (
-                  <div className="space-y-6">
-                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">Configurar integração Z-API:</p>
-                    
-                    <button 
-                      onClick={() => setAddStep('CONFIG')}
-                      className={`w-full p-8 bg-slate-50 border border-slate-100 rounded-[2.5rem] flex items-center justify-between hover:border-emerald-200 hover:bg-emerald-50 transition-all group ${!configStatus?.configured ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
-                    >
-                      <div className="flex items-center gap-6">
-                        <div className="w-16 h-16 bg-white rounded-3xl shadow-sm flex items-center justify-center text-emerald-500 group-hover:scale-110 transition-transform">
-                          <Smartphone className="w-8 h-8" />
-                        </div>
-                        <div className="text-left">
-                          <h4 className="text-lg font-black text-slate-800">WhatsApp via Z-API</h4>
-                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Conexão por QR Code</p>
-                        </div>
-                      </div>
-                      <ChevronRight className="w-6 h-6 text-slate-300" />
-                    </button>
+              {/* Content */}
+              <div className="flex-1 overflow-y-auto p-8 space-y-8">
+                 <div className="p-8 bg-slate-50 border border-slate-100 rounded-[2.5rem] flex items-center gap-6">
+                    <div className="w-16 h-16 bg-white rounded-3xl shadow-sm flex items-center justify-center text-emerald-500 transition-transform">
+                      <Smartphone className="w-8 h-8" />
+                    </div>
+                    <div className="text-left">
+                      <h4 className="text-lg font-black text-slate-800">WhatsApp via Z-API</h4>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Conexão por QR Code</p>
+                    </div>
+                 </div>
 
-                    {!configStatus?.configured && (
-                      <div className="p-6 bg-red-50 border border-red-100 rounded-3xl flex items-start gap-4">
-                        <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-                        <div>
-                          <p className="text-xs font-black text-red-600 uppercase tracking-tight">Z-API não configurada</p>
-                          <p className="text-[10px] text-red-500 font-medium mt-1">
-                            Cadastre as variáveis de ambiente no servidor para ativar a integração: 
-                            <span className="font-bold block mt-1">{configStatus?.missing.join(', ')}</span>
-                          </p>
+                 <p className="text-sm text-slate-500 font-medium px-4">
+                   Use o botão abaixo para gerar o QR Code e conectar o WhatsApp da Z-API.
+                 </p>
+
+                 {qrError && (
+                   <div className="p-6 bg-red-50 border border-red-100 rounded-3xl flex flex-col gap-4 mx-4">
+                     <div className="flex items-start gap-4">
+                       <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                       <div className="space-y-1">
+                         <p className="text-xs font-black text-red-600 uppercase tracking-tight">Erro na Configuração</p>
+                         <p className="text-[10px] text-red-500 font-medium whitespace-pre-wrap">
+                           {qrError}
+                         </p>
+                       </div>
+                     </div>
+
+                     {isMissingClientToken && (
+                        <div className="pt-4 border-t border-red-100 flex flex-col gap-3">
+                           <p className="text-[10px] text-red-600 font-bold leading-relaxed">
+                             Acesse o painel da Z-API &gt; Segurança &gt; Client Token. Se a opção não aparecer, solicite ao suporte da Z-API a liberação do Token de Segurança da conta.
+                           </p>
+                           <button 
+                             onClick={handleCopySupportMessage}
+                             className="w-full py-2.5 bg-red-600 text-white rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-red-700 transition-all shadow-md shadow-red-100 flex items-center justify-center gap-2"
+                           >
+                             Copiar mensagem para suporte
+                           </button>
                         </div>
+                     )}
+                   </div>
+                 )}
+
+                 {/* QR Code Display */}
+                 <div className="flex flex-col items-center justify-center py-6">
+                    {isLoadingQr ? (
+                      <div className="flex flex-col items-center gap-4">
+                        <RefreshCw className="w-12 h-12 text-blue-500 animate-spin" />
+                        <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Gerando QR Code...</p>
+                      </div>
+                    ) : qrCodeData ? (
+                      <div className="space-y-6 flex flex-col items-center">
+                        <div className="w-[220px] h-[220px] bg-white p-4 rounded-[2rem] border-4 border-emerald-100 shadow-2xl flex items-center justify-center">
+                          {qrCodeData.type === 'IMAGE' ? (
+                            <img 
+                              src={qrCodeData.value} 
+                              alt="Z-API QR Code" 
+                              className="w-full h-full object-contain"
+                              onError={() => {
+                                console.error("Erro ao carregar QR Code Image:", qrCodeData.value);
+                                setQrError("A imagem do QR Code não pôde ser carregada.");
+                                setQrCodeData(null);
+                              }}
+                            />
+                          ) : (
+                            <QRCodeSVG 
+                              value={qrCodeData.value}
+                              size={180}
+                              level="H"
+                              includeMargin={false}
+                            />
+                          )}
+                        </div>
+                        <p className="text-sm text-slate-800 font-black text-center max-w-xs">
+                          Escaneie o código acima no Menu "Aparelhos Conectados" do seu WhatsApp.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="text-center space-y-2 opacity-40">
+                         <MobileIcon className="w-12 h-12 mx-auto text-slate-300" />
+                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Aguardando geração do QR Code</p>
                       </div>
                     )}
-                  </div>
-                )}
+                 </div>
 
-                {addStep === 'CONFIG' && (
-                   <form className="space-y-6">
-                      <div className="grid grid-cols-2 gap-6">
-                         <div className="space-y-2">
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2">Nome do Canal</label>
-                           <input 
-                            type="text" 
-                            className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-3xl focus:ring-4 focus:ring-blue-500/10 outline-none transition-all font-bold"
-                            placeholder="Ex: Comercial 01"
-                            value={formData.name}
-                            onChange={(e) => setFormData({...formData, name: e.target.value})}
-                          />
-                         </div>
-                         <div className="space-y-2">
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2">Número do WhatsApp</label>
-                           <input 
-                            type="text" 
-                            className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-3xl focus:ring-4 focus:ring-blue-500/10 outline-none transition-all font-bold"
-                            placeholder="+55 ..."
-                            value={formData.phone}
-                            onChange={(e) => setFormData({...formData, phone: e.target.value})}
-                          />
-                         </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-6">
-                         <div className="space-y-2">
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2">Equipe Responsável</label>
-                           <select 
-                            className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-3xl outline-none font-bold appearance-none"
-                            value={formData.teamId}
-                            onChange={(e) => setFormData({...formData, teamId: e.target.value})}
-                          >
-                             <option value="">Selecione...</option>
-                             {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                           </select>
-                         </div>
-                         <div className="space-y-2">
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2">Usuário Responsável</label>
-                           <select 
-                            className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-3xl outline-none font-bold appearance-none"
-                            value={formData.responsibleId}
-                            onChange={(e) => setFormData({...formData, responsibleId: e.target.value})}
-                          >
-                             <option value="">Selecione...</option>
-                             {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-                           </select>
-                         </div>
-                      </div>
-
-                      <div className="flex items-center justify-end gap-4 mt-8">
-                         <button type="button" onClick={() => setAddStep('LIST')} className="px-6 py-3 text-xs font-black text-slate-400 uppercase tracking-widest">Retornar</button>
-                         <button onClick={handleStartQR} className="px-10 py-4 bg-emerald-600 text-white rounded-[1.5rem] font-black text-xs uppercase tracking-widest shadow-xl shadow-emerald-100">Próximo Passo</button>
-                      </div>
-                   </form>
-                )}
-
-                {addStep === 'INSTRUCTIONS' && (
-                  <div className="flex flex-col items-center py-6 text-center">
-                    <div className="w-20 h-20 bg-emerald-50 rounded-3xl flex items-center justify-center text-emerald-600 mb-6">
-                       <MobileIcon className="w-10 h-10" />
-                    </div>
-                    
-                    <h4 className="text-xl font-black text-slate-800 mb-2 uppercase tracking-tight">WhatsApp / QR Code</h4>
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-8">Integração por QR Code via {selectedProvider}</p>
-
-                    <div className="flex items-center justify-center gap-4 mb-10">
-                       <div className="flex flex-col items-center gap-2">
-                          <div className="w-8 h-8 rounded-full bg-blue-600 text-white text-[10px] font-black flex items-center justify-center">1</div>
-                          <span className="text-[9px] font-black text-slate-400 uppercase">Instância</span>
-                       </div>
-                       <div className="w-12 h-[2px] bg-slate-100 -mt-5" />
-                       <div className="flex flex-col items-center gap-2 opacity-40">
-                          <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-500 text-[10px] font-black flex items-center justify-center">2</div>
-                          <span className="text-[9px] font-black text-slate-400 uppercase">Conectar</span>
-                       </div>
-                       <div className="w-12 h-[2px] bg-slate-100 -mt-5" />
-                       <div className="flex flex-col items-center gap-2 opacity-40">
-                          <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-500 text-[10px] font-black flex items-center justify-center">3</div>
-                          <span className="text-[9px] font-black text-slate-400 uppercase">Concluído</span>
-                       </div>
-                    </div>
-
-                    <div className="bg-slate-50 p-8 rounded-[2rem] border border-slate-100 max-w-sm mb-10">
-                       <p className="text-sm text-slate-600 leading-relaxed font-medium">
-                        Acesse o aplicativo do WhatsApp no smartphone, vá em <b>Aparelhos conectados</b> e siga os passos abaixo. Após isso, clique em continuar e realize a leitura do QR Code.
-                       </p>
-                    </div>
-
-                    <div className="flex items-center gap-4 w-full px-4">
-                       <button onClick={resetModal} className="flex-1 p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-slate-600 transition-colors">Ler posteriormente</button>
-                       <button onClick={handleShowQRPage} className="flex-[2] p-4 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-emerald-100 hover:scale-105 transition-all">Continuar</button>
-                    </div>
-                  </div>
-                )}
-
-                {addStep === 'QR' && (
-                  <div className="flex flex-col items-center py-6">
-                    <div className="flex items-center justify-center gap-4 mb-8">
-                       <div className="flex flex-col items-center gap-2">
-                          <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-600 text-[10px] font-black flex items-center justify-center"><CheckCircle2 className="w-4 h-4" /></div>
-                          <span className="text-[9px] font-black text-slate-400 uppercase">Instância</span>
-                       </div>
-                       <div className="w-12 h-[2px] bg-emerald-100 -mt-5" />
-                       <div className="flex flex-col items-center gap-2">
-                          <div className="w-8 h-8 rounded-full bg-blue-600 text-white text-[10px] font-black flex items-center justify-center">2</div>
-                          <span className="text-[9px] font-black text-slate-400 uppercase">Conectar</span>
-                       </div>
-                       <div className="w-12 h-[2px] bg-slate-100 -mt-5" />
-                       <div className="flex flex-col items-center gap-2 opacity-40">
-                          <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-500 text-[10px] font-black flex items-center justify-center">3</div>
-                          <span className="text-[9px] font-black text-slate-400 uppercase">Concluído</span>
-                       </div>
-                    </div>
-
-                    <div className="w-64 h-64 bg-slate-50 flex items-center justify-center rounded-[3rem] border-4 border-emerald-100 mb-8 relative group overflow-hidden shadow-2xl">
-                       {qrCode ? (
-                         <img src={qrCode} alt="WhatsApp QR Code" className="w-full h-full object-contain p-4 group-hover:scale-110 transition-transform duration-500" />
-                       ) : (
-                         <RefreshCw className="w-12 h-12 text-emerald-300 animate-spin" />
-                       )}
-                       {!qrCode && <p className="absolute bottom-10 text-[9px] font-black text-emerald-400 uppercase tracking-widest">Obtendo Código...</p>}
-                    </div>
-
-                    <h4 className="text-xl font-black text-slate-800 mb-4 text-center">Realize a leitura do QR Code abaixo:</h4>
-                    
-                    <div className="grid grid-cols-2 gap-4 w-full px-4 mb-8">
-                       <button onClick={() => setAddStep('INSTRUCTIONS')} className="flex items-center justify-center gap-2 p-4 bg-slate-50 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-100 transition-all">
-                          <ArrowLeft className="w-4 h-4" /> Retornar
-                       </button>
-                       <button onClick={generateQrCode} className="flex items-center justify-center gap-2 p-4 bg-slate-50 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-100 transition-all">
-                          <RefreshCw className="w-4 h-4" /> Atualizar QR
-                       </button>
-                    </div>
-
-                    <button onClick={handleManualCheckStatus} className="w-full mx-4 p-5 bg-emerald-600 text-white rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest shadow-xl shadow-emerald-100 hover:scale-[1.02] transition-all">
-                       Continuar
-                    </button>
-                  </div>
-                )}
-
-                {addStep === 'SUCCESS' && (
-                   <div className="flex flex-col items-center py-10">
-                      <div className="w-24 h-24 bg-emerald-100 rounded-[2.5rem] flex items-center justify-center text-emerald-600 mb-6 shadow-xl shadow-emerald-50">
-                        <CheckCircle2 className="w-12 h-12" />
-                      </div>
-                      <h4 className="text-2xl font-black text-slate-800 mb-2 uppercase tracking-tight">Canal Conectado!</h4>
-                      <p className="text-sm text-slate-500 font-medium italic">"Operação omnichannel ativada para este canal."</p>
+                 {/* Form Fields for identification */}
+                 <div className="grid grid-cols-2 gap-4 mx-4">
+                   <div className="space-y-2">
+                     <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Nome do Canal</label>
+                     <input 
+                      type="text" 
+                      className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-sm"
+                      placeholder="Ex: Comercial Principal"
+                      value={formData.name}
+                      onChange={(e) => setFormData({...formData, name: e.target.value})}
+                    />
                    </div>
-                )}
+                   <div className="space-y-2">
+                     <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Equipe</label>
+                     <select 
+                      className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-sm"
+                      value={formData.teamId}
+                      onChange={(e) => setFormData({...formData, teamId: e.target.value})}
+                    >
+                      <option value="">Selecione...</option>
+                      {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                   </div>
+                 </div>
               </div>
+
+               {/* Footer Actions */}
+               <div className="p-8 border-t border-slate-100 bg-slate-50 grid grid-cols-2 gap-4">
+                  <button 
+                    onClick={handleCheckConfig}
+                    disabled={isCheckingConfig}
+                    className="flex items-center justify-center gap-2 px-6 py-4 bg-white border border-slate-200 text-slate-600 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-100 transition-all shadow-sm"
+                  >
+                    {isCheckingConfig ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Database className="w-4 h-4 text-blue-500" />}
+                    Verificar Configuração
+                  </button>
+                  <button 
+                    onClick={handleGenerateQrCode}
+                    disabled={isLoadingQr}
+                    className="flex items-center justify-center gap-2 px-6 py-4 bg-blue-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 transition-all shadow-xl shadow-blue-100"
+                  >
+                    <Smartphone className="w-4 h-4" />
+                    Gerar QR Code
+                  </button>
+               </div>
             </motion.div>
           </div>
         )}

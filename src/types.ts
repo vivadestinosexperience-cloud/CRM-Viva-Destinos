@@ -57,6 +57,14 @@ export interface InternalChat {
 
 export type ChannelType = 'WHATSAPP' | 'INSTAGRAM' | 'FACEBOOK' | 'WEBCHAT' | 'MANUAL';
 
+export interface Tag {
+  id: string;
+  name: string;
+  color?: string;
+  category?: string;
+  active?: boolean;
+}
+
 export interface WhatsAppAccount {
   id: string;
   name: string;
@@ -111,6 +119,11 @@ export interface Message {
   media_url?: string;
   status: 'sent' | 'delivered' | 'read' | 'failed' | 'deleted';
   raw_payload?: any;
+  metadata?: {
+    agentName?: string;
+    sentContent?: string;
+    [key: string]: any;
+  };
   created_at?: string;
   
   // Legacy compatibility

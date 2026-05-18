@@ -27,6 +27,9 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useAppStore } from '../store/useAppStore';
 import { Campaign, Customer } from '../types';
 import { toast } from 'sonner';
+import { getErrorMessage } from '../utils/getErrorMessage';
+import { safeAction } from '../utils/safeAction';
+import { getAgentDisplayName } from '../utils/userUtils';
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
   'PENDING': { label: 'Pendente', color: 'text-slate-500', bg: 'bg-slate-50' },
@@ -43,11 +46,13 @@ export default function CampaignsPage() {
     updateCampaign, 
     deleteCampaign, 
     whatsAppAccounts, 
-    customers 
+    customers,
+    currentUser
   } = useAppStore();
   
   const [showAddModal, setShowAddModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   
   const [formData, setFormData] = useState({
     name: '',
@@ -113,68 +118,83 @@ export default function CampaignsPage() {
   const startSending = async (campaign: Campaign) => {
     if (campaign.status === 'COMPLETED') return;
     
-    // Check if channel is connected
-    const account = whatsAppAccounts.find(a => a.id === campaign.whatsapp_account_id);
-    if (!account || account.status !== 'ESTÁVEL') {
-      toast.error('O canal de envio está desconectado. Reconecte em Configurações > Canais.');
-      return;
-    }
+    await safeAction(async () => {
+      // Check if channel is connected
+      const account = whatsAppAccounts.find(a => a.id === campaign.whatsapp_account_id);
+      if (!account || account.status !== 'ESTÁVEL') {
+        toast.error('O canal de envio está desconectado. Reconecte em Configurações > Canais.');
+        return;
+      }
 
-    // Simulated Sending Process
-    updateCampaign({ ...campaign, status: 'SENDING', started_at: new Date().toISOString() });
-    toast.info(`Iniciando envio para ${campaign.recipients_count} clientes...`);
+      // Simulated Sending Process
+      updateCampaign({ ...campaign, status: 'SENDING', started_at: new Date().toISOString() });
+      toast.info(`Iniciando envio para ${campaign.recipients_count} clientes...`);
 
-    const recipients = customers.filter(c => {
-      if (c.opt_out) return false;
-      if (!campaign.target_tags || campaign.target_tags.length === 0) return true;
-      return campaign.target_tags.some(tag => c.tags?.includes(tag));
-    });
+      const recipients = customers.filter(c => {
+        if (c.opt_out) return false;
+        if (!campaign.target_tags || campaign.target_tags.length === 0) return true;
+        return campaign.target_tags.some(tag => c.tags?.includes(tag));
+      });
 
-    let sent = 0;
-    let failed = 0;
+      let sent = 0;
+      let failed = 0;
 
-    for (const customer of recipients) {
-      // Pause if campaign status changed (e.g. manually paused)
-      // Note: In real app this would be backend controlled
-      
-      const message = campaign.content.replace(/{name}/g, customer.name);
-      
-      try {
-        const res = await fetch('/api/zapi/send-text', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone: customer.phone, message })
-        });
+      for (const customer of recipients) {
+        // Pause if campaign status changed (e.g. manually paused)
+        // Note: In real app this would be backend controlled
         
-        if (res.ok) sent++;
-        else failed++;
-      } catch (err) {
-        failed++;
-      }
+        let message = campaign.content.replace(/{name}/g, customer.name);
+        
+        // Support {{consultor}} variable
+        const agentName = getAgentDisplayName(currentUser);
+        message = message.replace(/{{consultor}}/g, agentName);
+        
+        try {
+          const res = await fetch('/api/zapi/send-text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone: customer.phone, message })
+          });
+          
+          if (res.ok) {
+            sent++;
+          } else {
+            const data = await res.json();
+            console.error('Campaign fail:', getErrorMessage(data));
+            failed++;
+          }
+        } catch (err) {
+          console.error('Campaign network fail:', getErrorMessage(err));
+          failed++;
+        }
 
-      // Update progress every 5 messages or at the end
-      if (sent % 5 === 0 || sent + failed === recipients.length) {
-        updateCampaign({ 
-          ...campaign, 
-          status: (sent + failed === recipients.length) ? 'COMPLETED' : 'SENDING',
-          sent_count: sent,
-          failed_count: failed,
-          completed_at: (sent + failed === recipients.length) ? new Date().toISOString() : undefined
-        });
-      }
+        // Update progress every 5 messages or at the end
+        if (sent % 5 === 0 || sent + failed === recipients.length) {
+          updateCampaign({ 
+            ...campaign, 
+            status: (sent + failed === recipients.length) ? 'COMPLETED' : 'SENDING',
+            sent_count: sent,
+            failed_count: failed,
+            completed_at: (sent + failed === recipients.length) ? new Date().toISOString() : undefined
+          });
+        }
 
-      // Add a small delay between messages to avoid blocking (2 seconds)
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-    
-    toast.success(`Campanha "${campaign.name}" finalizada! Enviados: ${sent}, Falhas: ${failed}`);
+        // Add a small delay between messages to avoid blocking (2 seconds)
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      
+      toast.success(`Campanha "${campaign.name}" finalizada! Enviados: ${sent}, Falhas: ${failed}`);
+    }, { label: 'Erro durante o envio da campanha' });
   };
 
-  const handleDelete = (id: string) => {
-    if (confirm('Deseja realmente remover esta campanha?')) {
-      deleteCampaign(id);
+  const handleDelete = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    safeAction(async () => {
+      await deleteCampaign(id);
       toast.success('Campanha removida');
-    }
+      setActiveMenuId(null);
+    }, { label: 'Erro ao remover campanha' });
   };
 
   const toggleTag = (tag: string) => {
@@ -279,9 +299,45 @@ export default function CampaignsPage() {
                         </div>
                       </div>
                    </div>
-                   <button className="p-2 hover:bg-slate-50 rounded-xl text-slate-300 transition-colors">
-                     <MoreVertical className="w-5 h-5" />
-                   </button>
+                    <div className="relative">
+                      <button 
+                        onClick={() => setActiveMenuId(activeMenuId === campaign.id ? null : campaign.id)}
+                        className={`p-2 transition-all rounded-xl ${activeMenuId === campaign.id ? 'bg-blue-50 text-blue-600 border border-blue-100' : 'hover:bg-slate-50 text-slate-300'}`}
+                      >
+                        <MoreVertical className="w-5 h-5" />
+                      </button>
+
+                      <AnimatePresence>
+                        {activeMenuId === campaign.id && (
+                          <motion.div 
+                            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                            className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-2xl border border-slate-100 p-2 z-50 overflow-hidden"
+                          >
+                             <button 
+                              onClick={() => { setActiveMenuId(null); toast.info('Funcionalidade em desenvolvimento'); }}
+                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
+                             >
+                                <Play className="w-3.5 h-3.5" /> Reenviar falhas
+                             </button>
+                             <button 
+                              onClick={() => { setActiveMenuId(null); toast.info('Relatório sendo gerado...'); }}
+                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
+                             >
+                                <CheckCircle2 className="w-3.5 h-3.5" /> Relatório Detalhado
+                             </button>
+                             <div className="h-px bg-slate-50 my-1 mx-2" />
+                             <button 
+                              onClick={(e) => { setActiveMenuId(null); handleDelete(e, campaign.id); }}
+                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-red-50 rounded-xl text-xs font-bold text-red-600 transition-colors"
+                             >
+                                <Trash2 className="w-3.5 h-3.5" /> Excluir permanentemente
+                             </button>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
                 </div>
 
                 <div className="space-y-6">
@@ -359,7 +415,7 @@ export default function CampaignsPage() {
                      </span>
                    )}
                    <button 
-                    onClick={() => handleDelete(campaign.id)}
+                    onClick={(e) => handleDelete(e, campaign.id)}
                     className="p-2 text-slate-300 hover:text-red-500 transition-colors"
                    >
                      <Trash2 className="w-5 h-5" />
@@ -456,7 +512,7 @@ export default function CampaignsPage() {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between px-2">
                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Conteúdo da Mensagem</label>
-                      <span className="text-[9px] font-black text-blue-500 uppercase tracking-widest">Dica: Use {"{name}"} para personalizar</span>
+                      <span className="text-[9px] font-black text-blue-500 uppercase tracking-widest">Dica: Use {"{name}"} ou {"{{consultor}}"}</span>
                     </div>
                     <textarea 
                       required

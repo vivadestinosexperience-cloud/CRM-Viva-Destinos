@@ -13,7 +13,8 @@ import {
   Conversation, 
   Message,
   InternalMessage,
-  Campaign
+  Campaign,
+  Tag
 } from '../types';
 import { 
   MOCK_USERS, 
@@ -31,7 +32,8 @@ import {
   whatsappService,
   customerService,
   conversationService,
-  messageService
+  messageService,
+  tagService
 } from '../services/dataService';
 import { toast } from 'sonner';
 
@@ -61,6 +63,7 @@ interface AppState {
   conversations: Conversation[];
   messages: Message[];
   campaigns: Campaign[];
+  tags: Tag[];
   
   // Internal Chat
   internalMessages: InternalMessage[];
@@ -110,6 +113,11 @@ interface AppState {
   updateCampaign: (campaign: Campaign) => Promise<void>;
   deleteCampaign: (id: string) => Promise<void>;
 
+  // Tags CRUD
+  addTag: (tag: Tag) => Promise<void>;
+  updateTag: (tag: Tag) => Promise<void>;
+  deleteTag: (id: string) => Promise<void>;
+
   // Internal Chat Actions
   addInternalMessage: (message: InternalMessage) => void;
   
@@ -144,6 +152,7 @@ export const useAppStore = create<AppState>()(
       conversations: MOCK_CONVERSATIONS,
       messages: MOCK_MESSAGES,
       campaigns: MOCK_CAMPAIGNS,
+      tags: [],
       internalMessages: [],
       
       isLoading: false,
@@ -170,14 +179,16 @@ export const useAppStore = create<AppState>()(
             whatsapp,
             customers,
             conversations,
-            messages
+            messages,
+            tags
           ] = await Promise.all([
             profilesService.list(),
             teamService.list(),
             whatsappService.list(),
             customerService.list(),
             conversationService.list(),
-            messageService.list()
+            messageService.list(),
+            tagService.list()
           ]);
 
           set({
@@ -187,6 +198,7 @@ export const useAppStore = create<AppState>()(
             customers: customers?.length ? customers : MOCK_CUSTOMERS,
             conversations: (conversations as Conversation[])?.length ? (conversations as Conversation[]) : MOCK_CONVERSATIONS,
             messages: messages?.length ? messages : MOCK_MESSAGES,
+            tags: tags?.length ? (tags as Tag[]) : [],
             lastSyncAt: new Date().toISOString(),
             isLoading: false
           });
@@ -411,6 +423,44 @@ export const useAppStore = create<AppState>()(
       },
       deleteCampaign: async (id) => {
         set((state) => ({ campaigns: state.campaigns.filter(c => c.id !== id) }));
+      },
+
+      // Tag Actions
+      addTag: async (tag) => {
+        set({ isSaving: true });
+        try {
+          const newTag = await tagService.create(tag);
+          set((state) => ({ tags: [...state.tags, newTag], isSaving: false }));
+        } catch (err) {
+          set((state) => ({ tags: [...state.tags, tag], isSaving: false }));
+          toast.warning('Etiqueta salva localmente');
+        }
+      },
+      updateTag: async (tag) => {
+        set({ isSaving: true });
+        try {
+          const updated = await tagService.update(tag.id, tag);
+          set((state) => ({
+            tags: state.tags.map(t => t.id === tag.id ? updated : t),
+            isSaving: false
+          }));
+        } catch (err) {
+          set((state) => ({
+            tags: state.tags.map(t => t.id === tag.id ? tag : t),
+            isSaving: false
+          }));
+          toast.warning('Etiqueta atualizada localmente');
+        }
+      },
+      deleteTag: async (id) => {
+        set({ isSaving: true });
+        try {
+          await tagService.remove(id);
+          set((state) => ({ tags: state.tags.filter(t => t.id !== id), isSaving: false }));
+        } catch (err) {
+          set((state) => ({ tags: state.tags.filter(t => t.id !== id), isSaving: false }));
+          toast.warning('Etiqueta removida localmente');
+        }
       },
 
       resetState: () => set({

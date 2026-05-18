@@ -23,6 +23,8 @@ import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../../store/useAppStore';
 import { Team } from '../../types';
 import { toast } from 'sonner';
+import { getErrorMessage } from '../../utils/getErrorMessage';
+import { safeAction } from '../../utils/safeAction';
 
 export default function TeamsSettingsPage() {
   const navigate = useNavigate();
@@ -34,29 +36,48 @@ export default function TeamsSettingsPage() {
     name: '',
     manager: ''
   });
+  const [editingTeam, setEditingTeam] = useState<Team | null>(null);
 
   const handleCreateTeam = (e: React.FormEvent) => {
     e.preventDefault();
-    const newTeam: Team = {
-      id: `t${Date.now()}`,
-      name: formData.name,
-      manager_name: formData.manager || 'Não definido',
-      members: []
-    };
-    addTeam(newTeam);
-    setShowModal(false);
-    setFormData({ name: '', manager: '' });
-    toast.success(`Equipe ${formData.name} criada!`);
+    safeAction(async () => {
+      if (editingTeam) {
+        await updateTeam({
+          ...editingTeam,
+          name: formData.name,
+          manager_name: formData.manager || 'Não definido'
+        });
+        toast.success(`Equipe ${formData.name} atualizada!`);
+      } else {
+        const newTeam: Team = {
+          id: `t${Date.now()}`,
+          name: formData.name,
+          manager_name: formData.manager || 'Não definido',
+          members: []
+        };
+        await addTeam(newTeam);
+        toast.success(`Equipe ${formData.name} criada!`);
+      }
+      setShowModal(false);
+      setEditingTeam(null);
+      setFormData({ name: '', manager: '' });
+    }, { label: 'Erro ao salvar equipe' });
   };
 
   const handleAction = (action: string, team: Team) => {
-    if (action === 'Excluir') {
-      deleteTeam(team.id);
-      toast.success(`Equipe ${team.name} removida.`);
-    } else {
-      toast.info(`Ação "${action}" para ${team.name} em desenvolvimento`);
-    }
-    setActiveMenuId(null);
+    safeAction(async () => {
+      if (action === 'Excluir') {
+        await deleteTeam(team.id);
+        toast.success(`Equipe ${team.name} removida.`);
+      } else if (action === 'Editar') {
+        setEditingTeam(team);
+        setFormData({ name: team.name, manager: team.manager_name || '' });
+        setShowModal(true);
+      } else {
+        toast.info(`Ação "${action}" para ${team.name} em desenvolvimento`);
+      }
+      setActiveMenuId(null);
+    }, { label: `Erro ao executar ação: ${action}` });
   };
 
   return (
@@ -119,7 +140,14 @@ export default function TeamsSettingsPage() {
                                   <UserPlus className="w-3.5 h-3.5" /> Add Membros
                                </button>
                                <div className="h-px bg-slate-50 my-1 mx-2" />
-                               <button onClick={() => handleAction('Excluir', team)} className="w-full flex items-center gap-3 px-3 py-2 hover:bg-red-50 rounded-lg text-xs font-bold text-red-600">
+                               <button 
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleAction('Excluir', team);
+                                }} 
+                                className="w-full flex items-center gap-3 px-3 py-2 hover:bg-red-50 rounded-lg text-xs font-bold text-red-600"
+                               >
                                   <Trash2 className="w-3.5 h-3.5" /> Excluir
                                </button>
                             </motion.div>
@@ -159,20 +187,20 @@ export default function TeamsSettingsPage() {
       <AnimatePresence>
         {showModal && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" 
-              onClick={() => setShowModal(false)} 
-            />
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" 
+                onClick={() => { setShowModal(false); setEditingTeam(null); setFormData({ name: '', manager: '' }); }} 
+              />
             <motion.div 
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="relative w-full max-w-lg bg-white rounded-3xl p-8 shadow-2xl border border-slate-100"
             >
-              <h2 className="text-xl font-bold mb-6 text-slate-800 uppercase tracking-widest">Criar Nova Equipe</h2>
+              <h2 className="text-xl font-bold mb-6 text-slate-800 uppercase tracking-widest">{editingTeam ? 'Editar Equipe' : 'Criar Nova Equipe'}</h2>
               <form onSubmit={handleCreateTeam} className="space-y-6">
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Nome da Equipe</label>
@@ -196,8 +224,8 @@ export default function TeamsSettingsPage() {
                   />
                 </div>
                 <div className="flex items-center gap-3 pt-4">
-                  <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-3 text-slate-500 font-bold text-xs uppercase tracking-widest">Cancelar</button>
-                  <button type="submit" className="flex-1 py-3 bg-blue-600 text-white rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-blue-100 transition-all hover:bg-blue-700">Criar Equipe</button>
+                  <button type="button" onClick={() => { setShowModal(false); setEditingTeam(null); setFormData({ name: '', manager: '' }); }} className="flex-1 py-3 text-slate-500 font-bold text-xs uppercase tracking-widest">Cancelar</button>
+                  <button type="submit" className="flex-1 py-3 bg-blue-600 text-white rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-blue-100 transition-all hover:bg-blue-700">{editingTeam ? 'Salvar' : 'Criar Equipe'}</button>
                 </div>
               </form>
             </motion.div>

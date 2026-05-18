@@ -27,7 +27,9 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../../store/useAppStore';
 import { toast } from 'sonner';
-import { User } from '../../types';
+import { User, UserRole } from '../../types';
+import { getErrorMessage } from '../../utils/getErrorMessage';
+import { safeAction } from '../../utils/safeAction';
 
 export default function UsersSettingsPage() {
   const navigate = useNavigate();
@@ -50,35 +52,37 @@ export default function UsersSettingsPage() {
 
   const handleSaveUser = (e: React.FormEvent) => {
     e.preventDefault();
-    if (editingUser) {
-      updateUser({
-        ...editingUser,
-        name: formData.name,
-        email: formData.email,
-        phone: formData.phone,
-        role: formData.role,
-        status: formData.status as any,
-      });
-      toast.success(`Usuário ${formData.name} atualizado com sucesso!`);
-    } else {
-      const newUser: User = {
-        id: `u${Date.now()}`,
-        name: formData.name,
-        email: formData.email,
-        phone: formData.phone,
-        role: formData.role as any,
-        status: 'ACTIVE',
-        active: true,
-        online: false,
-        teamId: formData.teamId
-      };
-      addUser(newUser);
-      toast.success('Usuário criado com sucesso!');
-    }
-    
-    resetForm();
-    setShowCreateModal(false);
-    setEditingUser(null);
+    safeAction(async () => {
+      if (editingUser) {
+        await updateUser({
+          ...editingUser,
+          name: formData.name,
+          email: formData.email,
+          phone: formData.phone,
+          role: formData.role as UserRole,
+          status: formData.status as any,
+        });
+        toast.success(`Usuário ${formData.name} atualizado com sucesso!`);
+      } else {
+        const newUser: User = {
+          id: `u${Date.now()}`,
+          name: formData.name,
+          email: formData.email,
+          phone: formData.phone,
+          role: formData.role as any,
+          status: 'ACTIVE',
+          active: true,
+          online: false,
+          teamId: formData.teamId
+        };
+        await addUser(newUser);
+        toast.success('Usuário criado com sucesso!');
+      }
+      
+      resetForm();
+      setShowCreateModal(false);
+      setEditingUser(null);
+    }, { label: 'Erro ao salvar usuário' });
   };
 
   const resetForm = () => {
@@ -107,18 +111,20 @@ export default function UsersSettingsPage() {
   };
 
   const handleToggleStatus = (user: User) => {
-    const newStatus = user.status === 'INACTIVE' ? 'ACTIVE' : 'INACTIVE';
-    updateUser({ ...user, status: newStatus as any, active: newStatus === 'ACTIVE' });
-    toast.info(`Usuário ${user.name} agora está ${newStatus === 'ACTIVE' ? 'Ativo' : 'Inativo'}`);
-    setActiveMenuId(null);
+    safeAction(async () => {
+      const newStatus = user.status === 'INACTIVE' ? 'ACTIVE' : 'INACTIVE';
+      await updateUser({ ...user, status: newStatus as any, active: newStatus === 'ACTIVE' });
+      toast.info(`Usuário ${user.name} agora está ${newStatus === 'ACTIVE' ? 'Ativo' : 'Inativo'}`);
+      setActiveMenuId(null);
+    });
   };
 
   const handleDelete = (id: string, name: string) => {
-    if (confirm(`Tem certeza que deseja excluir permanentemente o usuário ${name}? Esta ação não pode ser desfeita.`)) {
-      deleteUser(id);
+    safeAction(async () => {
+      await deleteUser(id);
       toast.success(`Usuário ${name} removido do sistema`);
-    }
-    setActiveMenuId(null);
+      setActiveMenuId(null);
+    });
   };
 
   const handleResetPassword = (name: string) => {
@@ -303,7 +309,14 @@ export default function UsersSettingsPage() {
                               Dashboard de Desempenho
                            </button>
 
-                           <button onClick={() => handleDelete(user.id, user.name)} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-red-50 rounded-2xl transition-all text-xs font-bold text-red-600 group">
+                           <button 
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleDelete(user.id, user.name);
+                            }} 
+                            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-red-50 rounded-2xl transition-all text-xs font-bold text-red-600 group"
+                           >
                               <Trash2 className="w-4 h-4 text-red-300 group-hover:text-red-500" />
                               Excluir Permanentemente
                            </button>

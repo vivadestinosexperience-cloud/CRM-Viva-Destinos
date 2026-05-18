@@ -29,6 +29,10 @@ import { Conversation, Message, Customer, Team } from '../types';
 import { supabase } from '../integrations/supabase/client';
 import { useAppStore } from '../store/useAppStore';
 import { toast } from 'sonner';
+import { getErrorMessage } from '../utils/getErrorMessage';
+import { safeAction } from '../utils/safeAction';
+
+import { getAgentDisplayName, formatOutgoingWhatsAppMessage } from '../utils/userUtils';
 
 export default function OmnichannelPage() {
   const { 
@@ -51,11 +55,12 @@ export default function OmnichannelPage() {
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
+  const [showChatMenu, setShowChatMenu] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [transferData, setTransferData] = useState({ teamId: '', userId: '', reason: '' });
   const [closeReason, setCloseReason] = useState('');
-  const [conversationFilter, setConversationFilter] = useState<'meus' | 'novos' | 'resolvidos'>('meus');
+  const [conversationFilter, setConversationFilter] = useState<'novos' | 'meus' | 'concluidos' | 'todos'>('novos');
   const [searchTerm, setSearchTerm] = useState('');
   
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -73,8 +78,10 @@ export default function OmnichannelPage() {
       if (conv.assigned_user_id && conv.assigned_user_id !== currentUser?.id) return false;
     } else if (conversationFilter === 'novos') {
       if (conv.status !== 'NEW' && conv.status !== 'PENDING') return false;
-    } else if (conversationFilter === 'resolvidos') {
+    } else if (conversationFilter === 'concluidos') {
       if (conv.status !== 'RESOLVED') return false;
+    } else if (conversationFilter === 'todos') {
+      // Show all except maybe very old ones if needed
     }
 
     // Filter by search
@@ -102,65 +109,69 @@ export default function OmnichannelPage() {
   const handleTransfer = async () => {
     if (!activeConversationId || !transferData.teamId) return;
 
-    await updateConversation(activeConversationId, {
-      queue_id: transferData.teamId,
-      assigned_user_id: transferData.userId || undefined,
-      status: 'TRANSFERRED'
-    });
-    
-    const teamName = teams.find(t => t.id === transferData.teamId)?.name || 'Nova Equipe';
-    await addMessage({
-      id: `sys-${Date.now()}`,
-      conversation_id: activeConversationId,
-      sender_type: 'system',
-      content: `Atendimento transferido para a equipe: ${teamName}${transferData.reason ? `. Motivo: ${transferData.reason}` : ''}`,
-      created_at: new Date().toISOString(),
-      message_type: 'text',
-      status: 'sent'
-    } as Message);
+    await safeAction(async () => {
+      await updateConversation(activeConversationId, {
+        queue_id: transferData.teamId,
+        assigned_user_id: transferData.userId || undefined,
+        status: 'TRANSFERRED'
+      });
+      
+      const teamName = teams.find(t => t.id === transferData.teamId)?.name || 'Nova Equipe';
+      await addMessage({
+        id: `sys-${Date.now()}`,
+        conversation_id: activeConversationId,
+        sender_type: 'system',
+        content: `Atendimento transferido para a equipe: ${teamName}${transferData.reason ? `. Motivo: ${transferData.reason}` : ''}`,
+        created_at: new Date().toISOString(),
+        message_type: 'text',
+        status: 'sent'
+      } as Message);
 
-    setShowTransferModal(false);
-    toast.success('Atendimento transferido');
+      setShowTransferModal(false);
+      toast.success('Atendimento transferido');
+    }, { label: 'Erro ao transferir atendimento' });
   };
 
   const handleCreateChat = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    let targetCustomerId = newChatData.customerId;
+    await safeAction(async () => {
+      let targetCustomerId = newChatData.customerId;
 
-    if (!targetCustomerId) {
-      if (!newChatData.newName || !newChatData.newPhone) {
-        toast.error('Preencha nome e telefone do novo cliente');
-        return;
+      if (!targetCustomerId) {
+        if (!newChatData.newName || !newChatData.newPhone) {
+          toast.error('Preencha nome e telefone do novo cliente');
+          return;
+        }
+        const newCustId = `c${Date.now()}`;
+        await addCustomer({
+          id: newCustId,
+          name: newChatData.newName,
+          phone: newChatData.newPhone,
+          active: true,
+          online: false,
+          email: '',
+        } as any);
+        targetCustomerId = newCustId;
       }
-      const newCustId = `c${Date.now()}`;
-      await addCustomer({
-        id: newCustId,
-        name: newChatData.newName,
-        phone: newChatData.newPhone,
-        active: true,
-        online: false,
-        email: '',
-      } as any);
-      targetCustomerId = newCustId;
-    }
 
-    const selectedAccount = whatsAppAccounts.find(a => a.id === newChatData.accountId) || whatsAppAccounts[0];
-    const selectedTeam = teams.find(t => t.id === newChatData.teamId) || teams[0];
+      const selectedAccount = whatsAppAccounts.find(a => a.id === newChatData.accountId) || whatsAppAccounts[0];
+      const selectedTeam = teams.find(t => t.id === newChatData.teamId) || teams[0];
 
-    const newConv: Partial<Conversation> = {
-      customer_id: targetCustomerId,
-      whatsapp_account_id: selectedAccount?.id || '',
-      queue_id: selectedTeam?.id || '',
-      status: 'OPEN',
-      last_message: 'Atendimento manual iniciado',
-      unread_count: 0,
-      created_at: new Date().toISOString()
-    };
+      const newConv: Partial<Conversation> = {
+        customer_id: targetCustomerId,
+        whatsapp_account_id: selectedAccount?.id || '',
+        queue_id: selectedTeam?.id || '',
+        status: 'OPEN',
+        last_message: 'Atendimento manual iniciado',
+        unread_count: 0,
+        created_at: new Date().toISOString()
+      };
 
-    await addConversation(newConv);
-    setShowNewChatModal(false);
-    toast.success('Atendimento iniciado com sucesso!');
+      await addConversation(newConv);
+      setShowNewChatModal(false);
+      toast.success('Atendimento iniciado com sucesso!');
+    }, { label: 'Erro ao criar conversa' });
   };
 
   const handleClose = async () => {
@@ -169,12 +180,14 @@ export default function OmnichannelPage() {
       return;
     }
 
-    await updateConversation(activeConversationId, {
-      status: 'RESOLVED',
-      last_message: `Finalizado: ${closeReason}`
-    });
-    setShowCloseModal(false);
-    toast.success('Atendimento finalizado com sucesso');
+    await safeAction(async () => {
+      await updateConversation(activeConversationId, {
+        status: 'RESOLVED',
+        last_message: `Finalizado: ${closeReason}`
+      });
+      setShowCloseModal(false);
+      toast.success('Atendimento finalizado com sucesso');
+    }, { label: 'Erro ao finalizar atendimento' });
   };
 
   const handleAISuggestion = async () => {
@@ -189,7 +202,11 @@ export default function OmnichannelPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: history })
-      }).then(res => res.json()).then(data => {
+      }).then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw data;
+        return data;
+      }).then(data => {
         if (data.suggestion) {
            setNewMessage(data.suggestion);
            setShowIAPanel(false);
@@ -198,7 +215,7 @@ export default function OmnichannelPage() {
       {
         loading: 'Gerando sugestão...',
         success: 'Sugestão inserida no campo de texto!',
-        error: 'Erro ao gerar sugestão.'
+        error: (err) => `Erro ao gerar sugestão: ${getErrorMessage(err)}`
       }
     );
   };
@@ -215,7 +232,11 @@ export default function OmnichannelPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: history })
-      }).then(res => res.json()).then(data => {
+      }).then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw data;
+        return data;
+      }).then(data => {
         if (data.classification && activeConversation.customer_id) {
            toast.success(`Lead classificado como: ${data.classification}`);
            setShowIAPanel(false);
@@ -224,7 +245,7 @@ export default function OmnichannelPage() {
       {
         loading: 'Classificando lead...',
         success: 'Classificação concluída',
-        error: 'Erro ao classificar.'
+        error: (err) => `Erro ao classificar: ${getErrorMessage(err)}`
       }
     );
   };
@@ -243,51 +264,71 @@ export default function OmnichannelPage() {
       return;
     }
 
-    const content = newMessage;
-    setNewMessage('');
+    await safeAction(async () => {
+      const originalContent = newMessage;
+      const agentName = getAgentDisplayName(currentUser);
+      const formattedMessage = formatOutgoingWhatsAppMessage(originalContent, agentName);
+      
+      setNewMessage('');
 
-    const newMsg: Message = {
-      id: `m${Date.now()}`,
-      conversation_id: activeConversationId,
-      sender_type: 'agent',
-      sender_name: currentUser?.name || 'Agente',
-      content: content,
-      created_at: new Date().toISOString(),
-      message_type: 'text',
-      status: 'sent'
-    };
-    
-    await addMessage(newMsg);
-    
-    await updateConversation(activeConversationId, {
-      last_message: content,
-      last_message_at: new Date().toISOString()
-    });
+      const newMsg: Message = {
+        id: `m${Date.now()}`,
+        conversation_id: activeConversationId,
+        sender_type: 'agent',
+        sender_name: agentName,
+        content: originalContent,
+        metadata: {
+          agentName: agentName,
+          sentContent: formattedMessage
+        },
+        created_at: new Date().toISOString(),
+        message_type: 'text',
+        status: 'sent'
+      };
+      
+      await addMessage(newMsg);
+      
+      await updateConversation(activeConversationId, {
+        last_message: originalContent,
+        last_message_at: new Date().toISOString()
+      });
 
-    // Real send through backend
-    try {
+      // Real send through backend
       // Viva Experience uses ONLY Z-API
       const endpoint = '/api/zapi/send-text';
-      const body = { phone: activeCustomer?.phone, message: content };
+      const body = { phone: activeCustomer?.phone, message: formattedMessage };
 
-      fetch(endpoint, {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
-    } catch (err) {
-      console.error('Real send failed:', err);
-    }
+      
+      if (!res.ok) {
+        const data = await res.json();
+        throw data;
+      }
+    }, { label: 'Erro ao enviar mensagem' });
   };
 
   const handleSummarize = async () => {
+    if (!activeConversation) return;
     setIsSummarizing(true);
-    // Simulate AI summary
-    setTimeout(() => {
+    await safeAction(async () => {
+      // Simulate AI summary delay
+      await new Promise(resolve => setTimeout(resolve, 2000));
       setAiSummary("O cliente deseja uma viagem para Porto de Galinhas em julho, para 2 adultos e 1 criança de 6 anos. Demonstrou interesse em resort com café da manhã e orçamento médio. Lead classificado como QUENTE.");
-      setIsSummarizing(false);
       toast.success('Resumo gerado pelo Assistente IA');
-    }, 2000);
+    }, { label: 'Erro ao gerar resumo' });
+    setIsSummarizing(false);
+  };
+
+  const handleReopen = async () => {
+    if (!activeConversation) return;
+    await safeAction(async () => {
+      await updateConversation(activeConversation.id, { status: 'OPEN' });
+      toast.success('Atendimento reaberto');
+    }, { label: 'Erro ao reabrir atendimento' });
   };
 
   return (
@@ -310,22 +351,28 @@ export default function OmnichannelPage() {
           
           <div className="flex bg-slate-50 p-1 rounded-xl mb-4">
             <button 
-              onClick={() => setConversationFilter('meus')}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${conversationFilter === 'meus' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
-            >
-              Meus
-            </button>
-            <button 
               onClick={() => setConversationFilter('novos')}
-              className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${conversationFilter === 'novos' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${conversationFilter === 'novos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
               Novos
             </button>
             <button 
-              onClick={() => setConversationFilter('resolvidos')}
-              className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${conversationFilter === 'resolvidos' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+              onClick={() => setConversationFilter('meus')}
+              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${conversationFilter === 'meus' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              Resolvidos
+              Meus
+            </button>
+            <button 
+              onClick={() => setConversationFilter('concluidos')}
+              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${conversationFilter === 'concluidos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              Concluídos
+            </button>
+            <button 
+              onClick={() => setConversationFilter('todos')}
+              className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${conversationFilter === 'todos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              Todos
             </button>
           </div>
 
@@ -431,7 +478,9 @@ export default function OmnichannelPage() {
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-slate-400">{activeCustomer?.phone}</span>
                     <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
-                    <span className="text-xs font-bold text-emerald-500 uppercase tracking-wider">Em Aberto</span>
+                    <span className={`text-xs font-bold uppercase tracking-wider ${activeConversation.status === 'RESOLVED' ? 'text-blue-500' : 'text-emerald-500'}`}>
+                      {activeConversation.status === 'RESOLVED' ? 'Concluído' : 'Em Aberto'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -451,15 +500,60 @@ export default function OmnichannelPage() {
                 >
                   <ArrowRightLeft className="w-5 h-5" />
                 </button>
-                <button 
-                  onClick={() => setShowCloseModal(true)}
-                  className="p-2.5 bg-blue-50 text-blue-600 rounded-xl transition-all font-bold text-sm px-4"
-                >
-                  Concluir
-                </button>
-                <button className="p-2.5 hover:bg-slate-50 rounded-xl text-slate-400 transition-all">
-                  <MoreVertical className="w-5 h-5" />
-                </button>
+                {activeConversation.status === 'RESOLVED' ? (
+                  <button 
+                    onClick={handleReopen}
+                    className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl transition-all font-bold text-sm px-4"
+                  >
+                    Reabrir
+                  </button>
+                ) : (
+                  <button 
+                    onClick={() => setShowCloseModal(true)}
+                    className="p-2.5 bg-blue-50 text-blue-600 rounded-xl transition-all font-bold text-sm px-4"
+                  >
+                    Concluir
+                  </button>
+                )}
+                <div className="relative">
+                  <button 
+                    onClick={() => setShowChatMenu(!showChatMenu)}
+                    className={`p-2.5 rounded-xl transition-all ${showChatMenu ? 'bg-blue-50 text-blue-600 border border-blue-100' : 'hover:bg-slate-50 text-slate-400'}`}
+                  >
+                    <MoreVertical className="w-5 h-5" />
+                  </button>
+
+                  <AnimatePresence>
+                    {showChatMenu && (
+                      <motion.div 
+                        initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                        className="absolute right-0 top-full mt-2 w-56 bg-white rounded-2xl shadow-2xl border border-slate-100 p-2 z-[60]"
+                      >
+                         <button 
+                          onClick={() => { setShowChatMenu(false); toast.info('Funcionalidade em desenvolvimento'); }}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
+                         >
+                            <Info className="w-4 h-4" /> Detalhes do Lead
+                         </button>
+                         <button 
+                          onClick={() => { setShowChatMenu(false); toast.info('Exportando histórico...'); }}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
+                         >
+                            <FileText className="w-4 h-4" /> Exportar Conversa (PDF)
+                         </button>
+                         <div className="h-px bg-slate-50 my-1 mx-2" />
+                         <button 
+                          onClick={() => { setShowChatMenu(false); toast.warning('Lead marcado como spam'); }}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-red-50 rounded-xl text-xs font-bold text-red-600 transition-colors"
+                         >
+                            <Plus className="w-4 h-4 rotate-45" /> Marcar como Spam
+                         </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               </div>
             </header>
 
@@ -494,6 +588,9 @@ export default function OmnichannelPage() {
                       </div>
                       
                       <div className="space-y-1">
+                        <div className={`text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-0.5 px-1 ${isMine ? 'text-right' : 'text-left'}`}>
+                          {msg.sender_type === 'system' ? 'Sistema' : (isMine ? (msg.sender_name || 'Agente') : (activeCustomer?.name || 'Cliente'))}
+                        </div>
                         <div className={`px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed transition-all ${isMine ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-white text-slate-700 rounded-tl-none border border-slate-100'} ${status === 'failed' ? 'border-red-300 bg-red-50 text-red-600' : ''}`}>
                           {content}
                         </div>
@@ -594,45 +691,56 @@ export default function OmnichannelPage() {
 
             {/* Chat Input */}
             <footer className="bg-white border-t border-slate-100 p-6 z-20">
-              <form onSubmit={handleSendMessage} className="max-w-4xl mx-auto flex items-end gap-3 bg-slate-50 border border-slate-200 p-3 rounded-2xl focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent transition-all shadow-sm">
-                <div className="flex items-center gap-1">
+              {activeConversation.status === 'RESOLVED' ? (
+                <div className="max-w-4xl mx-auto p-4 bg-slate-50 border border-dashed border-slate-300 rounded-2xl text-center">
+                  <p className="text-sm text-slate-500 font-medium">Este atendimento foi concluído em {activeConversation.last_message_at ? new Date(activeConversation.last_message_at).toLocaleDateString() : 'data recente'}.</p>
                   <button 
-                    type="button" 
-                    onClick={() => {
-                        const note = prompt("Digite uma anotação interna:");
-                        if (note) toast.success("Anotação adicionada");
+                    onClick={handleReopen}
+                    className="mt-2 text-blue-600 font-bold text-xs uppercase tracking-widest hover:underline"
+                  >
+                    Reabrir Atendimento para conversar
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleSendMessage} className="max-w-4xl mx-auto flex items-end gap-3 bg-slate-50 border border-slate-200 p-3 rounded-2xl focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent transition-all shadow-sm">
+                  <div className="flex items-center gap-1">
+                    <button 
+                      type="button" 
+                      onClick={() => {
+                          toast.info("Funcionalidade de anotações internas vindo em breve.");
+                      }}
+                      className="p-2 text-slate-400 hover:bg-white hover:text-blue-600 rounded-xl transition-all"
+                      title="Adicionar anotação"
+                    >
+                      <Plus className="w-5 h-5" />
+                    </button>
+                  </div>
+                  
+                  <textarea 
+                    rows={1}
+                    placeholder="Escreva sua mensagem..."
+                    className="flex-1 bg-transparent border-none outline-none text-sm py-2 resize-none max-h-40 min-h-[40px] px-2 font-medium"
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMessage(e);
+                      }
                     }}
-                    className="p-2 text-slate-400 hover:bg-white hover:text-blue-600 rounded-xl transition-all"
-                    title="Adicionar anotação"
-                  >
-                    <Plus className="w-5 h-5" />
-                  </button>
-                </div>
-                
-                <textarea 
-                  rows={1}
-                  placeholder="Escreva sua mensagem..."
-                  className="flex-1 bg-transparent border-none outline-none text-sm py-2 resize-none max-h-40 min-h-[40px] px-2 font-medium"
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendMessage(e);
-                    }
-                  }}
-                />
+                  />
 
-                <div className="flex items-center gap-2">
-                  <button 
-                    type="submit"
-                    disabled={!newMessage.trim()}
-                    className={`p-3 rounded-xl transition-all shadow-lg ${newMessage.trim() ? 'bg-blue-600 text-white shadow-blue-200 scale-105 active:scale-100' : 'bg-slate-200 text-slate-400 opacity-50 cursor-not-allowed'}`}
-                  >
-                    <Send className="w-5 h-5" />
-                  </button>
-                </div>
-              </form>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      type="submit"
+                      disabled={!newMessage.trim()}
+                      className={`p-3 rounded-xl transition-all shadow-lg ${newMessage.trim() ? 'bg-blue-600 text-white shadow-blue-200 scale-105 active:scale-100' : 'bg-slate-200 text-slate-400 opacity-50 cursor-not-allowed'}`}
+                    >
+                      <Send className="w-5 h-5" />
+                    </button>
+                  </div>
+                </form>
+              )}
             </footer>
           </>
         ) : (

@@ -23,6 +23,7 @@ import {
 import { useAppStore } from '../store/useAppStore';
 import { motion, AnimatePresence } from 'motion/react';
 import { authService } from '../services/authService';
+import { safeAction } from '../utils/safeAction';
 import Logo from '../components/Logo';
 import { InternalChatDrawer } from '../components/internal-chat/InternalChatDrawer';
 
@@ -37,8 +38,10 @@ export default function MainLayout() {
   const activeUsers = users.filter(u => u.active && u.id !== currentUser.id);
 
   const handleLogout = async () => {
-    await authService.signOut();
-    window.location.reload(); 
+    await safeAction(async () => {
+      await authService.signOut();
+      window.location.reload(); 
+    }, { label: 'Erro ao sair do sistema' });
   };
 
   const navItems = [
@@ -231,9 +234,13 @@ export default function MainLayout() {
 
       {/* Internal Chat Rail */}
       <aside className="w-16 bg-white border-l border-slate-200 hidden xl:flex flex-col items-center py-6 gap-4">
-        <div className="p-2 mb-2 text-slate-400">
-          <MessageSquare className="w-6 h-6" />
-        </div>
+        <button 
+          onClick={() => setSelectedInternalUserId('LIST')}
+          className="p-3 mb-2 text-slate-400 hover:bg-slate-50 hover:text-blue-500 rounded-2xl transition-all shadow-sm border border-slate-100 group"
+          title="Lista de Contatos Internos"
+        >
+          <MessageSquare className="w-6 h-6 group-hover:scale-110 transition-transform" />
+        </button>
         {activeUsers.map((user) => (
           <button 
             key={user.id} 
