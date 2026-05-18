@@ -15,6 +15,7 @@ import {
   Message,
   InternalMessage,
   Campaign,
+  CampaignRecipient,
   Tag,
   InternalNote
 } from '../types';
@@ -24,8 +25,7 @@ import {
   MOCK_WHATSAPP_ACCOUNTS, 
   MOCK_CUSTOMERS, 
   MOCK_CONVERSATIONS, 
-  MOCK_MESSAGES,
-  MOCK_CAMPAIGNS
+  MOCK_MESSAGES
 } from '../data/mockData';
 import {
   profilesService,
@@ -36,7 +36,9 @@ import {
   conversationService,
   messageService,
   tagService,
-  noteService
+  noteService,
+  campaignService,
+  campaignRecipientService
 } from '../services/dataService';
 import { toast } from 'sonner';
 
@@ -66,6 +68,7 @@ interface AppState {
   conversations: Conversation[];
   messages: Message[];
   campaigns: Campaign[];
+  campaignRecipients: CampaignRecipient[];
   tags: Tag[];
   internalNotes: InternalNote[];
   
@@ -115,9 +118,16 @@ interface AppState {
   addConversation: (conversation: Partial<Conversation>) => Promise<void>;
   
   // Campaigns
-  addCampaign: (campaign: Campaign) => Promise<void>;
-  updateCampaign: (campaign: Campaign) => Promise<void>;
+  addCampaign: (campaign: Partial<Campaign>, recipients?: Partial<CampaignRecipient>[]) => Promise<Campaign>;
+  updateCampaign: (id: string, updates: Partial<Campaign>) => Promise<void>;
   deleteCampaign: (id: string) => Promise<void>;
+  pauseCampaign: (id: string) => Promise<void>;
+  resumeCampaign: (id: string) => Promise<void>;
+  cancelCampaign: (id: string) => Promise<void>;
+
+  // Campaign Recipients
+  getCampaignRecipients: (campaignId: string) => Promise<CampaignRecipient[]>;
+  updateCampaignRecipient: (id: string, updates: Partial<CampaignRecipient>) => Promise<void>;
 
   // Tags CRUD
   addTag: (tag: Tag) => Promise<void>;
@@ -162,7 +172,8 @@ export const useAppStore = create<AppState>()(
       customers: MOCK_CUSTOMERS,
       conversations: MOCK_CONVERSATIONS,
       messages: MOCK_MESSAGES,
-      campaigns: MOCK_CAMPAIGNS,
+      campaigns: [],
+      campaignRecipients: [],
       tags: [],
       internalNotes: [],
       internalMessages: [],
@@ -192,7 +203,8 @@ export const useAppStore = create<AppState>()(
             customers,
             conversations,
             messages,
-            tags
+            tags,
+            campaigns
           ] = await Promise.all([
             profilesService.list(),
             teamService.list(),
@@ -200,7 +212,8 @@ export const useAppStore = create<AppState>()(
             customerService.list(),
             conversationService.list(),
             messageService.list(),
-            tagService.list()
+            tagService.list(),
+            campaignService.list()
           ]);
 
           // Fetch all notes
@@ -219,6 +232,7 @@ export const useAppStore = create<AppState>()(
             customers: customers?.length ? customers : MOCK_CUSTOMERS,
             conversations: (conversations as Conversation[])?.length ? (conversations as Conversation[]) : MOCK_CONVERSATIONS,
             messages: messages?.length ? messages : MOCK_MESSAGES,
+            campaigns: campaigns?.length ? campaigns : [],
             tags: tags?.length ? (tags as Tag[]) : [],
             internalNotes: allNotes,
             lastSyncAt: new Date().toISOString(),
@@ -512,16 +526,96 @@ export const useAppStore = create<AppState>()(
       },
 
       // Campaign Actions
-      addCampaign: async (campaign) => {
-        set((state) => ({ campaigns: [campaign, ...state.campaigns] }));
+      addCampaign: async (campaign, recipients = []) => {
+        set({ isSaving: true });
+        try {
+          const newCampaign = await campaignService.create({
+            ...campaign,
+            created_by: get().currentUser?.id
+          });
+          
+          if (recipients.length > 0) {
+            const enrichedRecipients = recipients.map(r => ({
+              ...r,
+              campaign_id: newCampaign.id
+            }));
+            await campaignRecipientService.bulkCreate(enrichedRecipients);
+          }
+          
+          set((state) => ({ 
+            campaigns: [newCampaign, ...state.campaigns],
+            isSaving: false 
+          }));
+          return newCampaign;
+        } catch (err) {
+          const tempCampaign = { 
+            id: `cp-${Date.now()}`, 
+            created_at: new Date().toISOString(),
+            status: 'DRAFT',
+            sent_count: 0,
+            failed_count: 0,
+            read_count: 0,
+            replied_count: 0,
+            opt_out_count: 0,
+            ...campaign 
+          } as Campaign;
+          set((state) => ({ 
+            campaigns: [tempCampaign, ...state.campaigns],
+            isSaving: false 
+          }));
+          return tempCampaign;
+        }
       },
-      updateCampaign: async (campaign) => {
+      updateCampaign: async (id, updates) => {
         set((state) => ({
-          campaigns: state.campaigns.map(c => c.id === campaign.id ? campaign : c)
+          campaigns: state.campaigns.map(c => c.id === id ? { ...c, ...updates } : c)
         }));
+        try {
+          await campaignService.update(id, updates);
+        } catch (err) {
+          console.error('Campaign update only local', err);
+        }
       },
       deleteCampaign: async (id) => {
         set((state) => ({ campaigns: state.campaigns.filter(c => c.id !== id) }));
+        try {
+          await campaignService.remove(id);
+        } catch (err) {
+          console.error('Campaign delete only local', err);
+        }
+      },
+      pauseCampaign: async (id) => {
+        await get().updateCampaign(id, { status: 'PAUSED' });
+        toast.info('Campanha pausada');
+      },
+      resumeCampaign: async (id) => {
+        await get().updateCampaign(id, { status: 'SENDING' });
+        toast.info('Campanha retomada');
+      },
+      cancelCampaign: async (id) => {
+        await get().updateCampaign(id, { status: 'CANCELLED' });
+        toast.info('Campanha cancelada');
+      },
+
+      // Campaign Recipients
+      getCampaignRecipients: async (campaignId) => {
+        try {
+          const data = await campaignRecipientService.listByCampaign(campaignId);
+          return data || [];
+        } catch (err) {
+          console.error('Failed to fetch recipients', err);
+          return [];
+        }
+      },
+      updateCampaignRecipient: async (id, updates) => {
+        set((state) => ({
+          campaignRecipients: state.campaignRecipients.map(r => r.id === id ? { ...r, ...updates } : r)
+        }));
+        try {
+          await campaignRecipientService.update(id, updates);
+        } catch (err) {
+          console.error('Recipient update only local', err);
+        }
       },
 
       // Tag Actions
@@ -630,6 +724,10 @@ export const useAppStore = create<AppState>()(
         customers: MOCK_CUSTOMERS,
         conversations: MOCK_CONVERSATIONS,
         messages: MOCK_MESSAGES,
+        campaigns: [],
+        campaignRecipients: [],
+        tags: [],
+        internalNotes: []
       }),
     }),
     {

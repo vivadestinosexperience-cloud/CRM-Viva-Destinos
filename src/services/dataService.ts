@@ -241,6 +241,60 @@ export const tagService = {
   }
 };
 
+export const campaignService = {
+  async list() {
+    const { data, error } = await supabase.from('campaigns').select('*').order('created_at', { ascending: false });
+    if (error) handleError(error, 'campaignService.list');
+    return data;
+  },
+  async create(campaign: any) {
+    const { data, error } = await supabase.from('campaigns').insert(campaign).select().single();
+    if (error) handleError(error, 'campaignService.create');
+    return data;
+  },
+  async update(id: string, updates: any) {
+    const { data, error } = await supabase.from('campaigns').update(updates).eq('id', id).select().single();
+    if (error) handleError(error, 'campaignService.update');
+    return data;
+  },
+  async remove(id: string) {
+    const { error } = await supabase.from('campaigns').delete().eq('id', id);
+    if (error) handleError(error, 'campaignService.remove');
+  }
+};
+
+export const campaignRecipientService = {
+  async listByCampaign(campaignId: string) {
+    const { data, error } = await supabase.from('campaign_recipients').select('*').eq('campaign_id', campaignId).order('created_at', { ascending: true });
+    if (error) handleError(error, 'campaignRecipientService.listByCampaign');
+    return data;
+  },
+  async create(recipient: any) {
+    const { data, error } = await supabase.from('campaign_recipients').insert(recipient).select().single();
+    if (error) handleError(error, 'campaignRecipientService.create');
+    return data;
+  },
+  async bulkCreate(recipients: any[]) {
+    const { data, error } = await supabase.from('campaign_recipients').insert(recipients).select();
+    if (error) handleError(error, 'campaignRecipientService.bulkCreate');
+    return data;
+  },
+  async update(id: string, updates: any) {
+    const { data, error } = await supabase.from('campaign_recipients').update(updates).eq('id', id).select().single();
+    if (error) handleError(error, 'campaignRecipientService.update');
+    return data;
+  },
+  async updateMany(campaignId: string, updates: any, filters: any = {}) {
+    let query = supabase.from('campaign_recipients').update(updates).eq('campaign_id', campaignId);
+    Object.keys(filters).forEach(key => {
+      query = query.eq(key, filters[key]);
+    });
+    const { data, error } = await query;
+    if (error) handleError(error, 'campaignRecipientService.updateMany');
+    return data;
+  }
+};
+
 export const reportService = {
   async getSummary() {
     const [

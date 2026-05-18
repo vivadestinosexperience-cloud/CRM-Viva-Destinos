@@ -133,6 +133,57 @@ export interface Message {
   senderId?: string;
 }
 
+export type CampaignStatus = 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'PAUSED' | 'COMPLETED' | 'CANCELLED' | 'ERROR';
+
+export interface Campaign {
+  id: string;
+  name: string;
+  type: string;
+  whatsapp_account_id: string;
+  content: string;
+  status: CampaignStatus;
+  target_tags?: string[];
+  recipients_count: number;
+  sent_count: number;
+  failed_count: number;
+  read_count: number;
+  replied_count: number;
+  opt_out_count: number;
+  created_by: string;
+  created_by_name?: string;
+  team_id?: string;
+  created_at: string;
+  updated_at?: string;
+  scheduled_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  
+  // Settings
+  interval_seconds: number;
+  batch_size: number;
+  batch_interval_minutes: number;
+  allowed_start_time?: string;
+  allowed_end_time?: string;
+}
+
+export interface CampaignRecipient {
+  id: string;
+  campaign_id: string;
+  customer_id?: string;
+  name: string;
+  phone: string;
+  source: 'crm' | 'manual_list';
+  save_to_crm: boolean;
+  status: 'PENDING' | 'SENDING' | 'SENT' | 'FAILED' | 'READ' | 'REPLIED' | 'OPT_OUT' | 'CANCELLED';
+  error_message?: string;
+  sent_at?: string;
+  delivered_at?: string;
+  read_at?: string;
+  replied_at?: string;
+  opt_out?: boolean;
+  created_at: string;
+}
+
 export interface InternalNote {
   id: string;
   conversation_id: string;
@@ -216,21 +267,4 @@ export interface Reservation {
   paidValue: number;
   paymentStatus: 'PENDING' | 'PARTIAL' | 'TOTAL';
   status: 'PRE' | 'CONFIRMED' | 'WAITING_PAYMENT' | 'TRAVELING' | 'FINISHED' | 'CANCELLED';
-}
-
-export interface Campaign {
-  id: string;
-  name: string;
-  whatsapp_account_id: string;
-  content: string;
-  status: 'PENDING' | 'SENDING' | 'COMPLETED' | 'PAUSED' | 'CANCELLED';
-  target_tags?: string[];
-  recipients_count: number;
-  sent_count: number;
-  failed_count: number;
-  read_count: number;
-  created_at: string;
-  scheduled_at?: string;
-  started_at?: string;
-  completed_at?: string;
 }
