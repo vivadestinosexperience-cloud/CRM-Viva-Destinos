@@ -520,40 +520,81 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                   <p className="text-sm font-bold uppercase tracking-widest">Nenhum log encontrado</p>
                 </div>
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-4">
                   {webhookLogs.map((log) => (
-                    <div key={log.id} className="p-4 bg-slate-50 rounded-2xl border border-slate-100 grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
-                      <div className="space-y-1">
-                        <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-tight ${
-                          log.event_type === 'received' ? 'bg-blue-100 text-blue-700' :
-                          log.event_type === 'connected' ? 'bg-emerald-100 text-emerald-700' :
-                          'bg-slate-200 text-slate-700'
-                        }`}>
-                          {log.event_type}
-                        </span>
-                        <p className="text-[10px] text-slate-400 font-medium">
-                          {new Date(log.created_at).toLocaleString()}
-                        </p>
-                      </div>
-                      <div className="font-mono text-[10px] text-slate-600">
-                        {log.phone || '-'}
-                      </div>
-                      <div>
-                        {log.processed ? (
-                          <span className="flex items-center gap-1.5 text-emerald-600 text-[10px] font-black uppercase tracking-tight">
-                            <div className="w-1.5 h-1.5 bg-emerald-600 rounded-full animate-pulse" />
-                            Processado
+                    <div key={log.id} className="p-5 bg-slate-50 rounded-2xl border border-slate-100 flex flex-col gap-4">
+                      <div className="flex flex-wrap items-center justify-between gap-4">
+                        <div className="flex items-center gap-3">
+                          <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tight ${
+                            log.event_type === 'received' ? 'bg-blue-100 text-blue-700' :
+                            log.event_type === 'connected' ? 'bg-emerald-100 text-emerald-700' :
+                            'bg-slate-200 text-slate-700'
+                          }`}>
+                            {log.event_type}
                           </span>
-                        ) : (
-                          <span className="flex items-center gap-1.5 text-amber-600 text-[10px] font-black uppercase tracking-tight">
-                            <div className="w-1.5 h-1.5 bg-amber-600 rounded-full" />
-                            {log.error ? 'Erro' : 'Pendente'}
+                          <span className="text-[10px] text-slate-400 font-bold uppercase">
+                            {new Date(log.created_at).toLocaleString()}
                           </span>
-                        )}
+                        </div>
+                        
+                        <div className="flex items-center gap-4">
+                          {log.processed ? (
+                            <span className="flex items-center gap-1.5 text-emerald-600 text-[10px] font-black uppercase tracking-tight">
+                              <div className="w-2 h-2 bg-emerald-600 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
+                              Sucesso
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1.5 text-rose-600 text-[10px] font-black uppercase tracking-tight">
+                              <div className="w-2 h-2 bg-rose-600 rounded-full" />
+                              {log.error ? 'Falha' : 'Pendente'}
+                            </span>
+                          )}
+                          
+                          <button 
+                            onClick={() => {
+                              console.log("Full Payload:", log.payload);
+                              const blob = new Blob([JSON.stringify(log.payload, null, 2)], { type: 'application/json' });
+                              const url = URL.createObjectURL(blob);
+                              window.open(url, '_blank');
+                            }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-500 rounded-lg text-[9px] font-black uppercase hover:bg-slate-100 transition-all active:scale-95"
+                          >
+                            <Info className="w-3 h-3" />
+                            Ver Payload
+                          </button>
+                        </div>
                       </div>
-                      <div className="text-[10px] text-slate-500 line-clamp-1 italic">
-                        {log.error || 'Nenhum erro registrado'}
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 bg-white/50 p-4 rounded-xl border border-slate-100">
+                        <div className="space-y-1">
+                          <p className="text-[8px] font-black text-slate-400 uppercase">Extraído</p>
+                          <p className="text-[10px] font-mono text-slate-600 break-all">{log.raw_phone || '-'}</p>
+                          {String(log.raw_phone || "").startsWith("120363") && (
+                            <p className="text-[8px] text-amber-600 font-bold uppercase">⚠ Possível Grupo</p>
+                          )}
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-[8px] font-black text-slate-400 uppercase">Normalizado</p>
+                          <p className="text-[10px] font-mono font-bold text-blue-600">{log.phone_normalized || '-'}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-[8px] font-black text-slate-400 uppercase">Msg ID</p>
+                          <p className="text-[10px] font-mono text-slate-500 truncate" title={log.message_id}>{log.message_id || '-'}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-[8px] font-black text-slate-400 uppercase">Conv ID</p>
+                          <p className="text-[10px] font-mono text-slate-500 truncate" title={log.conversation_id}>{log.conversation_id || '-'}</p>
+                        </div>
                       </div>
+
+                      {log.error && (
+                        <div className="p-3 bg-red-50 border border-red-100 rounded-xl flex gap-3 items-start">
+                          <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
+                          <p className="text-[10px] text-red-600 font-medium leading-relaxed italic">
+                            {log.error}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

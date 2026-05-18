@@ -227,14 +227,14 @@ export const useAppStore = create<AppState>()(
           }
 
           set({
-            users: users?.length ? users : MOCK_USERS,
-            teams: teams?.length ? (teams as Team[]) : get().teams,
-            whatsAppAccounts: whatsapp?.length ? whatsapp : MOCK_WHATSAPP_ACCOUNTS,
-            customers: customers?.length ? customers : MOCK_CUSTOMERS,
-            conversations: (conversations as Conversation[])?.length ? (conversations as Conversation[]) : MOCK_CONVERSATIONS,
-            messages: messages?.length ? messages : MOCK_MESSAGES,
-            campaigns: campaigns?.length ? campaigns : [],
-            tags: tags?.length ? (tags as Tag[]) : [],
+            users: users || [],
+            teams: teams || [],
+            whatsAppAccounts: whatsapp || [],
+            customers: customers || [],
+            conversations: conversations || [],
+            messages: messages || [],
+            campaigns: campaigns || [],
+            tags: tags || [],
             internalNotes: allNotes,
             lastSyncAt: new Date().toISOString(),
             isLoading: false
@@ -335,6 +335,54 @@ export const useAppStore = create<AppState>()(
             }
           })
           .subscribe();
+
+        // 4. SSE Fallback (for environments where Supabase Realtime might be restricted or as backup)
+        const eventSource = new EventSource('/api/events');
+        eventSource.onmessage = (event) => {
+          try {
+            const { event: eventName, data } = JSON.parse(event.data);
+            if (eventName === 'message.received') {
+              const { customer, conversation, message } = data;
+              
+              set(state => {
+                // Upsert customer
+                const hasCustomer = state.customers.some(c => c.id === customer.id);
+                const updatedCustomers = hasCustomer 
+                  ? state.customers.map(c => c.id === customer.id ? { ...c, ...customer } : c)
+                  : [...state.customers, customer];
+
+                // Upsert conversation
+                const hasConv = state.conversations.some(c => c.id === conversation.id);
+                const updatedConversations = hasConv
+                  ? state.conversations.map(c => c.id === conversation.id ? { ...c, ...conversation } : c)
+                  : [conversation, ...state.conversations];
+
+                // Upsert message
+                const hasMsg = state.messages.some(m => m.id === message.id);
+                const updatedMessages = hasMsg
+                  ? state.messages.map(m => m.id === message.id ? { ...m, ...message } : m)
+                  : [...state.messages, message];
+
+                return {
+                  customers: updatedCustomers,
+                  conversations: updatedConversations,
+                  messages: updatedMessages
+                };
+              });
+
+              if (message.sender_type === 'customer') {
+                toast.info(`Nova mensagem recebida de ${customer.name}`);
+              }
+            }
+          } catch (err) {
+            console.error('SSE Error:', err);
+          }
+        };
+
+        return () => {
+          supabase.removeAllChannels();
+          eventSource.close();
+        };
       },
 
       refreshData: async () => {

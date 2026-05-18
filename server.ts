@@ -78,10 +78,50 @@ async function callZapi(pathname: string, options: RequestInit = {}) {
 function normalizePhone(input: any) {
   let phone = String(input || "").replace(/\D/g, "");
   if (!phone) return "";
+
+  // IDs de grupo/chat do WhatsApp geralmente começam com 120363.
+  // Não tratar isso como telefone de cliente.
+  if (phone.startsWith("120363")) {
+    return "";
+  }
+
   if ((phone.length === 10 || phone.length === 11) && !phone.startsWith("55")) {
     phone = `55${phone}`;
   }
   return phone;
+}
+
+function extractRealCustomerPhone(payload: any) {
+  const candidates = [
+    payload?.phone,
+    payload?.senderPhone,
+    payload?.participantPhone,
+    payload?.participant,
+    payload?.from,
+    payload?.sender?.phone,
+    payload?.message?.phone,
+    payload?.message?.from,
+    payload?.data?.phone,
+    payload?.data?.senderPhone,
+    payload?.data?.from,
+    payload?.key?.participant,
+    payload?.key?.remoteJid
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizePhone(candidate);
+    if (normalized && normalized.length >= 12 && normalized.length <= 13) {
+      return {
+        rawPhone: candidate,
+        phoneNormalized: normalized
+      };
+    }
+  }
+
+  return {
+    rawPhone: candidates.find(Boolean) || "",
+    phoneNormalized: ""
+  };
 }
 
 function getLastMessageText(msg: any) {
@@ -93,21 +133,8 @@ function getLastMessageText(msg: any) {
 }
 
 function normalizeZapiIncomingMessage(payload: any) {
-  const rawPhone =
-    payload?.phone ||
-    payload?.from ||
-    payload?.senderPhone ||
-    payload?.participantPhone ||
-    payload?.chatId ||
-    payload?.key?.remoteJid ||
-    payload?.sender?.phone ||
-    payload?.message?.phone ||
-    payload?.message?.from ||
-    payload?.data?.phone ||
-    payload?.data?.from ||
-    "";
-
-  const phone = normalizePhone(rawPhone);
+  const phoneData = extractRealCustomerPhone(payload);
+  const phone = phoneData.phoneNormalized;
 
   const name =
     payload?.senderName ||
@@ -158,6 +185,7 @@ function normalizeZapiIncomingMessage(payload: any) {
     "";
 
   return {
+    rawPhone: phoneData.rawPhone,
     phone,
     name,
     messageId,
@@ -197,6 +225,16 @@ async function startServer() {
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "";
   const supabase = createClient(supabaseUrl, supabaseKey);
 
+  // SSE Clients
+  let sseClients: any[] = [];
+
+  function broadcastEvent(event: string, data: any) {
+    const payload = JSON.stringify({ event, data });
+    sseClients.forEach(client => {
+      client.res.write(`data: ${payload}\n\n`);
+    });
+  }
+
   async function saveWebhookLog(data: any) {
     try {
       const { data: log, error } = await supabase.from('zapi_webhook_logs').insert({
@@ -221,8 +259,10 @@ async function startServer() {
 
   async function processIncomingZapiMessage(payload: any) {
     const normalized = normalizeZapiIncomingMessage(payload);
+    
     if (!normalized.phone) {
-      throw new Error("Telefone não identificado no payload.");
+      console.warn("[ZAPI] Telefone real do cliente não identificado no payload.");
+      return { ignored: true, reason: "Telefone não identificado", rawPhone: normalized.rawPhone };
     }
 
     try {
@@ -237,6 +277,10 @@ async function startServer() {
         }).select().single();
         if (custErr) throw custErr;
         customer = newCust;
+      } else if (customer.name === 'Cliente' && normalized.name !== 'Cliente') {
+        // Atualizar nome se for o default
+        await supabase.from('customers').update({ name: normalized.name }).eq('id', customer.id);
+        customer.name = normalized.name;
       }
 
       // 2. Conversation
@@ -250,7 +294,7 @@ async function startServer() {
           customer_phone_normalized: normalized.phone,
           status: 'NEW',
           unread_count: 1,
-          last_message: String(lastMsgText),
+          last_message: String(lastMsgText || "Mensagem recebida"),
           last_message_at: new Date().toISOString(),
           source: 'WhatsApp Z-API'
         }).select().single();
@@ -259,7 +303,7 @@ async function startServer() {
         finalConv = newConv;
       } else {
         const updates: any = {
-          last_message: String(lastMsgText),
+          last_message: String(lastMsgText || "Mensagem recebida"),
           last_message_at: new Date().toISOString(),
           unread_count: (conversation.unread_count || 0) + 1,
           updated_at: new Date().toISOString()
@@ -276,23 +320,39 @@ async function startServer() {
       }
 
       // 3. Message
-      const { data: message, error: msgErr } = await supabase.from('messages').insert({
-        conversation_id: finalConv?.id,
-        customer_phone_normalized: normalized.phone,
-        external_message_id: normalized.messageId,
-        sender_type: 'customer',
-        sender_name: normalized.name,
-        from_phone: normalized.phone,
-        message_type: normalized.type,
-        content: String(normalized.text || lastMsgText),
-        media_url: normalized.mediaUrl,
-        status: 'received',
-        raw_payload: payload,
-        created_at: new Date().toISOString()
-      }).select().single();
-      if (msgErr) throw msgErr;
+      // Verificar duplicidade pelo external_message_id
+      const { data: existingMsg } = await supabase.from('messages').select('id').eq('external_message_id', normalized.messageId).maybeSingle();
+      
+      let finalMessage = null;
+      if (!existingMsg) {
+        const { data: message, error: msgErr } = await supabase.from('messages').insert({
+          conversation_id: finalConv?.id,
+          customer_phone_normalized: normalized.phone,
+          external_message_id: normalized.messageId,
+          sender_type: 'customer',
+          sender_name: normalized.name,
+          from_phone: normalized.phone,
+          message_type: normalized.type,
+          content: String(normalized.text || lastMsgText || "Mensagem recebida"),
+          media_url: normalized.mediaUrl,
+          status: 'received',
+          raw_payload: payload,
+          created_at: new Date().toISOString()
+        }).select().single();
+        if (msgErr) throw msgErr;
+        finalMessage = message;
+      } else {
+        finalMessage = { id: existingMsg.id, alreadyExists: true };
+      }
 
-      return { customer, conversation: finalConv, message, phone: normalized.phone };
+      // Broadcast event for Real-time
+      broadcastEvent("message.received", {
+        customer,
+        conversation: finalConv,
+        message: finalMessage
+      });
+
+      return { customer, conversation: finalConv, message: finalMessage, phone: normalized.phone };
     } catch (err) {
       console.error("[PROCESS ZAPI ERR]", err);
       throw err;
@@ -334,15 +394,20 @@ async function startServer() {
     let logId: string | null = null;
     
     try {
+      const normalized = normalizeZapiIncomingMessage(payload);
+      
       console.log("[ZAPI WEBHOOK RECEIVED]", { 
         timestamp: new Date().toISOString(),
-        phone: payload.phone || payload.from || payload.senderPhone
+        phone: normalized.phone || normalized.rawPhone
       });
 
       // 1. Log imediato (processed = false)
       logId = await saveWebhookLog({
         event_type: "received",
         payload,
+        raw_phone: normalized.rawPhone,
+        phone_normalized: normalized.phone,
+        message_id: normalized.messageId,
         processed: false,
         error: null
       });
@@ -353,15 +418,19 @@ async function startServer() {
       // 3. Atualizar log com sucesso
       if (logId) {
         await updateWebhookLog(logId, {
-          processed: true,
-          phone: result.phone || (result as any).customer?.phone_normalized,
-          message_id: result.message?.external_message_id
+          processed: !(result as any).ignored,
+          phone_normalized: result.phone || (result as any).customer?.phone_normalized,
+          message_id: result.message?.external_message_id || normalized.messageId,
+          customer_id: result.customer?.id,
+          conversation_id: result.conversation?.id,
+          message_db_id: result.message?.id,
+          error: (result as any).ignored ? (result as any).reason : null
         });
       }
 
       return res.status(200).json({
         success: true,
-        message: "Webhook recebido e processado.",
+        message: (result as any).ignored ? "Webhook recebido mas ignorado." : "Webhook recebido e processado.",
         result
       });
     } catch (err: any) {
@@ -383,6 +452,46 @@ async function startServer() {
         message: "Webhook recebido, mas houve erro no processamento.",
         error: errorMsg
       });
+    }
+  });
+
+  // Events SSE for fallback Real-time
+  app.get("/api/events", (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const clientId = Date.now();
+    const newClient = { id: clientId, res };
+    sseClients.push(newClient);
+
+    req.on('close', () => {
+      sseClients = sseClients.filter(c => c.id !== clientId);
+    });
+  });
+
+  app.get("/api/debug/conversations", async (req, res) => {
+    try {
+      const { data: convs } = await supabase.from('conversations').select(`
+        *,
+        customer:customer_id(*)
+      `).order('updated_at', { ascending: false }).limit(20);
+
+      const { data: msgs } = await supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(20);
+
+      return res.json({
+        success: true,
+        tables: {
+          customers: 'customers',
+          conversations: 'conversations',
+          messages: 'messages'
+        },
+        conversations: convs || [],
+        messages: msgs || []
+      });
+    } catch (err) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
     }
   });
 
