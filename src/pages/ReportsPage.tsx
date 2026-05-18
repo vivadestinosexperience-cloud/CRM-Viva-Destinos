@@ -9,7 +9,45 @@ import { toast } from 'sonner';
 import { useAppStore } from '../store/useAppStore';
 
 export default function ReportsPage() {
-  const { customers, conversations, messages, users } = useAppStore();
+  const { customers, conversations, messages, users, teams } = useAppStore();
+
+  const handleExport = () => {
+    const headers = ['Data', 'Status', 'Cliente', 'Equipe', 'Mensagens'];
+    const dataRows = conversations.map(c => [
+      c.created_at,
+      c.status,
+      c.customer?.name || customers.find(cust => cust.id === c.customer_id)?.name || '---',
+      teams.find(t => t.id === c.queue_id)?.name || '---',
+      messages.filter(m => m.conversation_id === c.id).length
+    ]);
+    
+    const csvContent = [headers, ...dataRows].map(e => e.join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", "relatorio_viva_experience.csv");
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast.success('Relatório CSV exportado com sucesso!');
+  };
+
+  // Dynamic Chart Data (Last 24h)
+  const now = new Date();
+  const last24h = Array.from({ length: 24 }, (_, i) => {
+    const hour = new Date(now);
+    hour.setHours(now.getHours() - (23 - i), 0, 0, 0);
+    const count = messages.filter(m => {
+      const msgDate = new Date(m.created_at);
+      return msgDate.getHours() === hour.getHours() && msgDate.getDate() === hour.getDate();
+    }).length;
+    return count;
+  });
+
+  const maxVolume = Math.max(...last24h, 1);
+  const chartBars = last24h.map(v => (v / maxVolume) * 100);
 
   const totalConversations = conversations.length || 0;
   const resolvedConversations = conversations.filter(c => c.status === 'RESOLVED').length;
@@ -38,7 +76,7 @@ export default function ReportsPage() {
         </div>
         <div className="flex gap-3">
           <button 
-            onClick={() => toast.success('Relatório exportado para área de transferência!')}
+            onClick={handleExport}
             className="flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl font-bold text-sm shadow-sm hover:bg-slate-50 transition-all active:scale-95"
           >
             <Download className="w-4 h-4" />
@@ -73,14 +111,15 @@ export default function ReportsPage() {
               <h3 className="font-bold text-slate-800">Volume de Mensagens (24h)</h3>
               <TrendingUp className="w-5 h-5 text-blue-500" />
             </div>
-            <div className="flex-1 flex items-end justify-between gap-2 h-64 border-b border-slate-50 pb-2">
-              {[12, 45, 67, 32, 89, 45, 90, 34, 56, 78, 23, 10, 5, 23, 67, 89, 45, 23, 56, 78, 90, 100, 45, 23].map((h, i) => (
+            <div className="flex-1 flex items-end justify-between gap-1 h-64 border-b border-slate-50 pb-2">
+              {chartBars.map((h, i) => (
                 <div key={i} className="flex-1 flex flex-col items-center gap-2 group">
                    <div 
-                    className="w-full bg-blue-100 rounded-t-lg transition-all duration-500 group-hover:bg-blue-500 cursor-help" 
-                    style={{ height: `${h}%` }}
+                    className="w-full bg-blue-100 rounded-t-lg transition-all duration-500 group-hover:bg-blue-600 cursor-help min-h-[4px]" 
+                    style={{ height: `${Math.max(h, 2)}%` }}
+                    title={`${last24h[i]} mensagens`}
                   ></div>
-                  <span className="text-[8px] font-bold text-slate-300 hidden md:block">{i}h</span>
+                  <span className="text-[7px] font-bold text-slate-300 hidden md:block">{(now.getHours() - (23 - i) + 24) % 24}h</span>
                 </div>
               ))}
             </div>

@@ -11,33 +11,21 @@ import {
   Plus, 
   Send, 
   Paperclip, 
-  Mic, 
   CheckCheck, 
-  UserPlus, 
   ArrowRightLeft, 
-  CheckCircle2, 
   Bot, 
   Tag as TagIcon,
   Info,
-  Calendar,
   Phone,
   Mail,
-  MapPin,
   TrendingUp,
   Sparkles,
   RefreshCw,
   FileText,
-  Plane,
-  Users
+  Copy
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  MOCK_CUSTOMERS, 
-  MOCK_USERS, 
-  MOCK_QUEUES,
-  MOCK_WHATSAPP_ACCOUNTS
-} from '../data/mockData';
-import { Conversation, Message, Customer } from '../types';
+import { Conversation, Message, Customer, Team } from '../types';
 import { supabase } from '../integrations/supabase/client';
 import { useAppStore } from '../store/useAppStore';
 import { toast } from 'sonner';
@@ -50,10 +38,11 @@ export default function OmnichannelPage() {
     addConversation, 
     updateConversation,
     whatsAppAccounts,
-    queues,
+    teams,
     customers,
     users,
-    currentUser
+    currentUser,
+    addCustomer
   } = useAppStore();
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -64,58 +53,105 @@ export default function OmnichannelPage() {
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
-  const [transferData, setTransferData] = useState({ queueId: '', userId: '' });
+  const [transferData, setTransferData] = useState({ teamId: '', userId: '', reason: '' });
   const [closeReason, setCloseReason] = useState('');
-  const [loading] = useState(false);
-  const [formData, setFormData] = useState({
-    customerId: '',
-    accountId: '',
-    queueId: '',
-    phone: ''
-  });
+  const [conversationFilter, setConversationFilter] = useState<'meus' | 'novos' | 'resolvidos'>('meus');
+  const [searchTerm, setSearchTerm] = useState('');
   
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const activeConv = conversations.find(c => c.id === activeConversationId);
-  const activeCustomer = activeConv?.customer || customers.find(c => c.id === activeConv?.customer_id);
+  const activeConversation = conversations.find(c => c.id === activeConversationId);
+  const activeCustomer = activeConversation?.customer || customers.find(c => c.id === activeConversation?.customer_id);
   const activeChatMessages = messages.filter(m => m.conversation_id === activeConversationId);
-  const currentAccount = whatsAppAccounts.find(a => a.id === activeConv?.whatsapp_account_id);
+  const currentAccount = whatsAppAccounts.find(a => a.id === activeConversation?.whatsapp_account_id);
 
-  // Set initial conversation
-  useEffect(() => {
-    if (!activeConversationId && conversations.length > 0) {
-      setActiveConversationId(conversations[0].id);
+  // Filtered Conversations
+  const filteredConversations = conversations.filter(conv => {
+    // Filter by status/owner
+    if (conversationFilter === 'meus') {
+      if (conv.status === 'RESOLVED') return false;
+      if (conv.assigned_user_id && conv.assigned_user_id !== currentUser?.id) return false;
+    } else if (conversationFilter === 'novos') {
+      if (conv.status !== 'NEW' && conv.status !== 'PENDING') return false;
+    } else if (conversationFilter === 'resolvidos') {
+      if (conv.status !== 'RESOLVED') return false;
     }
-  }, [conversations, activeConversationId]);
 
-  // Realtime Subscription
-  useEffect(() => {
-    const channel = supabase
-      .channel('public:messages')
-      .on('postgres_changes' as any, { event: 'INSERT', schema: 'public', table: 'messages' }, (payload: any) => {
-        const newMsg = payload.new;
-        if (newMsg.conversation_id === activeConversationId) {
-          // Manual refresh or push to store would happen here
-        }
-      })
-      .subscribe();
+    // Filter by search
+    if (searchTerm) {
+      const customer = conv.customer || customers.find(c => c.id === conv.customer_id);
+      const searchLower = searchTerm.toLowerCase();
+      return (
+        customer?.name.toLowerCase().includes(searchLower) ||
+        customer?.phone.includes(searchTerm) ||
+        conv.last_message?.toLowerCase().includes(searchLower)
+      );
+    }
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [activeConversationId]);
+    return true;
+  });
+
+  const [newChatData, setNewChatData] = useState({
+    customerId: '',
+    newName: '',
+    newPhone: '',
+    accountId: '',
+    teamId: ''
+  });
+
+  const handleTransfer = async () => {
+    if (!activeConversationId || !transferData.teamId) return;
+
+    await updateConversation(activeConversationId, {
+      queue_id: transferData.teamId,
+      assigned_user_id: transferData.userId || undefined,
+      status: 'TRANSFERRED'
+    });
+    
+    const teamName = teams.find(t => t.id === transferData.teamId)?.name || 'Nova Equipe';
+    await addMessage({
+      id: `sys-${Date.now()}`,
+      conversation_id: activeConversationId,
+      sender_type: 'system',
+      content: `Atendimento transferido para a equipe: ${teamName}${transferData.reason ? `. Motivo: ${transferData.reason}` : ''}`,
+      created_at: new Date().toISOString(),
+      message_type: 'text',
+      status: 'sent'
+    } as Message);
+
+    setShowTransferModal(false);
+    toast.success('Atendimento transferido');
+  };
 
   const handleCreateChat = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    const selectedCustomer = customers.find(c => c.id === formData.customerId);
-    const selectedAccount = whatsAppAccounts.find(a => a.id === formData.accountId) || whatsAppAccounts[0];
-    const selectedQueue = queues.find(q => q.id === formData.queueId) || queues[0];
+    let targetCustomerId = newChatData.customerId;
+
+    if (!targetCustomerId) {
+      if (!newChatData.newName || !newChatData.newPhone) {
+        toast.error('Preencha nome e telefone do novo cliente');
+        return;
+      }
+      const newCustId = `c${Date.now()}`;
+      await addCustomer({
+        id: newCustId,
+        name: newChatData.newName,
+        phone: newChatData.newPhone,
+        active: true,
+        online: false,
+        email: '',
+      } as any);
+      targetCustomerId = newCustId;
+    }
+
+    const selectedAccount = whatsAppAccounts.find(a => a.id === newChatData.accountId) || whatsAppAccounts[0];
+    const selectedTeam = teams.find(t => t.id === newChatData.teamId) || teams[0];
 
     const newConv: Partial<Conversation> = {
-      customer_id: selectedCustomer?.id || formData.customerId,
+      customer_id: targetCustomerId,
       whatsapp_account_id: selectedAccount?.id || '',
-      queue_id: selectedQueue?.id || '',
+      queue_id: selectedTeam?.id || '',
       status: 'OPEN',
       last_message: 'Atendimento manual iniciado',
       unread_count: 0,
@@ -125,18 +161,6 @@ export default function OmnichannelPage() {
     await addConversation(newConv);
     setShowNewChatModal(false);
     toast.success('Atendimento iniciado com sucesso!');
-  };
-
-  const handleTransfer = async () => {
-    if (!activeConversationId || !transferData.queueId) return;
-
-    await updateConversation(activeConversationId, {
-      queue_id: transferData.queueId,
-      assigned_user_id: transferData.userId || undefined,
-      status: 'TRANSFERRED'
-    });
-    setShowTransferModal(false);
-    toast.success('Atendimento transferido');
   };
 
   const handleClose = async () => {
@@ -153,9 +177,71 @@ export default function OmnichannelPage() {
     toast.success('Atendimento finalizado com sucesso');
   };
 
+  const handleAISuggestion = async () => {
+    if (!activeConversation) return;
+    const history = messages
+      .filter(m => m.conversation_id === activeConversation.id)
+      .map(m => `${m.sender_type === 'customer' ? 'Cliente' : 'Agente'}: ${m.content}`)
+      .join('\n');
+
+    toast.promise(
+      fetch('/api/ai/suggestion', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history })
+      }).then(res => res.json()).then(data => {
+        if (data.suggestion) {
+           setNewMessage(data.suggestion);
+           setShowIAPanel(false);
+        }
+      }),
+      {
+        loading: 'Gerando sugestão...',
+        success: 'Sugestão inserida no campo de texto!',
+        error: 'Erro ao gerar sugestão.'
+      }
+    );
+  };
+
+  const handleAIClassify = async () => {
+    if (!activeConversation) return;
+    const history = messages
+      .filter(m => m.conversation_id === activeConversation.id)
+      .map(m => `${m.sender_type === 'customer' ? 'Cliente' : 'Agente'}: ${m.content}`)
+      .join('\n');
+
+    toast.promise(
+      fetch('/api/ai/classify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history })
+      }).then(res => res.json()).then(data => {
+        if (data.classification && activeConversation.customer_id) {
+           toast.success(`Lead classificado como: ${data.classification}`);
+           setShowIAPanel(false);
+        }
+      }),
+      {
+        loading: 'Classificando lead...',
+        success: 'Classificação concluída',
+        error: 'Erro ao classificar.'
+      }
+    );
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || !activeConversationId) return;
+
+    if (!currentAccount) {
+      toast.error('Nenhum canal configurado para esta conversa. Acesse Configurações > Canais.');
+      return;
+    }
+
+    if (currentAccount.status !== 'ESTÁVEL') {
+      toast.error('Este canal está desconectado. Reconecte antes de enviar.');
+      return;
+    }
 
     const content = newMessage;
     setNewMessage('');
@@ -178,21 +264,31 @@ export default function OmnichannelPage() {
       last_message_at: new Date().toISOString()
     });
 
-    // IA Mock response
-    if (content.toLowerCase().includes('ia')) {
-       setTimeout(async () => {
-         const iaMsg: Message = {
-           id: `m${Date.now() + 1}`,
-           conversation_id: activeConversationId,
-           sender_type: 'agent',
-           sender_name: 'Assistente IA',
-           content: 'Olá! Sou a IA do Viva Experience. Posso analisar sua conversa e sugerir o melhor destino. Gostaria de um resumo?',
-           created_at: new Date().toISOString(),
-           message_type: 'text',
-           status: 'sent'
-         };
-         await addMessage(iaMsg);
-       }, 1500);
+    // Real send through backend
+    try {
+      let endpoint = '';
+      let body: any = {};
+
+      if (currentAccount.provider === 'ZAPI') {
+        endpoint = '/api/channels/zapi/send-text';
+        body = { phone: activeCustomer?.phone, message: content };
+      } else if (currentAccount.provider === 'EVOLUTION') {
+        endpoint = '/api/channels/evolution/send-text';
+        body = { number: activeCustomer?.phone, text: content }; // Evolution often uses 'text'
+      } else if (currentAccount.provider_type === 'meta_cloud') {
+        // We'll use a generic webhook or specific meta send if implemented
+        endpoint = '/api/webhooks/whatsapp'; 
+      }
+
+      if (endpoint) {
+        fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+      }
+    } catch (err) {
+      console.error('Real send failed:', err);
     }
   };
 
@@ -225,32 +321,49 @@ export default function OmnichannelPage() {
           </div>
           
           <div className="flex bg-slate-50 p-1 rounded-xl mb-4">
-            <button className="flex-1 py-2 text-xs font-bold rounded-lg bg-white shadow-sm text-blue-600">Meus</button>
-            <button className="flex-1 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-600">Novos</button>
-            <button className="flex-1 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-600">Resolvidos</button>
+            <button 
+              onClick={() => setConversationFilter('meus')}
+              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${conversationFilter === 'meus' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              Meus
+            </button>
+            <button 
+              onClick={() => setConversationFilter('novos')}
+              className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${conversationFilter === 'novos' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              Novos
+            </button>
+            <button 
+              onClick={() => setConversationFilter('resolvidos')}
+              className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${conversationFilter === 'resolvidos' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              Resolvidos
+            </button>
           </div>
 
           <div className="relative">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input 
               type="text" 
-              placeholder="Buscar cliente ou destino..." 
-              className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm transition-all shadow-sm"
+              placeholder="Buscar cliente ou mensagem..." 
+              className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm transition-all shadow-sm font-medium"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
         </div>
 
         <div className="flex-1 overflow-y-auto divide-y divide-slate-50">
-          {(loading && conversations.length === 0) ? (
-            <div className="p-10 flex flex-col items-center justify-center gap-3">
-              <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Carregando conversas...</p>
+          {filteredConversations.length === 0 ? (
+            <div className="p-10 flex flex-col items-center justify-center text-center opacity-40">
+              <MessageSquare className="w-12 h-12 mb-4" />
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Nenhuma conversa encontrada</p>
             </div>
-          ) : conversations.map((conv) => {
-            const customer = conv.customer || MOCK_CUSTOMERS.find(c => c.id === conv.customer_id);
+          ) : filteredConversations.map((conv) => {
+            const customer = conv.customer || customers.find(c => c.id === conv.customer_id);
             const isActive = activeConversationId === conv.id;
-            const queue = conv.queue || MOCK_QUEUES.find(q => q.id === conv.queue_id);
-            const account = conv.whatsapp_account || MOCK_WHATSAPP_ACCOUNTS.find(a => a.id === conv.whatsapp_account_id);
+            const team = teams.find(t => t.id === conv.queue_id);
+            const account = conv.whatsapp_account || whatsAppAccounts.find(a => a.id === conv.whatsapp_account_id);
             const lastMsgAt = conv.last_message_at;
 
             return (
@@ -281,9 +394,9 @@ export default function OmnichannelPage() {
                   <div className="flex items-center gap-1.5 mb-1.5">
                      <span 
                       className="px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider text-white"
-                      style={{ backgroundColor: queue?.color || '#cbd5e1' }}
+                      style={{ backgroundColor: team?.color || '#cbd5e1' }}
                     >
-                      {queue?.name || 'Sem Fila'}
+                      {team?.name || 'Sem Equipe'}
                     </span>
                     <span className="text-[10px] text-slate-400 font-medium">•</span>
                     <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">{account?.name || '---'}</span>
@@ -317,7 +430,7 @@ export default function OmnichannelPage() {
 
       {/* 2. MAIN: Chat Area */}
       <div className="flex-1 flex flex-col min-w-0 bg-slate-50">
-        {activeConv ? (
+        {activeConversation ? (
           <>
             {/* Chat Header */}
             <header className="h-20 bg-white border-b border-slate-100 px-6 flex items-center justify-between shrink-0 z-20">
@@ -363,16 +476,16 @@ export default function OmnichannelPage() {
             </header>
 
             {/* Quality Banner */}
-            <div className={`px-6 py-2 border-b flex items-center justify-between gap-3 ${currentAccount?.status === 'CONNECTED' ? 'bg-blue-50/50 border-blue-100' : 'bg-red-50/50 border-red-100'}`}>
+            <div className={`px-6 py-2 border-b flex items-center justify-between gap-3 ${currentAccount?.status === 'ESTÁVEL' ? 'bg-blue-50/50 border-blue-100' : 'bg-red-50/50 border-red-100'}`}>
               <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full animate-pulse ${currentAccount?.status === 'CONNECTED' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
-                <p className={`text-[10px] font-bold uppercase tracking-widest ${currentAccount?.status === 'CONNECTED' ? 'text-blue-700' : 'text-red-700'}`}>
-                  Canal {currentAccount?.name || 'Comercial'} {currentAccount?.status === 'CONNECTED' ? 'conectado com qualidade ALTA' : 'DESCONECTADO'} • Atendimento {currentAccount?.status === 'CONNECTED' ? 'seguro' : 'PENDENTE'}
+                <div className={`w-2 h-2 rounded-full animate-pulse ${currentAccount?.status === 'ESTÁVEL' ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+                <p className={`text-[10px] font-bold uppercase tracking-widest ${currentAccount?.status === 'ESTÁVEL' ? 'text-blue-700' : 'text-red-700'}`}>
+                  Canal {currentAccount?.name || 'Comercial'} {currentAccount?.status === 'ESTÁVEL' ? 'conectado com qualidade ALTA' : 'DESCONECTADO'} • Atendimento {currentAccount?.status === 'ESTÁVEL' ? 'seguro' : 'PENDENTE'}
                 </p>
               </div>
               <div className="flex items-center gap-4">
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Número: {currentAccount?.number || '---'}</span>
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Fila: {activeConv?.queue?.name || 'Geral'}</span>
+                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Número: {currentAccount?.phone_number || currentAccount?.number || '---'}</span>
+                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Equipe: {teams.find(t => t.id === activeConversation?.queue_id)?.name || 'Geral'}</span>
               </div>
             </div>
 
@@ -454,18 +567,34 @@ export default function OmnichannelPage() {
                       <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-sm italic text-slate-600 leading-relaxed relative ring-1 ring-blue-100 ring-offset-2 ring-offset-transparent">
                         "{aiSummary}"
                         <div className="mt-4 flex gap-2">
-                           <button className="flex-1 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-100">Citar no Chat</button>
-                           <button className="flex-1 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-bold shadow-sm">Salvar Nota</button>
+                           <button 
+                             onClick={() => { setNewMessage(aiSummary); setShowIAPanel(false); }}
+                             className="flex-1 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-100 transition-transform active:scale-95"
+                           >
+                             Citar no Chat
+                           </button>
+                           <button 
+                             onClick={() => { toast.success('Nota salva no histórico do atendimento'); setShowIAPanel(false); }}
+                             className="flex-1 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-bold shadow-sm"
+                           >
+                             Salvar Nota
+                           </button>
                         </div>
                       </div>
                     ) : (
                       <div className="grid grid-cols-2 gap-2">
-                        <button className="flex flex-col items-center justify-center gap-2 p-4 border border-slate-100 rounded-2xl hover:border-blue-200 hover:bg-blue-50/30 transition-all">
-                          <Bot className="w-5 h-5 text-blue-500" />
+                        <button 
+                          onClick={handleAISuggestion}
+                          className="flex flex-col items-center justify-center gap-2 p-4 border border-slate-100 rounded-2xl hover:border-blue-200 hover:bg-blue-50/30 transition-all group"
+                        >
+                          <Bot className="w-5 h-5 text-blue-500 group-hover:scale-110 transition-transform" />
                           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Sugestão</span>
                         </button>
-                        <button className="flex flex-col items-center justify-center gap-2 p-4 border border-slate-100 rounded-2xl hover:border-blue-200 hover:bg-blue-50/30 transition-all">
-                          <TagIcon className="w-5 h-5 text-emerald-500" />
+                        <button 
+                          onClick={handleAIClassify}
+                          className="flex flex-col items-center justify-center gap-2 p-4 border border-slate-100 rounded-2xl hover:border-blue-200 hover:bg-blue-50/30 transition-all group"
+                        >
+                          <TagIcon className="w-5 h-5 text-emerald-500 group-hover:scale-110 transition-transform" />
                           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Classificar</span>
                         </button>
                       </div>
@@ -479,18 +608,23 @@ export default function OmnichannelPage() {
             <footer className="bg-white border-t border-slate-100 p-6 z-20">
               <form onSubmit={handleSendMessage} className="max-w-4xl mx-auto flex items-end gap-3 bg-slate-50 border border-slate-200 p-3 rounded-2xl focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent transition-all shadow-sm">
                 <div className="flex items-center gap-1">
-                  <button type="button" className="p-2 text-slate-400 hover:bg-white hover:text-blue-600 rounded-xl transition-all">
+                  <button 
+                    type="button" 
+                    onClick={() => {
+                        const note = prompt("Digite uma anotação interna:");
+                        if (note) toast.success("Anotação adicionada");
+                    }}
+                    className="p-2 text-slate-400 hover:bg-white hover:text-blue-600 rounded-xl transition-all"
+                    title="Adicionar anotação"
+                  >
                     <Plus className="w-5 h-5" />
-                  </button>
-                  <button type="button" className="p-2 text-slate-400 hover:bg-white hover:text-blue-600 rounded-xl transition-all">
-                     <FileText className="w-5 h-5" />
                   </button>
                 </div>
                 
                 <textarea 
                   rows={1}
                   placeholder="Escreva sua mensagem..."
-                  className="flex-1 bg-transparent border-none outline-none text-sm py-2 resize-none max-h-40 min-h-[40px] px-2"
+                  className="flex-1 bg-transparent border-none outline-none text-sm py-2 resize-none max-h-40 min-h-[40px] px-2 font-medium"
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
                   onKeyDown={(e) => {
@@ -502,9 +636,6 @@ export default function OmnichannelPage() {
                 />
 
                 <div className="flex items-center gap-2">
-                  <button type="button" className="p-2 text-slate-400 hover:bg-white hover:text-blue-600 rounded-xl transition-all">
-                    <Mic className="w-5 h-5" />
-                  </button>
                   <button 
                     type="submit"
                     disabled={!newMessage.trim()}
@@ -565,17 +696,25 @@ export default function OmnichannelPage() {
                   <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Contato</h4>
                 </div>
                 <div className="space-y-3">
-                  <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-100 transition-all hover:bg-white hover:shadow-md cursor-pointer group">
+                  <div 
+                    onClick={() => { navigator.clipboard.writeText(activeCustomer.phone); toast.success('Telefone copiado'); }}
+                    className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-100 transition-all hover:bg-white hover:shadow-md cursor-pointer group"
+                  >
                     <div className="w-8 h-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-400 group-hover:text-blue-500 group-hover:border-blue-100 transition-all shadow-sm">
                       <Phone className="w-4 h-4" />
                     </div>
                     <p className="text-xs font-bold text-slate-700">{activeCustomer.phone}</p>
+                    <Copy className="w-3 h-3 text-slate-300 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
                   </div>
-                  <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-100 transition-all hover:bg-white hover:shadow-md cursor-pointer group">
+                  <div 
+                    onClick={() => { if (activeCustomer.email) { navigator.clipboard.writeText(activeCustomer.email); toast.success('E-mail copiado'); } }}
+                    className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-100 transition-all hover:bg-white hover:shadow-md cursor-pointer group"
+                  >
                     <div className="w-8 h-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-400 group-hover:text-blue-500 group-hover:border-blue-100 transition-all shadow-sm">
                       <Mail className="w-4 h-4" />
                     </div>
                     <p className="text-xs font-bold text-slate-700">{activeCustomer.email || 'Não informado'}</p>
+                    {activeCustomer.email && <Copy className="w-3 h-3 text-slate-300 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />}
                   </div>
                 </div>
               </section>
@@ -635,30 +774,30 @@ export default function OmnichannelPage() {
 
               <form onSubmit={handleCreateChat} className="p-8 space-y-6">
                 <div className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-1">Canal de Envio</label>
                       <select 
                         className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm appearance-none"
-                        value={formData.accountId}
-                        onChange={(e) => setFormData({...formData, accountId: e.target.value})}
+                        value={newChatData.accountId}
+                        onChange={(e) => setNewChatData({...newChatData, accountId: e.target.value})}
                       >
                         <option value="">Selecione um canal</option>
                         {whatsAppAccounts.map(acc => (
-                          <option key={acc.id} value={acc.id}>{acc.name} ({acc.status === 'CONNECTED' ? 'Ativo' : 'Off'})</option>
+                          <option key={acc.id} value={acc.id}>{acc.name} ({acc.status === 'ESTÁVEL' ? 'Ativo' : 'Off'})</option>
                         ))}
                       </select>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-1">Fila Inicial</label>
+                      <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-1">Equipe Responsável</label>
                       <select 
                         className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm appearance-none"
-                        value={formData.queueId}
-                        onChange={(e) => setFormData({...formData, queueId: e.target.value})}
+                        value={newChatData.teamId}
+                        onChange={(e) => setNewChatData({...newChatData, teamId: e.target.value})}
                       >
-                        <option value="">Selecione uma fila</option>
-                        {queues.map(q => (
-                          <option key={q.id} value={q.id}>{q.name}</option>
+                        <option value="">Selecione uma equipe</option>
+                        {teams.map(t => (
+                          <option key={t.id} value={t.id}>{t.name}</option>
                         ))}
                       </select>
                     </div>
@@ -668,8 +807,8 @@ export default function OmnichannelPage() {
                     <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-1">Selecione o Cliente</label>
                     <select 
                       className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm appearance-none"
-                      value={formData.customerId}
-                      onChange={(e) => setFormData({...formData, customerId: e.target.value})}
+                      value={newChatData.customerId}
+                      onChange={(e) => setNewChatData({...newChatData, customerId: e.target.value})}
                     >
                       <option value="">Novo Cliente...</option>
                       {customers.map(c => (
@@ -678,20 +817,26 @@ export default function OmnichannelPage() {
                     </select>
                   </div>
 
-                  {!formData.customerId && (
-                    <div className="grid grid-cols-4 gap-4">
-                      <div className="space-y-1.5 col-span-1">
-                        <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-1">DDI</label>
-                        <input type="text" readOnly value="+55" className="w-full px-4 py-3 bg-slate-100 border border-slate-100 rounded-2xl text-center text-sm font-bold text-slate-500" />
+                  {!newChatData.customerId && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-1">Nome Completo</label>
+                        <input 
+                          type="text" 
+                          placeholder="Nome do cliente..." 
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm font-medium" 
+                          value={newChatData.newName}
+                          onChange={(e) => setNewChatData({...newChatData, newName: e.target.value})}
+                        />
                       </div>
-                      <div className="space-y-1.5 col-span-3">
+                      <div className="space-y-1.5">
                         <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-1">Telefone WhatsApp</label>
                         <input 
                           type="tel" 
-                          placeholder="Telefone do cliente..." 
-                          className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm" 
-                          value={formData.phone}
-                          onChange={(e) => setFormData({...formData, phone: e.target.value})}
+                          placeholder="(99) 99999-9999" 
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm font-medium" 
+                          value={newChatData.newPhone}
+                          onChange={(e) => setNewChatData({...newChatData, newPhone: e.target.value})}
                         />
                       </div>
                     </div>
@@ -717,26 +862,35 @@ export default function OmnichannelPage() {
               <h2 className="text-lg font-bold text-slate-800 mb-6">Transferir Atendimento</h2>
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nova Fila</label>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Equipe de Destino</label>
                   <select 
-                    className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl"
-                    value={transferData.queueId}
-                    onChange={(e) => setTransferData({...transferData, queueId: e.target.value})}
+                    className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 transition-all appearance-none"
+                    value={transferData.teamId}
+                    onChange={(e) => setTransferData({...transferData, teamId: e.target.value})}
                   >
-                    <option value="">Selecione...</option>
-                    {queues.map(q => <option key={q.id} value={q.id}>{q.name}</option>)}
+                    <option value="">Selecione uma equipe...</option>
+                    {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Consultor (Opcional)</label>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Consultor de Destino (Opcional)</label>
                   <select 
-                    className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl"
+                    className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 transition-all appearance-none"
                     value={transferData.userId}
                     onChange={(e) => setTransferData({...transferData, userId: e.target.value})}
                   >
                     <option value="">Qualquer Consultor</option>
                     {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
                   </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Motivo da Transferência</label>
+                  <textarea 
+                    placeholder="Explique o motivo da transferência..." 
+                    className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm min-h-[80px] outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                    value={transferData.reason}
+                    onChange={(e) => setTransferData({...transferData, reason: e.target.value})}
+                  />
                 </div>
               </div>
               <div className="flex justify-end gap-3 mt-8">

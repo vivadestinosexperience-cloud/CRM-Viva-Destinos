@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { authService } from '../services/authService';
+import { toast } from 'sonner';
 import Logo from '../components/Logo';
 
 export default function LoginPage({ onLogin }: { onLogin: () => void }) {
@@ -23,10 +24,6 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
     
     if (error) {
       setError('Credenciais inválidas. Verifique seu e-mail e senha.');
-      // Allow demo login if credentials match a hardcoded one or if it's a specific test case
-      if (email === 'admin@viva.com' && password === '123456') {
-        onLogin();
-      }
     } else {
       onLogin();
     }
@@ -73,7 +70,13 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
           <div>
             <div className="flex justify-between mb-1.5">
               <label className="block text-sm font-medium text-slate-700">Senha</label>
-              <a href="#" className="text-sm text-blue-600 hover:underline">Esqueci minha senha</a>
+              <button 
+                type="button"
+                onClick={() => toast.info('Entre em contato com o administrador para resets de senha via painel Supabase.')}
+                className="text-sm text-blue-600 hover:underline"
+              >
+                Esqueci minha senha
+              </button>
             </div>
             <input 
               type="password" 

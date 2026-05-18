@@ -8,16 +8,15 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import { 
   User, 
   Team, 
-  Queue, 
   WhatsAppAccount, 
   Customer, 
   Conversation, 
-  Message 
+  Message,
+  InternalMessage
 } from '../types';
 import { 
   MOCK_USERS, 
   MOCK_TEAMS, 
-  MOCK_QUEUES, 
   MOCK_WHATSAPP_ACCOUNTS, 
   MOCK_CUSTOMERS, 
   MOCK_CONVERSATIONS, 
@@ -55,11 +54,13 @@ interface AppState {
   // Data
   users: User[];
   teams: Team[];
-  queues: Queue[];
   whatsAppAccounts: WhatsAppAccount[];
   customers: Customer[];
   conversations: Conversation[];
   messages: Message[];
+  
+  // Internal Chat
+  internalMessages: InternalMessage[];
   
   // UI State
   isLoading: boolean;
@@ -70,6 +71,7 @@ interface AppState {
   // Actions
   setAppearance: (settings: Partial<AppearanceSettings>) => void;
   setCurrentUser: (user: User | null) => void;
+  setUserStatus: (userId: string, status: string) => void;
   
   // Initialization & Sync
   initializeAppData: () => Promise<void>;
@@ -84,11 +86,6 @@ interface AppState {
   addTeam: (team: Team) => Promise<void>;
   updateTeam: (team: Team) => Promise<void>;
   deleteTeam: (id: string) => Promise<void>;
-
-  // Queues CRUD
-  addQueue: (queue: Queue) => Promise<void>;
-  updateQueue: (queue: Queue) => Promise<void>;
-  deleteQueue: (id: string) => Promise<void>;
   
   // WhatsApp CRUD
   addWhatsAppAccount: (account: WhatsAppAccount) => Promise<void>;
@@ -104,6 +101,9 @@ interface AppState {
   addMessage: (message: Message) => Promise<void>;
   updateConversation: (id: string, updates: Partial<Conversation>) => Promise<void>;
   addConversation: (conversation: Partial<Conversation>) => Promise<void>;
+  
+  // Internal Chat Actions
+  addInternalMessage: (message: InternalMessage) => void;
   
   // Generic reset
   resetState: () => void;
@@ -126,12 +126,16 @@ export const useAppStore = create<AppState>()(
       appearance: DEFAULT_APPEARANCE,
       permissions: {},
       users: MOCK_USERS,
-      teams: MOCK_TEAMS,
-      queues: MOCK_QUEUES,
+      teams: MOCK_TEAMS.map(t => ({
+        ...t,
+        active: true,
+        sla_minutes: 60
+      })),
       whatsAppAccounts: MOCK_WHATSAPP_ACCOUNTS,
       customers: MOCK_CUSTOMERS,
       conversations: MOCK_CONVERSATIONS,
       messages: MOCK_MESSAGES,
+      internalMessages: [],
       
       isLoading: false,
       isSaving: false,
@@ -144,13 +148,16 @@ export const useAppStore = create<AppState>()(
       
       setCurrentUser: (user) => set({ currentUser: user }),
 
+      setUserStatus: (userId, status) => set((state) => ({
+        users: state.users.map(u => u.id === userId ? { ...u, status } : u)
+      })),
+
       initializeAppData: async () => {
         set({ isLoading: true, error: null });
         try {
           const [
             users,
             teams,
-            queues,
             whatsapp,
             customers,
             conversations,
@@ -158,7 +165,6 @@ export const useAppStore = create<AppState>()(
           ] = await Promise.all([
             profilesService.list(),
             teamService.list(),
-            queueService.list(),
             whatsappService.list(),
             customerService.list(),
             conversationService.list(),
@@ -167,8 +173,7 @@ export const useAppStore = create<AppState>()(
 
           set({
             users: users?.length ? users : MOCK_USERS,
-            teams: teams?.length ? teams : MOCK_TEAMS,
-            queues: queues?.length ? queues : MOCK_QUEUES,
+            teams: teams?.length ? (teams as Team[]) : get().teams,
             whatsAppAccounts: whatsapp?.length ? whatsapp : MOCK_WHATSAPP_ACCOUNTS,
             customers: customers?.length ? customers : MOCK_CUSTOMERS,
             conversations: (conversations as Conversation[])?.length ? (conversations as Conversation[]) : MOCK_CONVERSATIONS,
@@ -263,43 +268,9 @@ export const useAppStore = create<AppState>()(
         }
       },
 
-      // Queue Actions
-      addQueue: async (queue) => {
-        set({ isSaving: true });
-        try {
-          const newQueue = await queueService.create(queue);
-          set((state) => ({ queues: [...state.queues, newQueue], isSaving: false }));
-        } catch (err) {
-          set((state) => ({ queues: [...state.queues, queue], isSaving: false }));
-          toast.warning('Salvo localmente');
-        }
-      },
-      updateQueue: async (queue) => {
-        set({ isSaving: true });
-        try {
-          const updated = await queueService.update(queue.id, queue);
-          set((state) => ({
-            queues: state.queues.map(q => q.id === queue.id ? updated : q),
-            isSaving: false
-          }));
-        } catch (err) {
-          set((state) => ({
-            queues: state.queues.map(q => q.id === queue.id ? queue : q),
-            isSaving: false
-          }));
-          toast.warning('Atualizado localmente');
-        }
-      },
-      deleteQueue: async (id) => {
-        set({ isSaving: true });
-        try {
-          await queueService.remove(id);
-          set((state) => ({ queues: state.queues.filter(q => q.id !== id), isSaving: false }));
-        } catch (err) {
-          set((state) => ({ queues: state.queues.filter(q => q.id !== id), isSaving: false }));
-          toast.warning('Removido localmente');
-        }
-      },
+      addInternalMessage: (message) => set((state) => ({
+        internalMessages: [...state.internalMessages, message]
+      })),
 
       // WhatsApp Actions
       addWhatsAppAccount: async (account) => {
@@ -424,7 +395,6 @@ export const useAppStore = create<AppState>()(
         appearance: DEFAULT_APPEARANCE,
         users: MOCK_USERS,
         teams: MOCK_TEAMS,
-        queues: MOCK_QUEUES,
         whatsAppAccounts: MOCK_WHATSAPP_ACCOUNTS,
         customers: MOCK_CUSTOMERS,
         conversations: MOCK_CONVERSATIONS,

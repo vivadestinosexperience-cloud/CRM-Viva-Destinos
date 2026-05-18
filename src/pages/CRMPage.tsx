@@ -18,7 +18,8 @@ import {
   Clock,
   CheckCircle2,
   ArrowUpRight,
-  RefreshCw
+  RefreshCw,
+  Bot
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
@@ -29,7 +30,10 @@ export default function CRMPage() {
   const { customers, addCustomer, deleteCustomer, isSaving } = useAppStore();
   const [showNewContactModal, setShowNewContactModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+  
+  const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
   
   const [formData, setFormData] = useState<Partial<Customer>>({
     name: '',
@@ -193,18 +197,21 @@ export default function CRMPage() {
                           exit={{ opacity: 0, scale: 0.95, x: 10 }}
                           className="absolute right-20 top-1/2 -translate-y-1/2 z-50 w-48 bg-white rounded-2xl shadow-xl border border-slate-100 p-2 text-left"
                         >
-                           <button className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-xl transition-all text-xs font-bold text-slate-600">
-                              <ArrowUpRight className="w-4 h-4 text-slate-400" />
-                              Perfil Completo
-                           </button>
-                           <div className="h-px bg-slate-50 my-1 mx-2" />
-                           <button 
-                            onClick={() => handleDelete(customer.id, customer.name)}
-                            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-red-50 rounded-xl transition-all text-xs font-bold text-red-600"
-                           >
-                              <Trash2 className="w-4 h-4 text-red-300" />
-                              Excluir Cliente
-                           </button>
+                            <button 
+                             onClick={() => { setSelectedCustomerId(customer.id); setActiveMenuId(null); }}
+                             className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-xl transition-all text-xs font-bold text-slate-600"
+                            >
+                               <ArrowUpRight className="w-4 h-4 text-slate-400" />
+                               Perfil Completo
+                            </button>
+                            <div className="h-px bg-slate-50 my-1 mx-2" />
+                            <button 
+                             onClick={() => handleDelete(customer.id, customer.name)}
+                             className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-red-50 rounded-xl transition-all text-xs font-bold text-red-600"
+                            >
+                               <Trash2 className="w-4 h-4 text-red-300" />
+                               Excluir Cliente
+                            </button>
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -340,6 +347,96 @@ export default function CRMPage() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      {/* Customer Profile Modal */}
+      <AnimatePresence>
+        {selectedCustomerId && selectedCustomer && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedCustomerId(null)}
+              className="absolute inset-0 bg-slate-900/60 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 40 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 40 }}
+              className="relative w-full max-w-4xl bg-white rounded-[3rem] shadow-2xl overflow-hidden flex flex-col md:flex-row max-h-[90vh]"
+            >
+              <div className="w-full md:w-80 bg-slate-50 p-10 flex flex-col items-center border-r border-slate-100">
+                <div className="w-32 h-32 rounded-[2.5rem] bg-blue-600 flex items-center justify-center text-white text-4xl font-black shadow-2xl shadow-blue-200 mb-6">
+                  {selectedCustomer.name.charAt(0)}
+                </div>
+                <h3 className="text-xl font-black text-slate-800 text-center leading-tight mb-2 uppercase tracking-tight">{selectedCustomer.name}</h3>
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em] mb-6">Cliente Base</p>
+                
+                <div className="w-full space-y-3">
+                  <div className="p-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Telefone</p>
+                    <p className="text-sm font-bold text-slate-700">{selectedCustomer.phone}</p>
+                  </div>
+                  <div className="p-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">E-mail</p>
+                    <p className="text-sm font-bold text-slate-700 truncate">{selectedCustomer.email || 'Não informado'}</p>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="flex-1 p-10 overflow-y-auto">
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-4">
+                     <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-[0.2em] ${
+                        selectedCustomer.temperature === 'HOT' ? 'bg-red-100 text-red-600' : 
+                        selectedCustomer.temperature === 'COLD' ? 'bg-slate-100 text-slate-500' : 
+                        'bg-amber-100 text-amber-600'
+                      }`}>
+                        {selectedCustomer.temperature === 'HOT' ? 'Alta Prioridade' : 
+                         selectedCustomer.temperature === 'COLD' ? 'Baixa Prioridade' : 'Morno'}
+                      </span>
+                      <span className="px-4 py-1.5 bg-blue-50 text-blue-600 rounded-full text-[10px] font-black uppercase tracking-[0.2em]">
+                        {selectedCustomer.origin || 'Instagram'}
+                      </span>
+                  </div>
+                  <button onClick={() => setSelectedCustomerId(null)} className="p-2 hover:bg-slate-100 rounded-xl transition-all">
+                    <X className="w-6 h-6 text-slate-300" />
+                  </button>
+                </div>
+
+                <h4 className="text-sm font-black text-slate-800 uppercase tracking-[0.15em] mb-6 flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-blue-500" /> Histórico de Destinos
+                </h4>
+                <div className="space-y-4">
+                  {[1, 2].map(i => (
+                    <div key={i} className="p-6 bg-slate-50 rounded-3xl border border-slate-100 flex items-center justify-between group hover:bg-white hover:shadow-xl transition-all cursor-pointer">
+                      <div className="flex items-center gap-5">
+                         <div className="w-12 h-12 bg-white rounded-2xl border border-slate-100 flex items-center justify-center text-slate-300 group-hover:text-blue-500 transition-colors">
+                           <MapPin className="w-5 h-5" />
+                         </div>
+                         <div>
+                           <p className="text-sm font-black text-slate-700">Porto de Galinhas, PE</p>
+                           <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">Junho 2024 • Família</p>
+                         </div>
+                      </div>
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-10 p-8 bg-blue-600 rounded-[2.5rem] shadow-2xl shadow-blue-200">
+                   <div className="flex items-center gap-4 mb-4">
+                     <Bot className="w-6 h-6 text-blue-100" />
+                     <h4 className="text-sm font-black text-white uppercase tracking-widest">Análise de IA</h4>
+                   </div>
+                   <p className="text-sm text-blue-50 leading-relaxed font-medium italic">
+                     "Cliente fiel da agência com preferência por destinos de praia e resorts all-inclusive. Demonstra alta conversão quando ofertado pacotes com antecedência de 6 meses."
+                   </p>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

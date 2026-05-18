@@ -37,14 +37,6 @@ export default function SettingsHub() {
       path: '/app/ajustes/equipes'
     },
     {
-      id: 'filas',
-      name: 'Filas',
-      description: 'Configure filas de atendimento e distribuição de conversas.',
-      icon: Layers,
-      color: 'bg-amber-500',
-      path: '/app/ajustes/filas'
-    },
-    {
       id: 'permissoes',
       name: 'Permissões',
       description: 'Defina o que cada perfil pode visualizar e executar.',
@@ -53,12 +45,12 @@ export default function SettingsHub() {
       path: '/app/ajustes/permissoes'
     },
     {
-      id: 'whatsapp',
-      name: 'WhatsApp',
-      description: 'Conecte e configure canais de WhatsApp Oficial e QR Provider.',
+      id: 'canais',
+      name: 'Canais de atendimento',
+      description: 'Configure os canais usados para atendimento omnichannel.',
       icon: MessageSquare,
       color: 'bg-green-500',
-      path: '/app/ajustes/integracoes/whatsapp'
+      path: '/app/ajustes/canais'
     },
     {
       id: 'conta',

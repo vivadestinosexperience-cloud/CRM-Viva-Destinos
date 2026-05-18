@@ -21,19 +21,38 @@ export interface User {
 export interface Team {
   id: string;
   name: string;
+  description?: string;
   managerId?: string;
   manager_name?: string;
   members?: string[]; 
+  color?: string;
+  active?: boolean;
+  whatsapp_ids?: string[];
+  sector?: string;
+  working_hours?: string;
+  sla_minutes?: number;
+  welcome_message?: string;
+  allow_new_chats?: boolean;
 }
 
-export interface Queue {
+export type InternalChatStatus = 'online' | 'busy' | 'away' | 'offline' | 'invisible';
+
+export interface InternalMessage {
   id: string;
-  name: string;
-  description?: string;
-  teamId?: string;
-  color: string;
-  slaMinutes?: number;
-  active?: boolean;
+  chat_id: string;
+  sender_id: string;
+  receiver_id: string;
+  content: string;
+  read: boolean;
+  created_at: string;
+}
+
+export interface InternalChat {
+  id: string;
+  participants: string[];
+  last_message?: string;
+  unread_count?: number;
+  updated_at: string;
 }
 
 export type ChannelType = 'WHATSAPP' | 'INSTAGRAM' | 'FACEBOOK' | 'WEBCHAT' | 'MANUAL';
@@ -41,12 +60,22 @@ export type ChannelType = 'WHATSAPP' | 'INSTAGRAM' | 'FACEBOOK' | 'WEBCHAT' | 'M
 export interface WhatsAppAccount {
   id: string;
   name: string;
-  number?: string;
-  type: 'CLOUD_API' | 'EXTERNAL_QR';
-  status: 'CONNECTED' | 'DISCONNECTED' | 'PENDING' | 'ERROR';
-  quality?: 'HIGH' | 'MEDIUM' | 'LOW';
+  type: 'WHATSAPP' | 'INSTAGRAM' | 'FACEBOOK';
+  provider: string; // 'META_CLOUD' | '360DIALOG' | 'ZAPI' | 'EVOLUTION'
+  provider_type?: 'meta_cloud' | '360dialog' | 'zapi' | 'evolution';
+  phone_number?: string;
+  number?: string; // Legacy compatibility
+  instance_id?: string;
+  status: 'ESTÁVEL' | 'DISCONNECTED' | 'PENDING' | 'ERROR' | 'WAITING_QR' | 'WAITING_CREDENTIALS' | 'CONECTANDO';
+  quality_status?: 'HIGH' | 'MEDIUM' | 'LOW';
+  quality?: 'HIGH' | 'MEDIUM' | 'LOW'; // Legacy compatibility
+  team_id?: string;
+  default_team_id?: string; // Legacy compatibility
+  responsible_user_id?: string;
+  is_primary?: boolean;
   config?: any;
-  last_sync?: string;
+  last_sync_at?: string;
+  last_sync?: string; // Legacy compatibility
   created_at?: string;
   updated_at?: string;
 }
@@ -106,7 +135,7 @@ export interface Conversation {
   // Joins & UI compatibility
   customer?: Customer;
   whatsapp_account?: WhatsAppAccount;
-  queue?: Queue;
+  team?: Team;
   
   // Legacy fields
   customerId?: string;

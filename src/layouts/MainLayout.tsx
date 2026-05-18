@@ -24,14 +24,17 @@ import { useAppStore } from '../store/useAppStore';
 import { motion, AnimatePresence } from 'motion/react';
 import { authService } from '../services/authService';
 import Logo from '../components/Logo';
-import { MOCK_USERS } from '../data/mockData';
+import { InternalChatDrawer } from '../components/internal-chat/InternalChatDrawer';
 
 export default function MainLayout() {
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const navigate = useNavigate();
-  const { currentUser } = useAppStore();
+  const { currentUser, users } = useAppStore();
+  const [selectedInternalUserId, setSelectedInternalUserId] = useState<string | null>(null);
 
   if (!currentUser) return null;
+
+  const activeUsers = users.filter(u => u.active && u.id !== currentUser.id);
 
   const handleLogout = async () => {
     await authService.signOut();
@@ -49,9 +52,8 @@ export default function MainLayout() {
       subItems: [
         { name: 'Usuários', path: '/app/ajustes/usuarios' },
         { name: 'Equipes', path: '/app/ajustes/equipes' },
-        { name: 'Filas', path: '/app/ajustes/filas' },
         { name: 'Permissões', path: '/app/ajustes/permissoes' },
-        { name: 'WhatsApp', path: '/app/ajustes/integracoes/whatsapp' },
+        { name: 'Canais de atendimento', path: '/app/ajustes/canais' },
         { name: 'Conta', path: '/app/ajustes/conta' },
         { name: 'Aparência', path: '/app/ajustes/aparencia' },
       ]
@@ -226,22 +228,39 @@ export default function MainLayout() {
         </main>
       </div>
 
-      {/* Online Users Minimal Rail */}
+      {/* Internal Chat Rail */}
       <aside className="w-16 bg-white border-l border-slate-200 hidden xl:flex flex-col items-center py-6 gap-4">
-        {MOCK_USERS.map((user) => (
-          <div key={user.id} className="relative group cursor-pointer">
+        <div className="p-2 mb-2 text-slate-400">
+          <MessageSquare className="w-6 h-6" />
+        </div>
+        {activeUsers.map((user) => (
+          <button 
+            key={user.id} 
+            onClick={() => setSelectedInternalUserId(user.id)}
+            className="relative group cursor-pointer"
+          >
             <div className={`w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-500 font-bold border-2 ${user.online ? 'border-emerald-100' : 'border-transparent'}`}>
-              {user.name.charAt(0)}
+              {user.avatar ? <img src={user.avatar} alt={user.name} className="w-full h-full object-cover rounded-xl" /> : user.name.charAt(0)}
             </div>
-            {user.online && (
-              <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-white rounded-full"></span>
-            )}
-            <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 px-2 py-1 bg-slate-800 text-white text-[10px] rounded pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap font-medium tracking-wide shadow-lg">
+            <span className={`absolute bottom-0 right-0 w-3 h-3 border-2 border-white rounded-full ${
+              user.online ? 'bg-emerald-500' : 'bg-slate-300'
+            }`}></span>
+            
+            <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 px-2 py-1 bg-slate-800 text-white text-[10px] rounded pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap font-medium tracking-wide shadow-lg z-50">
               {user.name} • {user.role}
             </div>
-          </div>
+          </button>
         ))}
+        {activeUsers.length === 0 && (
+          <p className="text-[8px] text-slate-400 text-center px-1">Nenhum usuário online</p>
+        )}
       </aside>
+
+      {/* Internal Chat Drawer */}
+      <InternalChatDrawer 
+        userId={selectedInternalUserId} 
+        onClose={() => setSelectedInternalUserId(null)} 
+      />
     </div>
   );
 }

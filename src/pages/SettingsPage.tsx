@@ -7,9 +7,8 @@ import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import SettingsHub from './settings/SettingsHub';
 import UsersSettingsPage from './settings/UsersSettingsPage';
-import WhatsAppSettingsPage from './settings/WhatsAppSettingsPage';
+import ChannelsSettingsPage from './settings/ChannelsSettingsPage';
 import TeamsSettingsPage from './settings/TeamsSettingsPage';
-import QueuesSettingsPage from './settings/QueuesSettingsPage';
 import PermissionsSettingsPage from './settings/PermissionsSettingsPage';
 import AccountSettingsPage from './settings/AccountSettingsPage';
 import AppearanceSettingsPage from './settings/AppearanceSettingsPage';
@@ -20,9 +19,10 @@ export default function SettingsPage() {
       <Routes>
         <Route index element={<SettingsHub />} />
         <Route path="usuarios" element={<UsersSettingsPage />} />
-        <Route path="integracoes/whatsapp" element={<WhatsAppSettingsPage />} />
+        <Route path="canais" element={<ChannelsSettingsPage />} />
+        {/* Redirect old path for compatibility */}
+        <Route path="integracoes/whatsapp" element={<Navigate to="../canais" replace />} />
         <Route path="equipes" element={<TeamsSettingsPage />} />
-        <Route path="filas" element={<QueuesSettingsPage />} />
         <Route path="permissoes" element={<PermissionsSettingsPage />} />
         <Route path="conta" element={<AccountSettingsPage />} />
         <Route path="aparencia" element={<AppearanceSettingsPage />} />

@@ -1,4 +1,4 @@
-import { User, Team, Queue, WhatsAppAccount, Customer, Conversation, Message, Quote, TravelPackage, Reservation } from '../types';
+import { User, Team, WhatsAppAccount, Customer, Conversation, Message, Quote, TravelPackage, Reservation } from '../types';
 
 export const MOCK_USERS: User[] = [
   { id: 'u1', name: 'Gustavo Alves', email: 'gustavo@vivaexperience.com.br', role: 'ADMIN', online: true, active: true },
@@ -15,41 +15,39 @@ export const MOCK_TEAMS: Team[] = [
   { id: 't4', name: 'Financeiro', managerId: 'u5' },
 ];
 
-export const MOCK_QUEUES: Queue[] = [
-  { id: 'q1', name: 'Novos Leads', description: 'Leads recém-chegados', teamId: 't1', color: '#3B82F6', slaMinutes: 15 },
-  { id: 'q2', name: 'Cotação Nacional', description: 'Cotações de viagens no Brasil', teamId: 't1', color: '#10B981', slaMinutes: 60 },
-  { id: 'q3', name: 'Cotação Internacional', description: 'Viagens para fora do país', teamId: 't1', color: '#8B5CF6', slaMinutes: 120 },
-  { id: 'q4', name: 'Lua de Mel', description: 'Atendimento especializado casais', teamId: 't1', color: '#EC4899', slaMinutes: 60 },
-  { id: 'q5', name: 'Pós-venda', description: 'Suporte após a viagem', teamId: 't3', color: '#F59E0B', slaMinutes: 30 },
-];
-
 export const MOCK_WHATSAPP_ACCOUNTS: WhatsAppAccount[] = [
   { 
     id: 'wa1', 
     name: 'WhatsApp Comercial', 
-    number: '+5564999990001', 
-    status: 'CONNECTED', 
-    quality: 'HIGH', 
-    type: 'CLOUD_API',
-    last_sync: new Date().toISOString()
+    phone_number: '+5564999990001', 
+    status: 'ESTÁVEL', 
+    quality_status: 'HIGH', 
+    type: 'WHATSAPP',
+    provider: 'META_CLOUD',
+    provider_type: 'meta_cloud',
+    last_sync_at: new Date().toISOString()
   },
   { 
     id: 'wa2', 
     name: 'WhatsApp Pós-venda', 
-    number: '+5564999990002', 
-    status: 'CONNECTED', 
-    quality: 'MEDIUM', 
-    type: 'CLOUD_API',
-    last_sync: new Date().toISOString()
+    phone_number: '+5564999990002', 
+    status: 'ESTÁVEL', 
+    quality_status: 'MEDIUM', 
+    type: 'WHATSAPP',
+    provider: 'META_CLOUD',
+    provider_type: 'meta_cloud',
+    last_sync_at: new Date().toISOString()
   },
   { 
     id: 'wa3', 
     name: 'WhatsApp Financeiro', 
-    number: '+5564999990003', 
+    phone_number: '+5564999990003', 
     status: 'DISCONNECTED', 
-    quality: 'LOW', 
-    type: 'CLOUD_API',
-    last_sync: new Date().toISOString()
+    quality_status: 'LOW', 
+    type: 'WHATSAPP',
+    provider: 'ZAPI',
+    provider_type: 'zapi',
+    last_sync_at: new Date().toISOString()
   },
 ];
 

@@ -13,6 +13,7 @@ import {
   Layers, 
   ArrowLeft,
   ChevronRight,
+  Smartphone,
   Edit2,
   Trash2,
   UserPlus
@@ -133,11 +134,15 @@ export default function TeamsSettingsPage() {
                     <div className="flex items-center justify-between py-4 border-t border-slate-50">
                       <div className="flex items-center gap-2">
                         <Users className="w-4 h-4 text-slate-300" />
-                        <span className="text-xs font-bold text-slate-600">08 Usuários</span>
+                        <span className="text-xs font-bold text-slate-600">
+                          {team.members?.length || 0} Membros
+                        </span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Layers className="w-4 h-4 text-slate-300" />
-                        <span className="text-xs font-bold text-slate-600">03 Filas</span>
+                        <Smartphone className="w-4 h-4 text-slate-300" />
+                        <span className="text-xs font-bold text-slate-600">
+                          {team.whatsapp_ids?.length || 0} Canais
+                        </span>
                       </div>
                     </div>
         
@@ -192,7 +197,7 @@ export default function TeamsSettingsPage() {
                 </div>
                 <div className="flex items-center gap-3 pt-4">
                   <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-3 text-slate-500 font-bold text-xs uppercase tracking-widest">Cancelar</button>
-                  <button type="submit" className="flex-1 py-3 bg-blue-600 text-white rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-blue-100 transition-all hover:bg-blue-700">Cruar Equipe</button>
+                  <button type="submit" className="flex-1 py-3 bg-blue-600 text-white rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-blue-100 transition-all hover:bg-blue-700">Criar Equipe</button>
                 </div>
               </form>
             </motion.div>
