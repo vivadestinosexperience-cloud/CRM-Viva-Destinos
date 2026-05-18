@@ -123,14 +123,15 @@ export const customerService = {
 
 export const conversationService = {
   async list() {
-    const { data, error } = await supabase.from('conversations').select(`
-      *,
-      customer:customer_id (*),
-      whatsapp_account:whatsapp_account_id (*),
-      queue:queue_id (*)
-    `).order('last_message_at', { ascending: false });
-    if (error) handleError(error, 'conversationService.list');
-    return data;
+    try {
+      const res = await fetch('/api/omnichannel/conversations');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao carregar conversas');
+      return data.conversations || [];
+    } catch (err) {
+      handleError(err, 'conversationService.list (via API)');
+      return [];
+    }
   },
   async create(conversation: any) {
     const { data, error } = await supabase.from('conversations').insert(conversation).select().single();
@@ -151,9 +152,15 @@ export const messageService = {
     return data;
   },
   async listByConversation(conversationId: string) {
-    const { data, error } = await supabase.from('messages').select('*').eq('conversation_id', conversationId).order('created_at', { ascending: true });
-    if (error) handleError(error, 'messageService.listByConversation');
-    return data;
+    try {
+      const res = await fetch(`/api/omnichannel/conversations/${conversationId}/messages`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao carregar mensagens');
+      return data.messages || [];
+    } catch (err) {
+      handleError(err, 'messageService.listByConversation (via API)');
+      return [];
+    }
   },
   async create(message: any) {
     const { data, error } = await supabase.from('messages').insert(message).select().single();

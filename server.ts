@@ -262,35 +262,41 @@ async function startServer() {
     
     if (!normalized.phone) {
       console.warn("[ZAPI] Telefone real do cliente não identificado no payload.");
-      return { ignored: true, reason: "Telefone não identificado", rawPhone: normalized.rawPhone };
+      return { ignored: true, reason: "Telefone real não identificado no payload da Z-API.", rawPhone: normalized.rawPhone };
     }
 
     try {
       // 1. Customer
-      let { data: customer } = await supabase.from('customers').select('*').eq('phone_normalized', normalized.phone).maybeSingle();
+      let { data: customer, error: custFetchErr } = await supabase.from('customers').select('*').eq('phone_normalized', normalized.phone).maybeSingle();
+      if (custFetchErr) throw new Error(`Erro ao buscar cliente: ${custFetchErr.message}`);
+
       if (!customer) {
         const { data: newCust, error: custErr } = await supabase.from('customers').insert({
-          name: normalized.name,
+          name: normalized.name || 'Cliente',
           phone: normalized.phone,
           phone_normalized: normalized.phone,
           origin: normalized.raw?.isTest ? 'Teste' : 'WhatsApp Z-API'
         }).select().single();
-        if (custErr) throw custErr;
+        if (custErr) throw new Error(`Erro ao criar cliente: ${custErr.message}`);
         customer = newCust;
-      } else if (customer.name === 'Cliente' && normalized.name !== 'Cliente') {
-        // Atualizar nome se for o default
+      } else if ((customer.name === 'Cliente' || !customer.name) && normalized.name && normalized.name !== 'Cliente') {
+        // Atualizar nome se for o default ou vazio
         await supabase.from('customers').update({ name: normalized.name }).eq('id', customer.id);
         customer.name = normalized.name;
       }
 
+      if (!customer?.id) throw new Error("Falha crítica: Cliente sem ID após criação/busca.");
+
       // 2. Conversation
-      let { data: conversation } = await supabase.from('conversations').select('*').eq('customer_phone_normalized', normalized.phone).maybeSingle();
+      let { data: conversation, error: convFetchErr } = await supabase.from('conversations').select('*').eq('customer_phone_normalized', normalized.phone).maybeSingle();
+      if (convFetchErr) throw new Error(`Erro ao buscar conversa: ${convFetchErr.message}`);
+
       const lastMsgText = getLastMessageText(normalized);
       let finalConv: any = null;
 
       if (!conversation) {
         const { data: newConv, error: convErr } = await supabase.from('conversations').insert({
-          customer_id: customer?.id,
+          customer_id: customer.id,
           customer_phone_normalized: normalized.phone,
           status: 'NEW',
           unread_count: 1,
@@ -298,8 +304,7 @@ async function startServer() {
           last_message_at: new Date().toISOString(),
           source: 'WhatsApp Z-API'
         }).select().single();
-        if (convErr) throw convErr;
-        conversation = newConv;
+        if (convErr) throw new Error(`Erro ao criar conversa: ${convErr.message}`);
         finalConv = newConv;
       } else {
         const updates: any = {
@@ -308,25 +313,30 @@ async function startServer() {
           unread_count: (conversation.unread_count || 0) + 1,
           updated_at: new Date().toISOString()
         };
-        // Rule: If not assigned, or resolved/closed -> BACK to NEW and UNASSIGN
+        
+        // Regra de status: Se não tiver responsável ou estiver concluído, volta para NOVO
         const currentStatus = String(conversation.status || "").toUpperCase();
-        if (!conversation.assigned_user_id || ["RESOLVED", "CLOSED", "CONCLUIDO", "CONCLUÍDO"].includes(currentStatus)) {
+        const isClosed = ["RESOLVED", "CLOSED", "CONCLUIDO", "CONCLUÍDO"].includes(currentStatus);
+        
+        if (!conversation.assigned_user_id || isClosed) {
           updates.status = 'NEW';
           updates.assigned_user_id = null;
         }
+
         const { data: updatedConv, error: updateErr } = await supabase.from('conversations').update(updates).eq('id', conversation.id).select().single();
-        if (updateErr) throw updateErr;
+        if (updateErr) throw new Error(`Erro ao atualizar conversa: ${updateErr.message}`);
         finalConv = updatedConv;
       }
 
-      // 3. Message
-      // Verificar duplicidade pelo external_message_id
+      if (!finalConv?.id) throw new Error("Falha crítica: Conversa sem ID.");
+
+      // 3. Message (Verificar duplicidade)
       const { data: existingMsg } = await supabase.from('messages').select('id').eq('external_message_id', normalized.messageId).maybeSingle();
       
       let finalMessage = null;
       if (!existingMsg) {
         const { data: message, error: msgErr } = await supabase.from('messages').insert({
-          conversation_id: finalConv?.id,
+          conversation_id: finalConv.id,
           customer_phone_normalized: normalized.phone,
           external_message_id: normalized.messageId,
           sender_type: 'customer',
@@ -339,21 +349,30 @@ async function startServer() {
           raw_payload: payload,
           created_at: new Date().toISOString()
         }).select().single();
-        if (msgErr) throw msgErr;
+        if (msgErr) throw new Error(`Erro ao inserir mensagem: ${msgErr.message}`);
         finalMessage = message;
       } else {
         finalMessage = { id: existingMsg.id, alreadyExists: true };
       }
 
-      // Broadcast event for Real-time
+      // 4. Real-time Broadcast
       broadcastEvent("message.received", {
         customer,
         conversation: finalConv,
         message: finalMessage
       });
 
-      return { customer, conversation: finalConv, message: finalMessage, phone: normalized.phone };
-    } catch (err) {
+      return { 
+        success: true,
+        phone: normalized.phone,
+        customer_id: customer.id,
+        conversation_id: finalConv.id,
+        message_db_id: finalMessage.id,
+        customer, 
+        conversation: finalConv, 
+        message: finalMessage 
+      };
+    } catch (err: any) {
       console.error("[PROCESS ZAPI ERR]", err);
       throw err;
     }
@@ -492,6 +511,113 @@ async function startServer() {
       });
     } catch (err) {
       return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.get("/api/zapi/receive-debug", async (req, res) => {
+    try {
+      const { data: logs } = await supabase.from('zapi_webhook_logs').select('*').order('created_at', { ascending: false }).limit(10);
+      const { data: convs } = await supabase.from('conversations').select('*, customer:customer_id(*)').order('last_message_at', { ascending: false }).limit(5);
+      const { data: msgs } = await supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(5);
+      
+      const { count: logsCount } = await supabase.from('zapi_webhook_logs').select('*', { count: 'exact', head: true });
+      const { count: convsCount } = await supabase.from('conversations').select('*', { count: 'exact', head: true });
+      const { count: msgsCount } = await supabase.from('messages').select('*', { count: 'exact', head: true });
+
+      return res.json({
+        success: true,
+        tablesUsed: {
+          customers: 'customers',
+          conversations: 'conversations',
+          messages: 'messages',
+          logs: 'zapi_webhook_logs'
+        },
+        counts: {
+          logs: logsCount,
+          conversations: convsCount,
+          messages: msgsCount
+        },
+        lastLogs: logs || [],
+        lastConversations: convs || [],
+        lastMessages: msgs || []
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.get("/api/omnichannel/conversations", async (req, res) => {
+    try {
+      const { data: convs, error } = await supabase.from('conversations').select(`
+        *,
+        customer:customer_id(*)
+      `).order('last_message_at', { ascending: false });
+
+      if (error) throw error;
+
+      return res.json({
+        success: true,
+        conversations: convs || []
+      });
+    } catch (err: any) {
+      console.error("[OMNICHANNEL CONVS ERR]", err);
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.get("/api/omnichannel/conversations/:id/messages", async (req, res) => {
+    const { id } = req.params;
+    try {
+      const { data: msgs, error } = await supabase.from('messages')
+        .select('*')
+        .eq('conversation_id', id)
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+
+      return res.json({
+        success: true,
+        messages: msgs || []
+      });
+    } catch (err: any) {
+      console.error("[OMNICHANNEL MSGS ERR]", err);
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.post("/api/zapi/webhook-logs/:id/reprocess", async (req, res) => {
+    const { id } = req.params;
+    try {
+      const { data: log, error: logFetchErr } = await supabase.from('zapi_webhook_logs').select('*').eq('id', id).single();
+      if (logFetchErr) throw new Error(`Falha ao buscar log: ${logFetchErr.message}`);
+      if (!log || !log.payload) throw new Error("Log sem payload.");
+
+      const result = await processIncomingZapiMessage(log.payload);
+
+      if (result.ignored) {
+        await updateWebhookLog(id, {
+          processed: false,
+          error: result.reason || "Webhook ignorado."
+        });
+      } else {
+        await updateWebhookLog(id, {
+          processed: true,
+          phone_normalized: result.phone || (result as any).customer?.phone_normalized,
+          message_id: result.message?.external_message_id,
+          customer_id: result.customer?.id,
+          conversation_id: result.conversation?.id,
+          message_db_id: result.message?.id,
+          error: null
+        });
+      }
+
+      return res.json({ success: true, message: "Webhook reprocessado.", result });
+    } catch (err: any) {
+      console.error("[REPROCESS ERR]", err);
+      if (id) {
+        await updateWebhookLog(id, { processed: false, error: getErrorMessage(err) });
+      }
+      return res.status(200).json({ success: false, error: getErrorMessage(err) });
     }
   });
 

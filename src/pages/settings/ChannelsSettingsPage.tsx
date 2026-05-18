@@ -146,6 +146,25 @@ export default function ChannelsSettingsPage() {
     setIsLoadingLogs(false);
   };
 
+  const handleReprocessLog = async (logId: string) => {
+    toast.promise(
+      fetch(`/api/zapi/webhook-logs/${logId}/reprocess`, { method: 'POST' })
+        .then(async res => {
+          const data = await safeReadJson(res);
+          if (!res.ok || !data.success) throw data;
+          return data;
+        }),
+      {
+        loading: 'Reprocessando webhook...',
+        success: () => {
+          refreshWebhookLogs();
+          return 'Webhook reprocessado com sucesso!';
+        },
+        error: (err) => `Erro ao reprocessar: ${getErrorMessage(err)}`
+      }
+    );
+  };
+
   const refreshConfigStatus = async () => {
     return safeAction(async () => {
       const [statusRes, infoRes] = await Promise.all([
@@ -544,10 +563,17 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                               Sucesso
                             </span>
                           ) : (
-                            <span className="flex items-center gap-1.5 text-rose-600 text-[10px] font-black uppercase tracking-tight">
-                              <div className="w-2 h-2 bg-rose-600 rounded-full" />
-                              {log.error ? 'Falha' : 'Pendente'}
-                            </span>
+                            <div className="flex flex-col items-end gap-1">
+                              <span className="flex items-center gap-1.5 text-rose-600 text-[10px] font-black uppercase tracking-tight">
+                                <div className="w-2 h-2 bg-rose-600 rounded-full" />
+                                {log.error ? 'Falha' : 'Pendente'}
+                              </span>
+                              {log.event_type === 'received' && !log.conversation_id && !log.error && (
+                                <span className="px-2 py-0.5 bg-rose-100 text-rose-700 text-[8px] font-black uppercase rounded shadow-sm">
+                                  Webhook recebido, mas não virou atendimento
+                                </span>
+                              )}
+                            </div>
                           )}
                           
                           <button 
@@ -561,8 +587,18 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                           >
                             <Info className="w-3 h-3" />
                             Ver Payload
+                        </button>
+
+                        {log.event_type === 'received' && !log.processed && (
+                          <button 
+                            onClick={() => handleReprocessLog(log.id)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-[9px] font-black uppercase hover:bg-blue-700 transition-all active:scale-95"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            Reprocessar
                           </button>
-                        </div>
+                        )}
+                      </div>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 bg-white/50 p-4 rounded-xl border border-slate-100">

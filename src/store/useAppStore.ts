@@ -143,6 +143,9 @@ interface AppState {
   // Internal Chat Actions
   addInternalMessage: (message: InternalMessage) => void;
   
+  // New actions for API sync
+  fetchConversationMessages: (conversationId: string) => Promise<void>;
+  
   // Generic reset
   resetState: () => void;
 }
@@ -351,11 +354,17 @@ export const useAppStore = create<AppState>()(
                   ? state.customers.map(c => c.id === customer.id ? { ...c, ...customer } : c)
                   : [...state.customers, customer];
 
-                // Upsert conversation
+                // Upsert conversation and move to top
                 const hasConv = state.conversations.some(c => c.id === conversation.id);
-                const updatedConversations = hasConv
-                  ? state.conversations.map(c => c.id === conversation.id ? { ...c, ...conversation } : c)
-                  : [conversation, ...state.conversations];
+                let updatedConversations;
+                if (hasConv) {
+                  updatedConversations = [
+                    conversation,
+                    ...state.conversations.filter(c => c.id !== conversation.id)
+                  ];
+                } else {
+                  updatedConversations = [conversation, ...state.conversations];
+                }
 
                 // Upsert message
                 const hasMsg = state.messages.some(m => m.id === message.id);
@@ -463,6 +472,20 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set((state) => ({ teams: state.teams.filter(t => t.id !== id), isSaving: false }));
           toast.warning('Removido localmente');
+        }
+      },
+
+      fetchConversationMessages: async (conversationId: string) => {
+        try {
+          const fetchedMsgs = await messageService.listByConversation(conversationId);
+          set(state => ({
+            messages: [
+              ...state.messages.filter(m => m.conversation_id !== conversationId),
+              ...fetchedMsgs
+            ]
+          }));
+        } catch (err) {
+          console.error("Failed to fetch messages for conversation", conversationId, err);
         }
       },
 

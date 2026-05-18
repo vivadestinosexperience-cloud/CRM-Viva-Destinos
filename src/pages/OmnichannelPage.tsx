@@ -61,7 +61,8 @@ export default function OmnichannelPage() {
     internalNotes,
     addInternalNote,
     updateInternalNote,
-    deleteInternalNote
+    deleteInternalNote,
+    fetchConversationMessages
   } = useAppStore();
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -929,11 +930,13 @@ export default function OmnichannelPage() {
             return (
               <button 
                 key={conv.id}
-                onClick={() => {
+                onClick={async () => {
                   setActiveConversationId(conv.id);
                   if ((conv.unread_count || 0) > 0) {
                     updateConversation(conv.id, { unread_count: 0 });
                   }
+                  // Fetch real messages from database
+                  fetchConversationMessages(conv.id);
                 }}
                 className={`w-full p-4 flex items-start gap-4 transition-all hover:bg-slate-50 text-left relative overflow-hidden ${isActive ? 'bg-blue-50/50' : ''}`}
               >
