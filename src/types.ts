@@ -26,15 +26,34 @@ export interface User {
   updated_at?: string;
 }
 
+export interface TeamMember {
+  id?: string;
+  team_id: string;
+  user_id: string;
+  user_name?: string;
+  user_email?: string;
+  role_in_team?: string;
+  is_active?: boolean;
+  receives_queue?: boolean;
+  is_available?: boolean;
+  is_online?: boolean;
+  last_seen_at?: string;
+  last_assigned_at?: string;
+  total_assigned?: number;
+}
+
 export interface Team {
   id: string;
   name: string;
   description?: string;
   managerId?: string;
   manager_name?: string;
-  members?: string[]; 
+  members?: string[] | TeamMember[]; 
   color?: string;
   active?: boolean;
+  is_active?: boolean;
+  distribution_enabled?: boolean;
+  distribution_mode?: 'round_robin' | 'manual';
   whatsapp_ids?: string[];
   sector?: string;
   working_hours?: string;

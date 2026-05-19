@@ -31,7 +31,11 @@ import {
   Square,
   RotateCcw,
   AlertCircle,
-  Smile
+  Smile,
+  Shield,
+  CheckCircle2,
+  Database,
+  ChevronRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
@@ -89,9 +93,13 @@ export default function OmnichannelPage() {
   const [showChatMenu, setShowChatMenu] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
-  const [transferData, setTransferData] = useState({ teamId: '', userId: '', reason: '' });
+  const [isInternalMode, setIsInternalMode] = useState(false);
+  const [transferData, setTransferData] = useState({ type: 'queue', teamId: '', userId: '', reason: '' });
+  const [transferMembers, setTransferMembers] = useState<any[]>([]);
+  const [loadingTransferMembers, setLoadingTransferMembers] = useState(false);
   const [closeReason, setCloseReason] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedTeamId, setSelectedTeamId] = useState('all');
   
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -127,7 +135,8 @@ export default function OmnichannelPage() {
     if (!silent) setLoadingConversations(true);
     try {
       const baseUrl = getApiBaseUrl();
-      const response = await fetch(`${baseUrl}/api/omnichannel/conversations`);
+      const teamParam = selectedTeamId !== 'all' ? `?team_id=${selectedTeamId}` : '';
+      const response = await fetch(`${baseUrl}/api/omnichannel/conversations${teamParam}`);
       const data = await response.json();
 
       if (data.success) {
@@ -158,21 +167,50 @@ export default function OmnichannelPage() {
       const baseUrl = getApiBaseUrl();
       const response = await fetch(`${baseUrl}/api/omnichannel/conversations/${conversationId}/messages`);
       const data = await response.json();
+
       if (data.success) {
         setMessages(data.messages || []);
+      } else if (!silent) {
+        toast.error(data.error || "Erro ao carregar histórico.");
       }
     } catch (error) {
       console.error("[LOAD MESSAGES ERROR]", error);
-      if (!silent) toast.error("Erro ao carregar mensagens.");
+      if (!silent) toast.error("Erro ao conectar com o servidor.");
     } finally {
       if (!silent) setLoadingMessages(false);
     }
   }
 
+  const handleSelectConversation = (conversation: Conversation) => {
+    if (activeConversationId === conversation.id) return;
+    
+    // Clear previous state to avoid "leaks"
+    setActiveConversationId(conversation.id);
+    setMessages([]);
+    setAiSummary(null);
+    setShowIAPanel(false);
+    
+    // Load fresh messages
+    loadMessages(conversation.id);
+
+    // Mark as read locally and via API
+    const baseUrl = getApiBaseUrl();
+    fetch(`${baseUrl}/api/omnichannel/conversations/${conversation.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unread_count: 0 })
+    }).catch(err => console.warn("Erro ao marcar como lida:", err));
+  };
+
   // Initial load
   useEffect(() => {
     loadConversations();
   }, []);
+
+  // Reload when team filter changes
+  useEffect(() => {
+    loadConversations();
+  }, [selectedTeamId]);
 
   // Sync messages when active conversation changes
   useEffect(() => {
@@ -234,105 +272,98 @@ export default function OmnichannelPage() {
   function renderMessageContent(message: Message) {
     if (!message) return null;
 
-    const type = (message as any).message_type || (message as any).type || "text";
-    const content = renderSafeText(message.content, "");
+    const type = (message as any).normalized_message_type || (message as any).message_type || (message as any).type || "text";
+    const content = (message as any).display_content || renderSafeText(message.content, "");
     const mediaUrl = (message as any).display_media_url || (message as any).media_storage_url || message.media_url;
 
-    if (type === "internal_note" || (message as any).is_internal) {
-      return (
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-1.5 opacity-70">
-            <Info className="w-3 h-3" />
-            <span className="text-[10px] font-black uppercase tracking-widest">Anotação Interna</span>
+    switch (type.toLowerCase()) {
+      case 'receivedcallback':
+      case 'text':
+      case 'chat':
+        return <p className="text-sm whitespace-pre-wrap break-words">{content}</p>;
+      
+      case 'image':
+        return (
+          <div className="space-y-2">
+            {mediaUrl ? (
+               <img 
+                 referrerPolicy="no-referrer"
+                 src={mediaUrl} 
+                 alt={message.caption || content || "Imagem"} 
+                 className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity shadow-sm border border-slate-100"
+                 onClick={() => window.open(mediaUrl, '_blank')}
+                 onError={(e) => { e.currentTarget.style.display = 'none'; }}
+               />
+            ) : (
+              <div className="text-[10px] text-red-500 italic">Imagem indisponível</div>
+            )}
+            {(message.caption || (content && content !== "Imagem enviada" && content !== "Imagem recebida")) && (
+              <p className="text-sm">{message.caption || content}</p>
+            )}
           </div>
-          <p className="text-xs italic leading-relaxed">
-            {content}
-          </p>
-        </div>
-      );
-    }
+        );
 
-    if (type === "image") {
-      return (
-        <div className="space-y-2">
-          {mediaUrl ? (
-             <img 
-               src={mediaUrl} 
-               alt={message.caption || content || "Imagem"} 
-               className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity shadow-sm border border-slate-100"
-               onClick={() => window.open(mediaUrl, '_blank')}
-               onError={(e) => { e.currentTarget.style.display = 'none'; }}
-             />
-          ) : (
-            <div className="text-[10px] text-red-500 italic">Imagem indisponível</div>
-          )}
-          {(message.caption || (content && content !== "Imagem enviada" && content !== "Imagem recebida")) && (
-            <p className="text-sm">{message.caption || content}</p>
-          )}
-        </div>
-      );
-    }
+      case 'audio':
+      case 'ptt':
+        return (
+          <div className="space-y-2 min-w-[200px]">
+            {mediaUrl ? (
+              <audio controls src={mediaUrl} className="w-full h-10" />
+            ) : (
+              <div className="text-[10px] text-red-500 italic">Áudio indisponível</div>
+            )}
+            {(content && content !== "Áudio enviado" && content !== "Áudio recebido") && (
+              <p className="text-sm">{content}</p>
+            )}
+          </div>
+        );
 
-    if (type === "audio") {
-      return (
-        <div className="space-y-2 min-w-[200px]">
-          {mediaUrl ? (
-            <audio controls src={mediaUrl} className="w-full h-10" />
-          ) : (
-            <div className="text-[10px] text-red-500 italic">Áudio indisponível</div>
-          )}
-          {(content && content !== "Áudio enviado" && content !== "Áudio recebido") && (
-            <p className="text-sm">{content}</p>
-          )}
-        </div>
-      );
-    }
+      case 'video':
+        return (
+          <div className="space-y-2">
+            {mediaUrl ? (
+              <video controls src={mediaUrl} className="max-w-full rounded-lg shadow-sm border border-slate-100" />
+            ) : (
+              <div className="text-[10px] text-red-500 italic">Vídeo indisponível</div>
+            )}
+            {(message.caption || (content && content !== "Vídeo enviado" && content !== "Vídeo recebido")) && (
+              <p className="text-sm">{message.caption || content}</p>
+            )}
+          </div>
+        );
 
-    if (type === "video") {
-      return (
-        <div className="space-y-2">
-          {mediaUrl ? (
-            <video controls src={mediaUrl} className="max-w-full rounded-lg shadow-sm border border-slate-100" />
-          ) : (
-            <div className="text-[10px] text-red-500 italic">Vídeo indisponível</div>
-          )}
-          {(message.caption || (content && content !== "Vídeo enviado" && content !== "Vídeo recebido")) && (
-            <p className="text-sm">{message.caption || content}</p>
-          )}
-        </div>
-      );
-    }
-
-    if (type === "document") {
-      return (
-        <div className="space-y-2">
-          {mediaUrl ? (
-            <a 
-              href={mediaUrl} 
-              target="_blank" 
-              rel="noreferrer"
-              className="flex items-center gap-2 p-3 bg-black/5 rounded-xl hover:bg-black/10 transition-colors border border-black/5"
-            >
-              <FileIcon className="w-6 h-6 shrink-0 text-blue-600" />
-              <div className="min-w-0">
-                <p className="text-xs font-bold truncate">{(message as any).media_file_name || (message.metadata as any)?.fileName || 'Documento'}</p>
-                <p className="text-[10px] opacity-60">Clique aqui para baixar</p>
+      case 'document':
+      case 'file':
+        return (
+          <div className="space-y-2">
+            {mediaUrl ? (
+              <a 
+                href={mediaUrl} 
+                target="_blank" 
+                rel="noreferrer"
+                className="flex items-center gap-2 p-3 bg-black/5 rounded-xl hover:bg-black/10 transition-colors border border-black/5"
+              >
+                <FileIcon className="w-6 h-6 shrink-0 text-blue-600" />
+                <div className="min-w-0">
+                  <p className="text-xs font-bold truncate">{(message as any).media_file_name || (message.metadata as any)?.fileName || 'Documento'}</p>
+                  <p className="text-[10px] opacity-60">Clique para abrir/baixar</p>
+                </div>
+              </a>
+            ) : (
+              <div className="flex items-center gap-2 p-2 bg-black/5 rounded-lg opacity-50">
+                <FileIcon className="w-5 h-5 font-bold" />
+                <p className="text-xs">Documento indisponível</p>
               </div>
-            </a>
-          ) : (
-            <div className="flex items-center gap-2 p-2 bg-black/5 rounded-lg opacity-50">
-              <FileIcon className="w-5 h-5 font-bold" />
-              <p className="text-xs">Documento indisponível</p>
-            </div>
-          )}
-          {(content && content !== "Documento enviado" && content !== "Documento recebido") && (
-            <p className="text-sm">{content}</p>
-          )}
-        </div>
-      );
-    }
+            )}
+            {(content && content !== "Documento enviado" && content !== "Documento recebido") && (
+              <p className="text-sm">{content}</p>
+            )}
+          </div>
+        );
 
-    return <p className="text-sm whitespace-pre-wrap">{content}</p>;
+      default:
+        return <p className="text-sm whitespace-pre-wrap break-words">{content || "Mensagem sem conteúdo exibível"}</p>;
+    }
   }
 
   // Filtered Conversations
@@ -476,6 +507,11 @@ export default function OmnichannelPage() {
       const isClosed = isClosedConversation(conversation);
       const assignedUserId = conversation.assigned_user_id;
 
+      // Filter by Team
+      if (selectedTeamId !== 'all') {
+        if (conversation.team_id !== selectedTeamId) return false;
+      }
+
       // Filter by Search
       if (searchTerm) {
         const searchLower = searchTerm.toLowerCase();
@@ -519,10 +555,36 @@ export default function OmnichannelPage() {
     teamId: ''
   });
 
+  const loadTransferMembers = async (teamId: string) => {
+    if (!teamId) {
+      setTransferMembers([]);
+      return;
+    }
+    setLoadingTransferMembers(true);
+    try {
+      const baseUrl = getApiBaseUrl();
+      const res = await fetch(`${baseUrl}/api/teams/${teamId}/members`);
+      const data = await res.json();
+      if (data.success) {
+        // Apenas membros ativos
+        setTransferMembers(data.members.filter((m: any) => m.is_active) || []);
+      }
+    } catch (err) {
+      console.error("Erro ao carregar membros para transferência", err);
+    } finally {
+      setLoadingTransferMembers(false);
+    }
+  };
+
   const handleAssumeConversation = async (conversationId: string) => {
     await safeAction(async () => {
       const agentName = getAgentDisplayName(currentUser);
       const baseUrl = getApiBaseUrl();
+      
+      // Determine the team to assign. Use user's team, or current conversation team, or default to comercial.
+      const assignedTeamId = currentUser?.team_id || activeConversation?.team_id || 'comercial';
+      const assignedTeamName = teams.find(t => t.id === assignedTeamId)?.name || 'Comercial';
+
       const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${conversationId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -530,8 +592,8 @@ export default function OmnichannelPage() {
           assigned_user_id: currentUser?.id, 
           assigned_user_name: agentName,
           status: 'OPEN',
-          team_id: 'comercial', // Default to Comercial if missing
-          team_name: 'Comercial'
+          team_id: assignedTeamId,
+          team_name: assignedTeamName
         })
       });
       
@@ -544,43 +606,39 @@ export default function OmnichannelPage() {
   };
 
   const handleTransfer = async () => {
-    if (!activeConversationId || !transferData.teamId) return;
+    if (!activeConversationId || !transferData.teamId) {
+      toast.error("Selecione uma equipe de destino.");
+      return;
+    }
+
+    if (transferData.type === 'user' && !transferData.userId) {
+      toast.error("Selecione um atendente para transferência direta.");
+      return;
+    }
 
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();
       const selectedTeam = teams.find(t => t.id === transferData.teamId);
-      const selectedUser = users.find(u => u.id === transferData.userId);
+      const selectedUser = transferMembers.find(m => m.user_id === transferData.userId);
 
-      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}`, {
-        method: 'PATCH',
+      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/transfer`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          transfer_type: transferData.type,
           team_id: transferData.teamId,
-          team_name: selectedTeam?.name || null,
-          assigned_user_id: transferData.userId || null,
-          assigned_user_name: selectedUser?.name || null,
-          status: transferData.userId ? 'OPEN' : 'NEW'
+          team_name: selectedTeam?.name || transferData.teamId,
+          user_id: transferData.userId || null,
+          user_name: selectedUser?.user_name || null,
+          reason: transferData.reason
         })
       });
 
       if (!res.ok) throw await res.json();
       
-      const teamName = selectedTeam?.name || 'Nova Equipe';
-      
-      // Send system message
-      await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-message`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          message: `Atendimento transferido para a equipe: ${teamName}${transferData.reason ? `. Motivo: ${transferData.reason}` : ''}`,
-          agentId: currentUser?.id,
-          agentName: 'Sistema'
-        })
-      });
-
       await loadConversations(true);
       setShowTransferModal(false);
-      setTransferData({ teamId: '', userId: '', reason: '' });
+      setTransferData({ type: 'queue', teamId: '', userId: '', reason: '' });
       toast.success('Atendimento transferido');
     }, { label: 'Erro ao transferir atendimento' });
   };
@@ -733,6 +791,11 @@ export default function OmnichannelPage() {
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || !activeConversationId) return;
+
+    if (isInternalMode) {
+      handleSaveInternalNote();
+      return;
+    }
 
     await safeAction(async () => {
       const originalContent = newMessage;
@@ -906,28 +969,40 @@ export default function OmnichannelPage() {
     }, { label: 'Erro ao reenviar mensagem' });
   };
 
-  const handleSaveNote = async () => {
-    if (!noteContent.trim() || !activeConversationId) return;
+  const handleSaveInternalNote = async () => {
+    if (!newMessage.trim() || !activeConversationId) return;
 
     await safeAction(async () => {
-      if (editingNoteId) {
-        await updateInternalNote(editingNoteId, { content: noteContent });
-      } else {
-        await addInternalNote({
-          conversation_id: activeConversationId,
-          content: noteContent,
-          created_by: currentUser?.id,
-          created_by_name: getAgentDisplayName(currentUser),
-          pinned: true
-        });
+      const note = newMessage;
+      const agentName = getAgentDisplayName(currentUser);
+      
+      setNewMessage('');
+      setIsInternalMode(false);
+      
+      const baseUrl = getApiBaseUrl();
+      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/internal-note`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          note,
+          sender_user_id: currentUser?.id,
+          sender_name: agentName
+        })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        setNewMessage(note);
+        setIsInternalMode(true);
+        throw errorData;
       }
-      setShowNoteModal(false);
-      setNoteContent('');
-      setEditingNoteId(null);
-    }, { label: 'Erro ao salvar anotação' });
+      
+      await loadMessages(activeConversationId, true);
+      toast.success('Nota interna salva no histórico');
+    }, { label: 'Erro ao salvar nota interna' });
   };
 
-  const currentNote = internalNotes.find(n => n.conversation_id === activeConversationId);
+  const activeTeam = teams.find(t => t.id === (activeConversation?.team_id || activeConversation?.queue_id));
 
   return (
     <div className="flex h-full w-full bg-white overflow-hidden">
@@ -988,7 +1063,7 @@ export default function OmnichannelPage() {
             </button>
           </div>
 
-          <div className="relative">
+          <div className="relative mb-4">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input 
               type="text" 
@@ -997,6 +1072,24 @@ export default function OmnichannelPage() {
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
+          </div>
+
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+            <button 
+              onClick={() => setSelectedTeamId('all')}
+              className={`shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${selectedTeamId === 'all' ? 'bg-slate-800 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+            >
+              Todas
+            </button>
+            {teams.filter(t => t.is_active).map(team => (
+              <button 
+                key={team.id}
+                onClick={() => setSelectedTeamId(team.id)}
+                className={`shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${selectedTeamId === team.id ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+              >
+                {team.name}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -1026,10 +1119,7 @@ export default function OmnichannelPage() {
             return (
               <button 
                 key={conv.id}
-                onClick={async () => {
-                  setActiveConversationId(conv.id);
-                  // We don't update unread_count locally anymore, the API should handle it or we'd need a specific endpoint
-                }}
+                onClick={() => handleSelectConversation(conv)}
                 className={`w-full p-4 flex items-start gap-4 transition-all hover:bg-slate-50 text-left relative overflow-hidden ${isActive ? 'bg-blue-50/50' : ''}`}
               >
                 {isActive && <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-600"></div>}
@@ -1102,6 +1192,15 @@ export default function OmnichannelPage() {
                   <h3 className="font-bold text-slate-800 truncate">{activeCustomer?.name}</h3>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-slate-400">{activeCustomer?.phone}</span>
+                    <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
+                    {activeTeam && (
+                      <span 
+                        className="px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-[0.1em] text-white shadow-sm"
+                        style={{ backgroundColor: activeTeam.color || '#3b82f6' }}
+                      >
+                        Equipe {activeTeam.name}
+                      </span>
+                    )}
                     <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
                     <span className={`text-xs font-bold uppercase tracking-wider ${activeConversation.status === 'RESOLVED' ? 'text-blue-500' : 'text-emerald-500'}`}>
                       {activeConversation.status === 'RESOLVED' ? 'Concluído' : 'Em Aberto'}
@@ -1208,12 +1307,56 @@ export default function OmnichannelPage() {
 
             {/* Messages Area */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6 relative">
-              {activeChatMessages.map((msg: Message) => {
-                const isMine = msg.sender_type === 'agent' || msg.sender_type === 'system';
+              {loadingMessages ? (
+                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-50/50 z-10 backdrop-blur-[1px]">
+                   <RefreshCw className="w-8 h-8 text-blue-600 animate-spin mb-4" />
+                   <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">Carregando mensagens...</p>
+                 </div>
+              ) : messages.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full opacity-30 select-none grayscale">
+                   <div className="w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center mb-4">
+                     <MessageSquare className="w-8 h-8" />
+                   </div>
+                   <p className="text-xs font-bold uppercase tracking-widest">Nenhuma mensagem disponível</p>
+                </div>
+              ) : null}
+
+              {messages.map((msg: Message) => {
+                const isMine = msg.sender_type === 'agent' || msg.sender_type === 'system' || (msg.sender_type as string) === 'internal';
                 const isInternal = (msg as any).is_internal || msg.message_type === 'internal_note';
                 const timestamp = msg.created_at;
                 const status = msg.status;
                 
+                if (isInternal) {
+                  return (
+                    <div key={msg.id} className="flex justify-center my-6">
+                      <div className="max-w-[85%] lg:max-w-xl bg-amber-50 border border-amber-200 rounded-[2rem] p-5 shadow-sm relative overflow-hidden group">
+                        <div className="absolute top-0 left-0 w-1 bg-amber-400 h-full"></div>
+                        <div className="flex items-center justify-between gap-4 mb-3">
+                          <div className="flex items-center gap-2">
+                             <div className="w-7 h-7 rounded-lg bg-amber-200 flex items-center justify-center text-amber-700">
+                                <FileText className="w-4 h-4" />
+                             </div>
+                             <span className="text-xs font-black text-amber-800 uppercase tracking-widest">{msg.sender_name || 'Operador'}</span>
+                          </div>
+                          <span className="text-[10px] font-black text-amber-600 uppercase tracking-tighter bg-amber-100 px-2 py-0.5 rounded-lg border border-amber-200">Nota Interna</span>
+                        </div>
+                        <div className="text-sm text-slate-800 leading-relaxed font-medium">
+                           {renderMessageContent(msg)}
+                        </div>
+                        <div className="mt-4 flex items-center justify-between">
+                          <div className="text-[9px] text-amber-600/60 font-black uppercase tracking-widest flex items-center gap-1.5">
+                            <Shield className="w-3 h-3" /> Visível apenas internamente
+                          </div>
+                          <span className="text-[10px] font-bold text-amber-700 opacity-60">
+                            {timestamp ? new Date(timestamp).toLocaleString() : ''}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
                 return (
                   <div key={msg.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[70%] lg:max-w-[60%] flex gap-3 ${isMine ? 'flex-row-reverse' : ''}`}>
@@ -1344,19 +1487,36 @@ export default function OmnichannelPage() {
                   </button>
                 </div>
               ) : (
-                <form onSubmit={handleSendMessage} className="max-w-4xl mx-auto flex items-end gap-3 bg-slate-50 border border-slate-200 p-3 rounded-2xl focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent transition-all shadow-sm">
-                  <div className="flex items-center gap-1 relative">
+                <div className="max-w-4xl mx-auto space-y-4">
+                  <div className="flex items-center gap-2">
                     <button 
-                      type="button" 
-                      onClick={() => setShowAttachmentMenu(!showAttachmentMenu)}
-                      className={`p-2 rounded-xl transition-all ${showAttachmentMenu ? 'bg-blue-600 text-white scale-110' : 'text-slate-400 hover:bg-white hover:text-blue-600'}`}
-                      title="Adicionar anexo"
+                      onClick={() => setIsInternalMode(false)}
+                      className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${!isInternalMode ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
                     >
-                      <Plus className={`w-5 h-5 transition-transform duration-300 ${showAttachmentMenu ? 'rotate-45' : ''}`} />
+                      Responder Cliente
                     </button>
+                    <button 
+                      onClick={() => setIsInternalMode(true)}
+                      className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${isInternalMode ? 'bg-amber-500 text-white shadow-md' : 'bg-amber-50 text-amber-600 hover:bg-amber-100'}`}
+                    >
+                      Nota Interna
+                    </button>
+                  </div>
 
-                    <AnimatePresence>
-                      {showAttachmentMenu && (
+                  <form onSubmit={handleSendMessage} className={`flex items-end gap-3 p-3 rounded-2xl focus-within:ring-2 transition-all shadow-sm border ${isInternalMode ? 'bg-amber-50/50 border-amber-200 focus-within:ring-amber-500' : 'bg-slate-50 border-slate-200 focus-within:ring-blue-500'}`}>
+                    <div className="flex items-center gap-1 relative">
+                      <button 
+                        type="button" 
+                        onClick={() => setShowAttachmentMenu(!showAttachmentMenu)}
+                        className={`p-2 rounded-xl transition-all ${showAttachmentMenu ? 'bg-blue-600 text-white scale-110' : 'text-slate-400 hover:bg-white hover:text-blue-600'}`}
+                        title="Adicionar anexo"
+                        disabled={isInternalMode}
+                      >
+                        <Plus className={`w-5 h-5 transition-transform duration-300 ${showAttachmentMenu ? 'rotate-45' : ''}`} />
+                      </button>
+
+                      <AnimatePresence>
+                        {showAttachmentMenu && !isInternalMode && (
                         <motion.div 
                           initial={{ opacity: 0, y: -20, scale: 0.9 }}
                           animate={{ opacity: 1, y: -10, scale: 1 }}
@@ -1406,14 +1566,8 @@ export default function OmnichannelPage() {
                             type="button"
                             onClick={() => {
                               setShowAttachmentMenu(false);
-                              if (currentNote) {
-                                setNoteContent(currentNote.content);
-                                setEditingNoteId(currentNote.id);
-                              } else {
-                                setNoteContent('');
-                                setEditingNoteId(null);
-                              }
-                              setShowNoteModal(true);
+                              setIsInternalMode(true);
+                              messageInputRef.current?.focus();
                             }}
                             className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-600 transition-colors"
                            >
@@ -1461,7 +1615,7 @@ export default function OmnichannelPage() {
                   <textarea 
                     ref={messageInputRef}
                     rows={1}
-                    placeholder="Escreva sua mensagem..."
+                    placeholder={isInternalMode ? "Adicionar nota interna ao atendimento..." : "Escreva sua mensagem..."}
                     className="flex-1 bg-transparent border-none outline-none text-sm py-2 resize-none max-h-40 min-h-[40px] px-2 font-medium"
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
@@ -1477,14 +1631,15 @@ export default function OmnichannelPage() {
                     <button 
                       type="submit"
                       disabled={!newMessage.trim()}
-                      className={`p-3 rounded-xl transition-all shadow-lg ${newMessage.trim() ? 'bg-blue-600 text-white shadow-blue-200 scale-105 active:scale-100' : 'bg-slate-200 text-slate-400 opacity-50 cursor-not-allowed'}`}
+                      className={`p-3 rounded-xl transition-all shadow-lg ${newMessage.trim() ? (isInternalMode ? 'bg-amber-600 shadow-amber-200' : 'bg-blue-600 shadow-blue-200') + ' text-white scale-105 active:scale-100' : 'bg-slate-200 text-slate-400 opacity-50 cursor-not-allowed'}`}
                     >
-                      <Send className="w-5 h-5" />
+                      {isInternalMode ? <CheckCircle2 className="w-5 h-5" /> : <Send className="w-5 h-5" />}
                     </button>
                   </div>
                 </form>
-              )}
-            </footer>
+              </div>
+            )}
+          </footer>
           </>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center p-12 text-center">
@@ -1577,70 +1732,20 @@ export default function OmnichannelPage() {
                 </div>
               </section>
 
-              <section className="bg-amber-50/50 border border-amber-100 rounded-2xl p-4 mt-2">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <Paperclip className="w-4 h-4 text-amber-600 rotate-45" />
-                    <h4 className="text-xs font-bold text-amber-800 uppercase tracking-wider">Anotação Interna</h4>
-                  </div>
-                  <span className="px-1.5 py-0.5 bg-amber-200 text-amber-800 rounded text-[8px] font-black uppercase tracking-tighter">Operação</span>
+              <section>
+                <div className="flex items-center gap-2 mb-3">
+                  <Database className="w-4 h-4 text-slate-400" />
+                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Ações Adicionais</h4>
                 </div>
-
-                {currentNote ? (
-                  <div className="space-y-4">
-                    <div className="relative">
-                      <p className="text-xs text-amber-900 leading-relaxed font-medium italic">
-                        "{currentNote.content}"
-                      </p>
-                      <div className="mt-3 pt-3 border-t border-amber-100 flex items-center justify-between">
-                         <div className="min-w-0">
-                           <p className="text-[10px] text-amber-700 font-bold truncate">{currentNote.created_by_name || 'Agente'}</p>
-                           <p className="text-[9px] text-amber-600/60 font-medium">
-                             {currentNote.updated_at ? new Date(currentNote.updated_at).toLocaleString() : ''}
-                           </p>
-                         </div>
-                         <div className="flex items-center gap-1">
-                           <button 
-                             onClick={() => {
-                               setNoteContent(currentNote.content);
-                               setEditingNoteId(currentNote.id);
-                               setShowNoteModal(true);
-                             }}
-                             className="p-1.5 hover:bg-amber-100 rounded-lg text-amber-700 transition-colors"
-                           >
-                             <FileText className="w-3.5 h-3.5" />
-                           </button>
-                           <button 
-                             onClick={() => {
-                               if (window.confirm('Excluir esta anotação interna?')) {
-                                 deleteInternalNote(currentNote.id);
-                               }
-                             }}
-                             className="p-1.5 hover:bg-red-100 rounded-lg text-red-600 transition-colors"
-                           >
-                             <X className="w-3.5 h-3.5" />
-                           </button>
-                         </div>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="py-4 text-center">
-                    <p className="text-[10px] text-amber-700/50 italic mb-3 font-medium">Nenhuma anotação registrada para este cliente.</p>
-                    <button 
-                      onClick={() => {
-                        setNoteContent('');
-                        setEditingNoteId(null);
-                        setShowNoteModal(true);
-                      }}
-                      className="text-[10px] font-black text-amber-600 uppercase tracking-widest hover:underline"
-                    >
-                      + Criar Anotação
-                    </button>
-                  </div>
-                )}
-                
-                <p className="text-[8px] text-amber-600 opacity-60 mt-3 text-center font-bold uppercase tracking-widest">⚠️ Visível apenas internamente</p>
+                <div className="space-y-2">
+                   <button 
+                    onClick={() => toast.info("Histórico de pedidos em breve")}
+                    className="w-full flex items-center justify-between p-3 bg-slate-50 hover:bg-slate-100 rounded-xl transition-all text-[10px] font-bold text-slate-600 uppercase tracking-widest border border-slate-100"
+                   >
+                     <span>Ver Últimos Pedidos</span>
+                     <ChevronRight className="w-3.5 h-3.5 opacity-40" />
+                   </button>
+                </div>
               </section>
             </div>
           </div>
@@ -1933,44 +2038,89 @@ export default function OmnichannelPage() {
         {showTransferModal && (
           <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowTransferModal(false)} className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-100 p-8">
-              <h2 className="text-lg font-bold text-slate-800 mb-6">Transferir Atendimento</h2>
-              <div className="space-y-4">
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} className="relative w-full max-w-md bg-white rounded-[2rem] shadow-2xl border border-slate-100 overflow-hidden">
+               <div className="p-6 border-b border-slate-50 bg-slate-50/50 flex items-center justify-between">
+                 <h2 className="text-lg font-bold text-slate-800 uppercase tracking-tight flex items-center gap-2">
+                   <ArrowRightLeft className="w-5 h-5 text-blue-600" />
+                   Transferir Atendimento
+                 </h2>
+                 <button onClick={() => setShowTransferModal(false)} className="p-2 hover:bg-white rounded-xl text-slate-400 transition-all">
+                   <X className="w-5 h-5" />
+                 </button>
+               </div>
+
+               <div className="p-8 space-y-6">
+                <div className="space-y-3">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Tipo de Transferência</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button 
+                      onClick={() => setTransferData({ ...transferData, type: 'queue' })}
+                      className={`py-3 px-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${transferData.type === 'queue' ? 'bg-blue-600 border-blue-600 text-white shadow-lg shadow-blue-100 scale-[1.02]' : 'bg-slate-50 border-slate-100 text-slate-500 hover:bg-slate-100'}`}
+                    >
+                      Fila da Equipe
+                    </button>
+                    <button 
+                      onClick={() => setTransferData({ ...transferData, type: 'user' })}
+                      className={`py-3 px-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${transferData.type === 'user' ? 'bg-blue-600 border-blue-600 text-white shadow-lg shadow-blue-100 scale-[1.02]' : 'bg-slate-50 border-slate-100 text-slate-500 hover:bg-slate-100'}`}
+                    >
+                      Usuário Específico
+                    </button>
+                  </div>
+                </div>
+
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Equipe de Destino</label>
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Equipe de Destino</label>
                   <select 
-                    className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 transition-all appearance-none"
+                    className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 transition-all appearance-none"
                     value={transferData.teamId}
-                    onChange={(e) => setTransferData({...transferData, teamId: e.target.value})}
+                    onChange={(e) => {
+                      setTransferData({...transferData, teamId: e.target.value, userId: ''});
+                      loadTransferMembers(e.target.value);
+                    }}
                   >
                     <option value="">Selecione uma equipe...</option>
-                    {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    {teams.filter(t => t.is_active).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
                 </div>
+
+                {transferData.type === 'user' && (
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Atendente de Destino</label>
+                    <div className="relative">
+                      <select 
+                        disabled={!transferData.teamId || loadingTransferMembers}
+                        className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 transition-all appearance-none disabled:opacity-50"
+                        value={transferData.userId}
+                        onChange={(e) => setTransferData({...transferData, userId: e.target.value})}
+                      >
+                        <option value="">Selecione um atendente...</option>
+                        {transferMembers.map(m => <option key={m.user_id} value={m.user_id}>{m.user_name}</option>)}
+                      </select>
+                      {loadingTransferMembers && <RefreshCw className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-blue-600" />}
+                    </div>
+                  </div>
+                )}
+
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Atendente de Destino (Opcional)</label>
-                  <select 
-                    className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 transition-all appearance-none"
-                    value={transferData.userId}
-                    onChange={(e) => setTransferData({...transferData, userId: e.target.value})}
-                  >
-                    <option value="">Qualquer Atendente</option>
-                    {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Motivo da Transferência</label>
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Motivo/Observação (Opcional)</label>
                   <textarea 
-                    placeholder="Explique o motivo da transferência..." 
-                    className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm min-h-[80px] outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                    placeholder="Ex: Cliente solicita suporte comercial avançado..." 
+                    className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm min-h-[100px] outline-none focus:ring-2 focus:ring-blue-500 transition-all resize-none font-medium text-slate-600"
                     value={transferData.reason}
                     onChange={(e) => setTransferData({...transferData, reason: e.target.value})}
                   />
                 </div>
               </div>
-              <div className="flex justify-end gap-3 mt-8">
-                 <button onClick={() => setShowTransferModal(false)} className="px-4 py-2 text-slate-500 font-bold text-xs uppercase">Cancelar</button>
-                 <button onClick={handleTransfer} className="px-6 py-2 bg-blue-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest">Confirmar Transferência</button>
+
+              <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+                 <button onClick={() => setShowTransferModal(false)} className="px-6 py-3 text-slate-500 font-black text-[10px] uppercase tracking-widest hover:bg-slate-100 rounded-xl transition-all">Cancelar</button>
+                 <button 
+                  onClick={handleTransfer} 
+                  disabled={!transferData.teamId || (transferData.type === 'user' && !transferData.userId)}
+                  className={`px-10 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all shadow-lg ${transferData.teamId && (transferData.type === 'queue' || transferData.userId) ? 'bg-blue-600 text-white shadow-blue-100 hover:scale-105 active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                >
+                  Concluir Transferência
+                </button>
               </div>
             </motion.div>
           </div>
@@ -2008,76 +2158,6 @@ export default function OmnichannelPage() {
               <div className="flex justify-end gap-3 mt-8">
                  <button onClick={() => setShowCloseModal(false)} className="px-4 py-2 text-slate-500 font-bold text-xs uppercase">Cancelar</button>
                  <button onClick={handleClose} className="px-6 py-2 bg-emerald-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest">Finalizar Agora</button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-      {/* Note Modal */}
-      <AnimatePresence>
-        {showNoteModal && (
-          <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowNoteModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95, y: 20 }} 
-              animate={{ opacity: 1, scale: 1, y: 0 }} 
-              exit={{ opacity: 0, scale: 0.95, y: 20 }} 
-              className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden"
-            >
-              <div className="p-6 border-b border-slate-50 bg-amber-50/30 flex items-center justify-between">
-                <div>
-                  <h2 className="text-lg font-black text-amber-900 uppercase tracking-tight flex items-center gap-2">
-                    <FileText className="w-5 h-5" /> 
-                    {editingNoteId ? 'Editar Anotação Interna' : 'Nova Anotação Interna'}
-                  </h2>
-                  <p className="text-[10px] font-bold text-amber-700/60 uppercase tracking-widest mt-1">Esta informação nunca será enviada ao cliente</p>
-                </div>
-                <button onClick={() => setShowNoteModal(false)} className="text-slate-400 hover:text-slate-600">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="p-6 space-y-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Conteúdo da Observação</label>
-                  <textarea 
-                    autoFocus
-                    placeholder="Digite observações importantes sobre este atendimento ou perfil do cliente..." 
-                    className="w-full p-5 bg-slate-50 border border-slate-100 rounded-2xl text-sm min-h-[160px] outline-none focus:ring-2 focus:ring-amber-500 transition-all resize-none font-medium text-slate-700"
-                    value={noteContent}
-                    onChange={(e) => setNoteContent(e.target.value)}
-                    maxLength={1000}
-                  />
-                  <div className="flex justify-between items-center px-1">
-                    <span className="text-[9px] font-bold text-slate-400 uppercase">Limite: 1.000 caracteres</span>
-                    <span className={`text-[9px] font-bold uppercase ${noteContent.length > 900 ? 'text-red-500' : 'text-slate-400'}`}>
-                      {noteContent.length} / 1000
-                    </span>
-                  </div>
-                </div>
-
-                <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 flex items-start gap-3">
-                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                  <p className="text-[10px] text-amber-800 font-medium leading-relaxed">
-                    Anotações internas ajudam outros operadores a entenderem o contexto deste cliente caso o atendimento seja transferido futuramente.
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-6 border-t border-slate-50 flex justify-end gap-3 bg-slate-50/30">
-                 <button 
-                  onClick={() => setShowNoteModal(false)} 
-                  className="px-5 py-2.5 text-slate-500 font-black text-[10px] uppercase tracking-widest hover:bg-slate-100 rounded-xl transition-all"
-                 >
-                  Cancelar
-                 </button>
-                 <button 
-                  onClick={handleSaveNote} 
-                  disabled={!noteContent.trim()}
-                  className={`px-8 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all shadow-lg ${noteContent.trim() ? 'bg-amber-600 text-white shadow-amber-100 hover:scale-105' : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-50'}`}
-                 >
-                   {editingNoteId ? 'Salvar Alterações' : 'Fixar Anotação'}
-                 </button>
               </div>
             </motion.div>
           </div>

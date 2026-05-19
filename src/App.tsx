@@ -18,6 +18,7 @@ import DebugPage from './pages/DebugPage';
 import { authService } from './services/authService';
 import Logo from './components/Logo';
 import { useAppStore } from './store/useAppStore';
+import PresenceHeartbeat from './components/PresenceHeartbeat';
 
 import { Toaster } from 'sonner';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -115,6 +116,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
+      {isAuthenticated && <PresenceHeartbeat />}
       <BrowserRouter>
         <Toaster position="top-right" richColors closeButton />
         <Routes>

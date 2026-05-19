@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Users, 
   Plus, 
@@ -21,7 +21,8 @@ import {
   UserX,
   Mail,
   Phone,
-  ArrowRight
+  ArrowRight,
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
@@ -33,12 +34,30 @@ import { safeAction } from '../../utils/safeAction';
 
 export default function UsersSettingsPage() {
   const navigate = useNavigate();
-  const { users, addUser, updateUser, deleteUser, teams } = useAppStore();
+  const { users, addUser, updateUser, deleteUser, teams, loadUsers } = useAppStore();
   
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+
+  // Refresh users presence every 15 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadUsers();
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [loadUsers]);
+
+  const isOnline = (user: any) => {
+    // If we have enhanced user presence table, we use that. 
+    // In this app, we're syncing user.is_online and user.last_seen_at
+    if (!user.is_online) return false;
+    if (!user.last_seen_at) return false;
+    const lastSeen = new Date(user.last_seen_at).getTime();
+    const now = Date.now();
+    return (now - lastSeen) < 90000; // 90 seconds threshold
+  };
 
   // Form state
   const [formData, setFormData] = useState({
@@ -260,11 +279,19 @@ export default function UsersSettingsPage() {
                 <tr key={user.id} className="hover:bg-slate-50/30 transition-colors group">
                   <td className="px-8 py-6">
                     <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-600 font-bold text-lg border-2 border-white shadow-sm ring-1 ring-slate-100 overflow-hidden shrink-0">
-                        {user.avatar ? <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" /> : user.name.charAt(0)}
+                      <div className="relative shrink-0">
+                        <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-600 font-bold text-lg border-2 border-white shadow-sm ring-1 ring-slate-100 overflow-hidden">
+                          {user.avatar ? <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" /> : user.name.charAt(0)}
+                        </div>
+                        <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-white shadow-sm ${isOnline(user) ? 'bg-emerald-500' : 'bg-slate-300'}`} title={isOnline(user) ? 'Online' : 'Offline'}></div>
                       </div>
                       <div className="min-w-0">
-                        <p className="text-sm font-bold text-slate-800 truncate">{user.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-bold text-slate-800 truncate">{user.name}</p>
+                          {isOnline(user) && (
+                            <span className="text-[8px] font-black text-emerald-600 uppercase tracking-tighter bg-emerald-50 px-1 py-0.5 rounded border border-emerald-100">Online</span>
+                          )}
+                        </div>
                         <p className="text-xs text-slate-400 font-medium truncate">{user.email || 'sem e-mail'}</p>
                       </div>
                     </div>

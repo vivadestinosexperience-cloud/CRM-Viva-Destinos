@@ -72,23 +72,55 @@ export const profilesService = {
 
 export const teamService = {
   async list() {
-    const { data, error } = await supabase.from('teams').select('*').order('name');
-    if (error) handleError(error, 'teamService.list');
-    return data;
+    try {
+      const res = await fetch('/api/teams');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao carregar equipes');
+      return data.teams || [];
+    } catch (err) {
+      // Fallback for direct DB access if API fails
+      const { data, error } = await supabase.from('teams').select('*').order('name');
+      if (error) handleError(error, 'teamService.list');
+      return data;
+    }
   },
   async create(team: any) {
-    const { data, error } = await supabase.from('teams').insert(team).select().single();
-    if (error) handleError(error, 'teamService.create');
-    return data;
+    try {
+      const res = await fetch('/api/teams', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(team)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao criar equipe');
+      return data.team;
+    } catch (err: any) {
+      handleError(err, 'teamService.create');
+    }
   },
   async update(id: string, updates: any) {
-    const { data, error } = await supabase.from('teams').update(updates).eq('id', id).select().single();
-    if (error) handleError(error, 'teamService.update');
-    return data;
+    try {
+      const res = await fetch(`/api/teams/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao atualizar equipe');
+      return data.team;
+    } catch (err: any) {
+      handleError(err, 'teamService.update');
+    }
   },
   async remove(id: string) {
-    const { error } = await supabase.from('teams').delete().eq('id', id);
-    if (error) handleError(error, 'teamService.remove');
+    try {
+      const res = await fetch(`/api/teams/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao excluir equipe');
+      return data;
+    } catch (err: any) {
+      handleError(err, 'teamService.remove');
+    }
   }
 };
 
