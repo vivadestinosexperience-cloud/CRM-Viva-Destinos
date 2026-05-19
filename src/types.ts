@@ -115,7 +115,7 @@ export interface WhatsAppAccount {
   updated_at?: string;
 }
 
-export type ConversationStatus = 'NEW' | 'PENDING' | 'OPEN' | 'WAITING_CLIENT' | 'WAITING_AGENT' | 'RESOLVED' | 'EXPIRED' | 'TRANSFERRED' | 'CLOSED' | 'CONCLUIDO' | 'CONCLUÍDO';
+export type ConversationStatus = 'NEW' | 'PENDING' | 'OPEN' | 'WAITING_CLIENT' | 'WAITING_AGENT' | 'RESOLVED' | 'EXPIRED' | 'TRANSFERRED' | 'CLOSED' | 'CONCLUIDO' | 'CONCLUÍDO' | 'IGNORED';
 
 export interface Customer {
   id: string;
@@ -232,6 +232,24 @@ export interface InternalNote {
   updated_at: string;
 }
 
+export interface Tag {
+  id: string;
+  name: string;
+  color: string;
+  description?: string;
+  is_active?: boolean;
+}
+
+export interface ConversationTag {
+  id: string;
+  conversation_id: string;
+  tag_id: string;
+  created_at?: string;
+  created_by?: string;
+  created_by_name?: string;
+  tag?: Tag;
+}
+
 export interface Conversation {
   id: string;
   customer_id: string;
@@ -252,6 +270,8 @@ export interface Conversation {
   updated_at?: string;
   started_at?: string;
   closed_at?: string;
+  origin?: string;
+  transfer_reason?: string;
 
   // Internal Note
   internal_note?: InternalNote;
@@ -260,6 +280,7 @@ export interface Conversation {
   customer?: Customer;
   whatsapp_account?: WhatsAppAccount;
   team?: Team;
+  tags?: Tag[];
   
   // Legacy fields
   customerId?: string;
@@ -268,7 +289,6 @@ export interface Conversation {
   unreadCount?: number;
   queueId?: string;
   responsibleId?: string;
-  tags?: string[];
   timestamp?: string;
 }
 

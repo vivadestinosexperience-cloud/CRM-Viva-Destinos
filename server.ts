@@ -648,7 +648,9 @@ const TABLES = {
   teams: 'crm_teams',
   team_members: 'crm_team_members',
   users: 'crm_users',
-  presence: 'crm_user_presence'
+  presence: 'crm_user_presence',
+  tags: 'crm_tags',
+  conversation_tags: 'crm_conversation_tags'
 };
 
 const DEFAULT_TEAM = {
@@ -1321,7 +1323,7 @@ const DEFAULT_TEAM = {
 
   app.get("/api/omnichannel/conversations", async (req, res) => {
     try {
-      const { team_id } = req.query;
+      const { team_id, tag_id } = req.query;
       
       // 1. Iniciar query
       let query = supabase.from(TABLES.conversations).select(`
@@ -1332,6 +1334,22 @@ const DEFAULT_TEAM = {
       // 2. Aplicar filtro de equipe se informado e não for 'all'
       if (team_id && team_id !== 'all') {
         query = query.eq('team_id', team_id);
+      }
+
+      // 3. Aplicar filtro de tag se informado e não for 'all'
+      if (tag_id && tag_id !== 'all') {
+        const { data: tagLinks } = await supabaseAdmin
+          .from(TABLES.conversation_tags)
+          .select('conversation_id')
+          .eq('tag_id', tag_id);
+        
+        const convIds = (tagLinks || []).map(tl => tl.conversation_id);
+        if (convIds.length > 0) {
+          query = query.in('id', convIds);
+        } else {
+          // No conversations with this tag
+          return res.json({ success: true, conversations: [] });
+        }
       }
 
       const { data: convs, error: fetchErr } = await query.order('last_message_at', { ascending: false });
@@ -1345,7 +1363,32 @@ const DEFAULT_TEAM = {
         return !hiddenStatuses.includes(s);
       });
 
-      const mapped = (filtered || []).map(c => ({
+      // 4. Load tags for all filtered conversations
+      const allConvIds = filtered.map(c => c.id);
+      let conversationsWithTags = filtered;
+
+      if (allConvIds.length > 0) {
+        const { data: tagsData } = await supabaseAdmin
+          .from(TABLES.conversation_tags)
+          .select(`
+            conversation_id,
+            tag:tag_id (*)
+          `)
+          .in('conversation_id', allConvIds);
+        
+        const tagsMap = (tagsData || []).reduce((acc: any, curr: any) => {
+          if (!acc[curr.conversation_id]) acc[curr.conversation_id] = [];
+          if (curr.tag) acc[curr.conversation_id].push(curr.tag);
+          return acc;
+        }, {});
+
+        conversationsWithTags = filtered.map(c => ({
+          ...c,
+          tags: tagsMap[c.id] || []
+        }));
+      }
+
+      const mapped = (conversationsWithTags || []).map(c => ({
         ...c,
         team_id: c.team_id || DEFAULT_TEAM.id,
         team_name: c.team_name || DEFAULT_TEAM.name,
@@ -1357,6 +1400,7 @@ const DEFAULT_TEAM = {
         success: true,
         conversations: mapped
       });
+
     } catch (err: any) {
       console.error("[OMNICHANNEL CONVS ERR]", err);
       return res.json({
@@ -2298,6 +2342,203 @@ const DEFAULT_TEAM = {
       return res.status(500).json({ success: false, error: getErrorMessage(err) });
     }
   });
+
+  // --- Tags Management ---
+  app.get("/api/tags", async (req, res) => {
+    try {
+      const { data: tags, error } = await supabaseAdmin
+        .from(TABLES.tags)
+        .select('*')
+        .eq('is_active', true)
+        .order('name', { ascending: true });
+      if (error) throw error;
+      return res.json({ success: true, tags: tags || [] });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.post("/api/tags", async (req, res) => {
+    try {
+      const { name, color, description } = req.body;
+      if (!name) return res.status(400).json({ success: false, error: "Nome da etiqueta é obrigatório." });
+
+      const { data: tag, error } = await supabaseAdmin
+        .from(TABLES.tags)
+        .insert({ name, color: color || '#2563EB', description, is_active: true })
+        .select()
+        .single();
+      
+      if (error) throw error;
+      return res.json({ success: true, tag });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.patch("/api/tags/:id", async (req, res) => {
+    const { id } = req.params;
+    try {
+      const updates = req.body;
+      const { data: tag, error } = await supabaseAdmin
+        .from(TABLES.tags)
+        .update(updates)
+        .eq('id', id)
+        .select()
+        .single();
+      
+      if (error) throw error;
+      return res.json({ success: true, tag });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.delete("/api/tags/:id", async (req, res) => {
+    const { id } = req.params;
+    try {
+      // Soft delete
+      const { error } = await supabaseAdmin
+        .from(TABLES.tags)
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq('id', id);
+      
+      if (error) throw error;
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  // --- Conversation Tags ---
+  app.get("/api/omnichannel/conversations/:id/tags", async (req, res) => {
+    const { id } = req.params;
+    try {
+      const { data, error } = await supabaseAdmin
+        .from(TABLES.conversation_tags)
+        .select(`
+          tag_id,
+          tags:tag_id (*)
+        `)
+        .eq('conversation_id', id);
+      
+      if (error) throw error;
+      return res.json({ success: true, tags: data?.map((d: any) => d.tags) || [] });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.post("/api/omnichannel/conversations/:id/tags", async (req, res) => {
+    const { id: conversationId } = req.params;
+    try {
+      const { tag_id, created_by, created_by_name } = req.body;
+      if (!tag_id) return res.status(400).json({ success: false, error: "tag_id is required" });
+
+      const { data, error } = await supabaseAdmin
+        .from(TABLES.conversation_tags)
+        .upsert({
+          conversation_id: conversationId,
+          tag_id,
+          created_by,
+          created_by_name
+        }, { onConflict: 'conversation_id,tag_id' })
+        .select()
+        .single();
+      
+      if (error) throw error;
+
+      // Get tag info to update conversation state if needed
+      const { data: tag } = await supabaseAdmin.from(TABLES.tags).select('*').eq('id', tag_id).single();
+      
+      broadcastEvent("conversation.updated", { id: conversationId });
+
+      return res.json({ success: true, tag });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.delete("/api/omnichannel/conversations/:id/tags/:tagId", async (req, res) => {
+    const { id: conversationId, tagId } = req.params;
+    try {
+      const { error } = await supabaseAdmin
+        .from(TABLES.conversation_tags)
+        .delete()
+        .eq('conversation_id', conversationId)
+        .eq('tag_id', tagId);
+      
+      if (error) throw error;
+      
+      broadcastEvent("conversation.updated", { id: conversationId });
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  // --- Lead Details ---
+  app.get("/api/omnichannel/conversations/:id/details", async (req, res) => {
+    const { id } = req.params;
+    try {
+      const { data: conversation, error: convErr } = await supabaseAdmin
+        .from(TABLES.conversations)
+        .select(`
+          *,
+          customers:customer_id (*)
+        `)
+        .eq('id', id)
+        .single();
+      
+      if (convErr) throw convErr;
+
+      // 1. Get first interaction
+      const { data: firstMsg } = await supabaseAdmin
+        .from(TABLES.messages)
+        .select('created_at')
+        .eq('conversation_id', id)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .single();
+
+      // 2. Get last interaction
+      const { data: lastMsg } = await supabaseAdmin
+        .from(TABLES.messages)
+        .select('created_at')
+        .eq('conversation_id', id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      // 3. Get total messages count
+      const { count: totalMessages } = await supabaseAdmin
+        .from(TABLES.messages)
+        .select('*', { count: 'exact', head: true })
+        .eq('conversation_id', id);
+
+      // 4. Get tags
+      const { data: tagLinks } = await supabaseAdmin
+        .from(TABLES.conversation_tags)
+        .select(`
+          tags:tag_id (*)
+        `)
+        .eq('conversation_id', id);
+
+      const details = {
+        ...conversation,
+        customer: conversation.customers,
+        first_interaction_at: firstMsg?.created_at || null,
+        last_interaction_at: lastMsg?.created_at || conversation.last_message_at || conversation.updated_at,
+        total_messages: totalMessages || 0,
+        tags: tagLinks?.map((tl: any) => tl.tags) || []
+      };
+
+      return res.json({ success: true, details });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
 
   app.post("/api/me/change-password", async (req, res) => {
     const { auth_user_id, password } = req.body;

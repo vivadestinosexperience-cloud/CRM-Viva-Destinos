@@ -247,6 +247,45 @@ export const messageService = {
   }
 };
 
+export const conversationTagService = {
+  async list(conversationId: string) {
+    try {
+      const res = await fetch(`/api/omnichannel/conversations/${conversationId}/tags`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao carregar etiquetas da conversa');
+      return data.tags || [];
+    } catch (err: any) {
+      handleError(err, 'conversationTagService.list');
+    }
+  },
+  async link(conversationId: string, tagId: string, userId?: string, userName?: string) {
+    try {
+      const res = await fetch(`/api/omnichannel/conversations/${conversationId}/tags`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag_id: tagId, created_by: userId, created_by_name: userName })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao vincular etiqueta');
+      return data.tag;
+    } catch (err: any) {
+      handleError(err, 'conversationTagService.link');
+    }
+  },
+  async unlink(conversationId: string, tagId: string) {
+    try {
+      const res = await fetch(`/api/omnichannel/conversations/${conversationId}/tags/${tagId}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao desvincular etiqueta');
+      return data;
+    } catch (err: any) {
+      handleError(err, 'conversationTagService.unlink');
+    }
+  }
+};
+
 export const noteService = {
   async listByConversation(conversationId: string) {
     const { data, error } = await supabase.from('conversation_notes').select('*').eq('conversation_id', conversationId).order('created_at', { ascending: false });
@@ -297,23 +336,54 @@ export const templateService = {
 
 export const tagService = {
   async list() {
-    const { data, error } = await supabase.from('tags').select('*').order('name');
-    if (error) handleError(error, 'tagService.list');
-    return data;
+    try {
+      const res = await fetch('/api/tags');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao carregar etiquetas');
+      return data.tags || [];
+    } catch (err) {
+      const { data, error } = await supabase.from('crm_tags').select('*').eq('is_active', true).order('name');
+      if (error) handleError(error, 'tagService.list');
+      return data;
+    }
   },
   async create(tag: any) {
-    const { data, error } = await supabase.from('tags').insert(tag).select().single();
-    if (error) handleError(error, 'tagService.create');
-    return data;
+    try {
+      const res = await fetch('/api/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(tag)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao criar etiqueta');
+      return data.tag;
+    } catch (err: any) {
+      handleError(err, 'tagService.create');
+    }
   },
   async update(id: string, updates: any) {
-    const { data, error } = await supabase.from('tags').update(updates).eq('id', id).select().single();
-    if (error) handleError(error, 'tagService.update');
-    return data;
+    try {
+      const res = await fetch(`/api/tags/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao atualizar etiqueta');
+      return data.tag;
+    } catch (err: any) {
+      handleError(err, 'tagService.update');
+    }
   },
   async remove(id: string) {
-    const { error } = await supabase.from('tags').delete().eq('id', id);
-    if (error) handleError(error, 'tagService.remove');
+    try {
+      const res = await fetch(`/api/tags/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao excluir etiqueta');
+      return data;
+    } catch (err: any) {
+      handleError(err, 'tagService.remove');
+    }
   }
 };
 
