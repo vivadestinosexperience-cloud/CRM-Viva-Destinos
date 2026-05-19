@@ -202,7 +202,7 @@ export default function OmnichannelPage() {
       if (activeConversationId) {
         loadMessages(activeConversationId, true);
       }
-    }, 10000);
+    }, 5000);
 
     return () => {
       eventSource.close();
@@ -496,24 +496,52 @@ export default function OmnichannelPage() {
     teamId: ''
   });
 
+  const handleAssumeConversation = async (conversationId: string) => {
+    await safeAction(async () => {
+      const agentName = getAgentDisplayName(currentUser);
+      const baseUrl = getApiBaseUrl();
+      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${conversationId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          assigned_user_id: currentUser?.id, 
+          assigned_user_name: agentName,
+          status: 'OPEN'
+          // started_at is handled by backend PATCH
+        })
+      });
+      
+      if (!res.ok) throw await res.json();
+      
+      await loadConversations(true);
+      setActiveConversationId(conversationId);
+      toast.success('Atendimento assumido com sucesso.');
+    }, { label: 'Erro ao assumir atendimento' });
+  };
+
   const handleTransfer = async () => {
     if (!activeConversationId || !transferData.teamId) return;
 
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();
+      const selectedTeam = teams.find(t => t.id === transferData.teamId);
+      const selectedUser = users.find(u => u.id === transferData.userId);
+
       const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          queue_id: transferData.teamId,
+          team_id: transferData.teamId,
+          team_name: selectedTeam?.name || null,
           assigned_user_id: transferData.userId || null,
-          status: 'TRANSFERRED'
+          assigned_user_name: selectedUser?.name || null,
+          status: transferData.userId ? 'OPEN' : 'NEW'
         })
       });
 
       if (!res.ok) throw await res.json();
       
-      const teamName = teams.find(t => t.id === transferData.teamId)?.name || 'Nova Equipe';
+      const teamName = selectedTeam?.name || 'Nova Equipe';
       
       // Send system message
       await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-message`, {
@@ -528,6 +556,7 @@ export default function OmnichannelPage() {
 
       await loadConversations(true);
       setShowTransferModal(false);
+      setTransferData({ teamId: '', userId: '', reason: '' });
       toast.success('Atendimento transferido');
     }, { label: 'Erro ao transferir atendimento' });
   };
@@ -677,16 +706,6 @@ export default function OmnichannelPage() {
     e.preventDefault();
     if (!newMessage.trim() || !activeConversationId) return;
 
-    if (!currentAccount) {
-      toast.error('Nenhum canal configurado para esta conversa. Acesse Configurações > Canais.');
-      return;
-    }
-
-    if (currentAccount.status !== 'CONNECTED') {
-      toast.error('Este canal está desconectado. Reconecte antes de enviar.');
-      return;
-    }
-
     await safeAction(async () => {
       const originalContent = newMessage;
       const agentName = getAgentDisplayName(currentUser);
@@ -704,7 +723,11 @@ export default function OmnichannelPage() {
         })
       });
 
-      if (!res.ok) throw await res.json();
+      if (!res.ok) {
+        const errorData = await res.json();
+        setNewMessage(originalContent); // Restore on error
+        throw errorData;
+      }
       
       await loadMessages(activeConversationId, true);
       await loadConversations(true);
@@ -901,15 +924,44 @@ export default function OmnichannelPage() {
               Conversas 
               <span className="bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full text-xs">{conversations.length}</span>
             </h2>
-            <button 
-              onClick={() => setShowNewChatModal(true)}
-              className="p-2 hover:bg-slate-50 rounded-lg text-blue-600 transition-colors"
-            >
-              <Plus className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-1">
+              <button 
+                onClick={() => {
+                  loadConversations();
+                  toast.success("Lista atualizada");
+                }}
+                className="p-2 hover:bg-slate-50 rounded-lg text-slate-400 transition-colors"
+                title="Atualizar conversas"
+              >
+                <RefreshCw className={`w-4 h-4 ${loadingConversations ? 'animate-spin' : ''}`} />
+              </button>
+              <button 
+                onClick={() => setShowNewChatModal(true)}
+                className="p-2 hover:bg-slate-50 rounded-lg text-blue-600 transition-colors"
+              >
+                <Plus className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Temporarily Debug Block */}
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-100 rounded-xl text-[9px] font-mono text-amber-800 space-y-1">
+             <div className="flex justify-between font-bold border-b border-amber-100 pb-1 mb-1">
+                <span>DIAGNÓSTICO API</span>
+                <span>{new Date().toLocaleTimeString()}</span>
+             </div>
+             <p>• Total Bruto: {conversations.length}</p>
+             <p>• Novos: {conversations.filter(c => !c.assigned_user_id && !isClosedConversation(c)).length}</p>
+             <p>• Meus: {conversations.filter(c => c.assigned_user_id === currentUser?.id && !isClosedConversation(c)).length}</p>
+             <p>• Concluídos: {conversations.filter(c => isClosedConversation(c)).length}</p>
+             {conversations.length > 0 && (
+               <div className="mt-1 pt-1 border-t border-amber-100 text-[8px] opacity-70">
+                 Primeiro da fila: {conversations[0]?.customer_phone_normalized} | ID: {conversations[0]?.id.substring(0,8)}...
+               </div>
+             )}
           </div>
           
-          <div className="flex bg-slate-50 p-1 rounded-xl mb-4">
+          <div className="flex bg-slate-50 p-1 rounded-xl mb-4 overflow-x-auto no-scrollbar">
             <button 
               onClick={() => setActiveTab('novos')}
               className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${activeTab === 'novos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
@@ -948,7 +1000,12 @@ export default function OmnichannelPage() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto divide-y divide-slate-50">
+          <div className="flex-1 overflow-y-auto divide-y divide-slate-50">
+          {conversations.length > 0 && filteredConversations.length === 0 && (
+            <div className="p-4 bg-red-50 border-b border-red-100 text-[10px] text-red-600 font-bold text-center animate-pulse">
+              ALERTA: A API retornou {conversations.length} conversas, mas o filtro da aba "{activeTab}" está ocultando tudo.
+            </div>
+          )}
           {filteredConversations.length === 0 ? (
             <div className="p-10 flex flex-col items-center justify-center text-center opacity-40">
               <MessageSquare className="w-12 h-12 mb-4" />
@@ -1082,22 +1139,7 @@ export default function OmnichannelPage() {
                   <>
                     {activeConversation.assigned_user_id !== currentUser?.id && (
                       <button 
-                        onClick={async () => {
-                          const agentName = getAgentDisplayName(currentUser);
-                          const baseUrl = getApiBaseUrl();
-                          const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversation.id}/assign`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ userId: currentUser?.id, userName: agentName })
-                          });
-                          
-                          if (res.ok) {
-                            await loadConversations(true);
-                            toast.success('Atendimento iniciado e atribuído a você.');
-                          } else {
-                            toast.error('Erro ao assumir atendimento.');
-                          }
-                        }}
+                        onClick={() => handleAssumeConversation(activeConversation.id)}
                         className="p-2.5 bg-blue-600 text-white rounded-xl transition-all font-bold text-sm px-4 shadow-lg shadow-blue-100 hover:scale-105"
                       >
                         Assumir Atendimento

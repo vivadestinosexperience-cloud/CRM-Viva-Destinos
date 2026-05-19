@@ -751,19 +751,53 @@ const TABLES = {
 
   app.patch("/api/omnichannel/conversations/:id", async (req, res) => {
     const { id } = req.params;
-    const updates = req.body;
+    const body = req.body;
 
     try {
+      const allowedFields = [
+        "status",
+        "assigned_user_id",
+        "assigned_user_name",
+        "team_id",
+        "team_name",
+        "last_message",
+        "last_message_at",
+        "unread_count",
+        "started_at",
+        "closed_at",
+        "source"
+      ];
+
+      const updates: any = {};
+      for (const field of allowedFields) {
+        if (body[field] !== undefined) {
+          updates[field] = body[field];
+        }
+      }
+
+      // Automatically set dates based on status
+      if (updates.status === 'OPEN' && !updates.started_at) {
+        updates.started_at = new Date().toISOString();
+      }
+      if (['RESOLVED', 'CLOSED', 'CONCLUIDO'].includes(String(updates.status || "").toUpperCase()) && !updates.closed_at) {
+        updates.closed_at = new Date().toISOString();
+      }
+
+      updates.updated_at = new Date().toISOString();
+
       const { data, error } = await supabase.from(TABLES.conversations)
-        .update({
-          ...updates,
-          updated_at: new Date().toISOString()
-        })
+        .update(updates)
         .eq('id', id)
         .select()
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.error("[PATCH CONV ERR]", error);
+        return res.status(error.code === 'PGRST116' ? 404 : 400).json({ 
+          success: false, 
+          error: error.message 
+        });
+      }
 
       broadcastEvent("conversation.updated", data);
 
@@ -810,6 +844,15 @@ const TABLES = {
     const { message, agentId, agentName } = req.body;
 
     try {
+      // 0. Check Z-API config
+      const { missing } = getZapiConfig();
+      if (missing.includes("ZAPI_INSTANCE_ID") || missing.includes("ZAPI_INSTANCE_TOKEN")) {
+        return res.status(400).json({ 
+          success: false, 
+          error: "Z-API não configurada no servidor. Verifique o arquivo .env" 
+        });
+      }
+
       // 1. Get conversation and customer
       const { data: conversation, error: convErr } = await supabase.from(TABLES.conversations).select('*, customer:customer_id(*)').eq('id', id).single();
       if (convErr || !conversation) throw new Error("Conversa não encontrada.");
@@ -841,24 +884,34 @@ const TABLES = {
 
       if (msgErr) throw msgErr;
 
-      // 4. Update conversation
-      const { data: updatedConv, error: updateErr } = await supabase.from(TABLES.conversations).update({
+      // 4. Update conversation & Auto-assign if needed
+      const convUpdates: any = {
         last_message: message,
         last_message_at: new Date().toISOString(),
-        assigned_user_id: agentId || conversation.assigned_user_id,
-        assigned_user_name: agentName || conversation.assigned_user_name,
         status: 'OPEN',
         updated_at: new Date().toISOString()
-      }).eq('id', id).select().single();
+      };
 
-      if (updateErr) throw updateErr;
+      if (!conversation.assigned_user_id && agentId) {
+        convUpdates.assigned_user_id = agentId;
+        convUpdates.assigned_user_name = agentName || 'Agente';
+        convUpdates.started_at = new Date().toISOString();
+      }
+
+      const { data: updatedConv, error: updateErr } = await supabase.from(TABLES.conversations)
+        .update(convUpdates)
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (updateErr) console.error("Error auto-assigning/updating conv:", updateErr);
 
       broadcastEvent("message.received", {
-        conversation: updatedConv,
+        conversation: updatedConv || conversation,
         message: newMsg
       });
 
-      return res.json({ success: true, message: newMsg, conversation: updatedConv });
+      return res.json({ success: true, message: newMsg, conversation: updatedConv || conversation });
     } catch (err: any) {
       console.error("[SEND MESSAGE ERR]", err);
       return res.status(500).json({ success: false, error: getErrorMessage(err) });
