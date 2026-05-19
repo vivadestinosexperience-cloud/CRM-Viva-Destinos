@@ -15,21 +15,104 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [newPasswords, setNewPasswords] = useState({ password: '', confirm: '' });
+  const [tempUserId, setTempUserId] = useState<string | null>(null);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
 
-    const { error } = await authService.signIn(email, password);
+    const { data, error } = await authService.signIn(email, password);
     
     if (error) {
       setError('Credenciais inválidas. Verifique seu e-mail e senha.');
+      setLoading(false);
+    } else if (data?.user) {
+      // Check if user must change password
+      const { user } = await authService.getCurrentUser();
+      if (user?.profile?.must_change_password) {
+        setMustChangePassword(true);
+        setTempUserId(user.id);
+        setLoading(false);
+      } else {
+        onLogin();
+      }
     } else {
-      onLogin();
+       setLoading(false);
     }
-    
-    setLoading(false);
   };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPasswords.password !== newPasswords.confirm) {
+      toast.error("As senhas não conferem.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch('/api/me/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auth_user_id: tempUserId, password: newPasswords.password })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao alterar senha');
+      
+      toast.success("Senha alterada com sucesso! Bem-vindo.");
+      onLogin();
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (mustChangePassword) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full max-w-md bg-white rounded-3xl shadow-xl p-8 border border-slate-100 text-center">
+          <Logo size="large" className="mb-6 mx-auto" />
+          <h1 className="text-xl font-bold text-slate-800 tracking-tight mb-2 uppercase tracking-widest">Alterar Sua Senha</h1>
+          <p className="text-slate-400 text-xs mb-8 uppercase tracking-widest leading-relaxed">Você recebeu uma senha provisória e precisa cadastrar uma nova senha segura para continuar.</p>
+          
+          <form onSubmit={handleChangePassword} className="space-y-4 text-left">
+            <div>
+              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 px-2">Nova Senha</label>
+              <input 
+                type="password" 
+                required
+                className="w-full px-5 py-3.5 rounded-2xl border border-slate-200 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all text-sm font-medium"
+                placeholder="Mínimo 8 caracteres"
+                value={newPasswords.password}
+                onChange={(e) => setNewPasswords({...newPasswords, password: e.target.value})}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 px-2">Confirmar Nova Senha</label>
+              <input 
+                type="password" 
+                required
+                className="w-full px-5 py-3.5 rounded-2xl border border-slate-200 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all text-sm font-medium"
+                placeholder="Repita a nova senha"
+                value={newPasswords.confirm}
+                onChange={(e) => setNewPasswords({...newPasswords, confirm: e.target.value})}
+              />
+            </div>
+            <button 
+              disabled={loading}
+              type="submit"
+              className="w-full bg-slate-800 hover:bg-slate-900 text-white font-black text-xs uppercase tracking-widest py-4 rounded-2xl shadow-xl shadow-slate-200 transition-all active:scale-[0.98] disabled:opacity-50"
+            >
+              {loading ? 'Processando...' : 'Salvar e Acessar CRM'}
+            </button>
+          </form>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">

@@ -337,6 +337,25 @@ export default function ChannelsSettingsPage() {
     });
   };
 
+  const handleCleanupGroups = async () => {
+    toast.promise(
+      fetch('/api/zapi/cleanup-group-leaks', { method: 'POST' })
+        .then(async res => {
+          const data = await safeReadJson(res);
+          if (!res.ok || !data.success) throw data;
+          return data;
+        }),
+      {
+        loading: 'Limpando fila operacional...',
+        success: (data) => {
+          refreshConfigStatus();
+          return `Sucesso! ${data.updated} conversas de grupo removidas da fila.`;
+        },
+        error: (err) => `Erro na limpeza: ${getErrorMessage(err)}`
+      }
+    );
+  };
+
   const handleCopySupportMessage = () => {
     const message = `Olá, preciso localizar ou gerar o Client Token / Token de Segurança da conta da Z-API.
 No painel da instância só aparecem ID da instância e Token da instância.
@@ -539,12 +558,34 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                 <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Diagnóstico Omnichannel</h3>
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Status real da Z-API, webhooks e banco de dados</p>
               </div>
-              <button 
-                onClick={() => setShowDiagnosticModal(false)}
-                className="w-10 h-10 bg-slate-50 text-slate-400 rounded-full flex items-center justify-center hover:bg-slate-100 hover:text-slate-600 transition-all"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={async () => {
+                    if (!confirm('Deseja marcar como IGNORED conversas de grupos que já caíram no CRM?')) return;
+                    try {
+                      const res = await fetch('/api/admin/cleanup-group-conversations', { method: 'POST' });
+                      const data = await res.json();
+                      if (data.success) {
+                        alert(data.message);
+                        fetchDiagnostic();
+                      } else {
+                        alert('Erro: ' + data.error);
+                      }
+                    } catch (err) {
+                      alert('Erro na limpeza.');
+                    }
+                  }}
+                  className="px-4 py-2 bg-orange-50 text-orange-600 rounded-full text-[9px] font-black uppercase hover:bg-orange-100 transition-all border border-orange-100"
+                >
+                  Limpar Grupos
+                </button>
+                <button 
+                  onClick={() => setShowDiagnosticModal(false)}
+                  className="w-10 h-10 bg-slate-50 text-slate-400 rounded-full flex items-center justify-center hover:bg-slate-100 hover:text-slate-600 transition-all"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
             
             <div className="flex-1 overflow-y-auto p-8 space-y-10">
@@ -623,6 +664,7 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                              <th className="px-6 py-4">Telefone</th>
                              <th className="px-6 py-4">Status</th>
                              <th className="px-6 py-4">Data</th>
+                             <th className="px-6 py-4 text-right">Ações</th>
                           </tr>
                        </thead>
                        <tbody className="divide-y divide-slate-50">
@@ -632,14 +674,28 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                                 <td className="px-6 py-4 font-mono font-bold text-blue-600">{log.phone_normalized || log.raw_phone}</td>
                                 <td className="px-6 py-4">
                                    {log.processed ? (
-                                      <span className="text-emerald-600 font-black uppercase text-[9px]">Sincronizado</span>
+                                       <span className="text-emerald-600 font-black uppercase text-[9px] bg-emerald-50 px-2 py-1 rounded-md">SUCESSO</span>
                                    ) : log.ignored ? (
-                                      <span className="text-amber-500 font-black uppercase text-[9px]">Ignorado</span>
+                                       <div className="flex flex-col gap-0.5">
+                                          <span className="text-orange-600 font-black uppercase text-[9px] bg-orange-50 px-2 py-1 rounded-md w-fit">IGNORADO</span>
+                                          {log.error && <span className="text-[8px] text-orange-500 font-bold truncate max-w-[150px]" title={log.error}>{log.error}</span>}
+                                       </div>
                                    ) : (
-                                      <span className="text-rose-500 font-black uppercase text-[9px]">Erro/Pendete</span>
+                                       <div className="flex flex-col gap-0.5">
+                                          <span className="text-rose-600 font-black uppercase text-[9px] bg-rose-50 px-2 py-1 rounded-md w-fit">FALHA</span>
+                                          {log.error && <span className="text-[8px] text-rose-500 font-bold truncate max-w-[150px]" title={log.error}>{log.error}</span>}
+                                       </div>
                                    )}
                                 </td>
                                 <td className="px-6 py-4 text-slate-400">{new Date(log.created_at).toLocaleString()}</td>
+                                 <td className="px-6 py-4 text-right">
+                                    <button 
+                                       onClick={() => handleReprocessLog(log.id)}
+                                       className="px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-[9px] font-black uppercase hover:bg-slate-200 transition-all border border-slate-200"
+                                    >
+                                       Reprocessar
+                                    </button>
+                                 </td>
                              </tr>
                           ))}
                        </tbody>
@@ -678,12 +734,23 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
             
             <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Diagnostic v1.0 • Process ID: {Math.random().toString(36).substring(7)}</p>
-              <button 
-                onClick={() => setShowDiagnosticModal(false)}
-                className="px-10 py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-800 transition-all shadow-xl shadow-slate-200"
-              >
-                Fechar Painel
-              </button>
+              
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={handleCleanupGroups}
+                  className="px-6 py-4 bg-amber-500 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-amber-600 transition-all shadow-xl shadow-amber-100 flex items-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Limpar conversas de grupo da fila
+                </button>
+                
+                <button 
+                  onClick={() => setShowDiagnosticModal(false)}
+                  className="px-10 py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-800 transition-all shadow-xl shadow-slate-200"
+                >
+                  Fechar Painel
+                </button>
+              </div>
             </div>
           </motion.div>
         </div>

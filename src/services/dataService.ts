@@ -8,27 +8,64 @@ const handleError = (error: any, context: string) => {
 
 export const profilesService = {
   async list() {
-    const { data, error } = await supabase.from('profiles').select('*').order('name');
-    if (error) handleError(error, 'profilesService.list');
-    return data;
+    try {
+      const res = await fetch('/api/admin/users');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao carregar usuários');
+      return data.users || [];
+    } catch (err) {
+      // Fallback for direct DB access if API fails or for non-admin list
+      const { data, error } = await supabase.from('crm_users').select('*').order('name');
+      if (error) handleError(error, 'profilesService.list');
+      return data;
+    }
   },
   async getById(id: string) {
-    const { data, error } = await supabase.from('profiles').select('*').eq('id', id).single();
+    const { data, error } = await supabase.from('crm_users').select('*').eq('id', id).single();
     if (error) handleError(error, 'profilesService.getById');
     return data;
   },
-  async create(profile: any) {
-    const { data, error } = await supabase.from('profiles').insert(profile).select().single();
-    if (error) handleError(error, 'profilesService.create');
-    return data;
+  async create(user: any) {
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(user)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao criar usuário');
+      return data.user;
+    } catch (err: any) {
+      handleError(err, 'profilesService.create');
+    }
   },
   async update(id: string, updates: any) {
-    const { data, error } = await supabase.from('profiles').update(updates).eq('id', id).select().single();
-    if (error) handleError(error, 'profilesService.update');
+    try {
+      const res = await fetch(`/api/admin/users/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao atualizar usuário');
+      return data.user;
+    } catch (err: any) {
+      handleError(err, 'profilesService.update');
+    }
+  },
+  // Reset password helper
+  async resetPassword(id: string, passwordData: any) {
+    const res = await fetch(`/api/admin/users/${id}/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(passwordData)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Erro ao resetar senha');
     return data;
   },
   async remove(id: string) {
-    const { error } = await supabase.from('profiles').delete().eq('id', id);
+    const { error } = await supabase.from('crm_users').delete().eq('id', id);
     if (error) handleError(error, 'profilesService.remove');
   }
 };

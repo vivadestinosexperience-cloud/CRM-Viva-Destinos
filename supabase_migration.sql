@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS crm_conversations (
     last_message_at TIMESTAMPTZ,
     unread_count INT DEFAULT 0,
     campaign_id UUID,
+    started_at TIMESTAMPTZ,
+    closed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -68,7 +70,13 @@ CREATE TABLE IF NOT EXISTS crm_messages (
     to_phone TEXT,
     message_type TEXT DEFAULT 'text', 
     content TEXT,
+    caption TEXT,
     media_url TEXT,
+    media_storage_url TEXT,
+    storage_path TEXT,
+    media_mime_type TEXT,
+    media_file_name TEXT,
+    media_size BIGINT,
     status TEXT, 
     is_internal BOOLEAN DEFAULT FALSE,
     raw_payload JSONB,
@@ -97,7 +105,9 @@ CREATE TABLE IF NOT EXISTS zapi_webhook_logs (
     message_db_id UUID,
     payload JSONB,
     processed BOOLEAN DEFAULT FALSE,
-    error TEXT
+    ignored BOOLEAN DEFAULT FALSE,
+    error TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ÍNDICES E CONSTRAINTS EXTRAS
@@ -109,5 +119,53 @@ BEGIN
     
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_crm_conversations_phone_normalized') THEN
         CREATE UNIQUE INDEX idx_crm_conversations_phone_normalized ON crm_conversations(customer_phone_normalized);
+    END IF;
+
+    -- ADD MEDIA COLUMNS IF THEY MISSING (IDEMPOTENT)
+    -- crm_messages
+    ALTER TABLE crm_messages ADD COLUMN IF NOT EXISTS caption TEXT;
+    ALTER TABLE crm_messages ADD COLUMN IF NOT EXISTS media_storage_url TEXT;
+    ALTER TABLE crm_messages ADD COLUMN IF NOT EXISTS storage_path TEXT;
+    ALTER TABLE crm_messages ADD COLUMN IF NOT EXISTS media_mime_type TEXT;
+    ALTER TABLE crm_messages ADD COLUMN IF NOT EXISTS media_file_name TEXT;
+    ALTER TABLE crm_messages ADD COLUMN IF NOT EXISTS media_size BIGINT;
+
+    -- zapi_webhook_logs
+    ALTER TABLE zapi_webhook_logs ADD COLUMN IF NOT EXISTS ignored BOOLEAN DEFAULT FALSE;
+    ALTER TABLE zapi_webhook_logs ADD COLUMN IF NOT EXISTS event_type TEXT;
+    ALTER TABLE zapi_webhook_logs ADD COLUMN IF NOT EXISTS message_id TEXT;
+    ALTER TABLE zapi_webhook_logs ADD COLUMN IF NOT EXISTS raw_phone TEXT;
+    ALTER TABLE zapi_webhook_logs ADD COLUMN IF NOT EXISTS origin TEXT;
+    ALTER TABLE zapi_webhook_logs ADD COLUMN IF NOT EXISTS diagnostic JSONB;
+
+    -- crm_conversations
+    ALTER TABLE crm_conversations ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+    ALTER TABLE crm_conversations ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+
+    -- CRM USERS
+    CREATE TABLE IF NOT EXISTS public.crm_users (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      auth_user_id uuid UNIQUE,
+      name text NOT NULL,
+      email text NOT NULL UNIQUE,
+      role text NOT NULL DEFAULT 'agent',
+      team_id text DEFAULT 'comercial',
+      team_name text DEFAULT 'Comercial',
+      is_active boolean DEFAULT true,
+      must_change_password boolean DEFAULT true,
+      created_at timestamptz DEFAULT now(),
+      updated_at timestamptz DEFAULT now()
+    );
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_crm_users_auth_user_id') THEN
+      CREATE INDEX idx_crm_users_auth_user_id ON public.crm_users(auth_user_id);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_crm_users_email') THEN
+      CREATE INDEX idx_crm_users_email ON public.crm_users(email);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_crm_users_team_id') THEN
+      CREATE INDEX idx_crm_users_team_id ON public.crm_users(team_id);
     END IF;
 END $$;

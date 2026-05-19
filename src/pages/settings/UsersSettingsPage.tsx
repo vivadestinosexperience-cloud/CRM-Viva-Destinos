@@ -45,35 +45,52 @@ export default function UsersSettingsPage() {
     name: '',
     email: '',
     phone: '',
-    role: 'CONSULTANT',
-    teamId: '',
+    password: '',
+    confirmPassword: '',
+    role: 'agent',
+    teamId: 'comercial',
     status: 'ACTIVE'
+  });
+
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resettingUser, setResettingUser] = useState<User | null>(null);
+  const [resetData, setResetData] = useState({
+    password: '',
+    confirmPassword: ''
   });
 
   const handleSaveUser = (e: React.FormEvent) => {
     e.preventDefault();
     safeAction(async () => {
+      const selectedTeam = teams.find(t => t.id === formData.teamId);
+      const team_name = selectedTeam?.name || (formData.teamId === 'comercial' ? 'Comercial' : '');
+
       if (editingUser) {
         await updateUser({
           ...editingUser,
           name: formData.name,
-          email: formData.email,
-          phone: formData.phone,
           role: formData.role as UserRole,
-          status: formData.status as any,
-        });
+          team_id: formData.teamId,
+          team_name,
+          is_active: formData.status === 'ACTIVE'
+        } as any);
         toast.success(`Usuário ${formData.name} atualizado com sucesso!`);
       } else {
-        const newUser: User = {
-          id: `u${Date.now()}`,
+        // Enforce password for new users
+        if (!formData.password || formData.password !== formData.confirmPassword) {
+          toast.error("As senhas não conferem ou estão vazias.");
+          return;
+        }
+
+        const newUser: any = {
           name: formData.name,
           email: formData.email,
-          phone: formData.phone,
-          role: formData.role as any,
-          status: 'ACTIVE',
-          active: true,
-          online: false,
-          teamId: formData.teamId
+          password: formData.password,
+          confirmPassword: formData.confirmPassword,
+          role: formData.role,
+          team_id: formData.teamId || 'comercial',
+          team_name: team_name || 'Comercial',
+          is_active: true
         };
         await addUser(newUser);
         toast.success('Usuário criado com sucesso!');
@@ -90,21 +107,25 @@ export default function UsersSettingsPage() {
       name: '',
       email: '',
       phone: '',
-      role: 'CONSULTANT',
-      teamId: '',
+      password: '',
+      confirmPassword: '',
+      role: 'agent',
+      teamId: 'comercial',
       status: 'ACTIVE'
     });
   };
 
-  const handleEditClick = (user: User) => {
+  const handleEditClick = (user: any) => {
     setEditingUser(user);
     setFormData({
       name: user.name,
       email: user.email || '',
       phone: user.phone || '',
-      role: (user.role as any) || 'CONSULTANT',
-      teamId: user.teamId || '',
-      status: user.status || 'ACTIVE'
+      password: '',
+      confirmPassword: '',
+      role: user.role || 'agent',
+      teamId: user.team_id || '',
+      status: user.is_active === false ? 'INACTIVE' : 'ACTIVE'
     });
     setShowCreateModal(true);
     setActiveMenuId(null);
@@ -127,16 +148,24 @@ export default function UsersSettingsPage() {
     });
   };
 
-  const handleResetPassword = (name: string) => {
-    toast.promise(
-      new Promise((resolve) => setTimeout(resolve, 2000)),
-      {
-        loading: `Gerando link de recuperação para ${name}...`,
-        success: `Link de redefinição enviado para o e-mail de ${name}`,
-        error: 'Erro ao processar solicitação',
-      }
-    );
+  const handleResetPassword = (user: User) => {
+    setResettingUser(user);
+    setResetData({ password: '', confirmPassword: '' });
+    setShowResetModal(true);
     setActiveMenuId(null);
+  };
+
+  const submitResetPassword = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resettingUser) return;
+
+    safeAction(async () => {
+      const { profilesService } = await import('../../services/dataService');
+      await profilesService.resetPassword(resettingUser.id, resetData);
+      toast.success('Senha redefinida com sucesso.');
+      setShowResetModal(false);
+      setResettingUser(null);
+    }, { label: 'Erro ao redefinir senha' });
   };
 
   const filteredUsers = users.filter(u => 
@@ -242,17 +271,26 @@ export default function UsersSettingsPage() {
                   </td>
                   <td className="px-8 py-6">
                     <div className="flex flex-col gap-1">
-                      <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">{user.role || 'Consultor'}</span>
+                      <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">
+                        {user.role === 'admin' ? 'Administrador' : 
+                         user.role === 'supervisor' ? 'Supervisor' : 
+                         user.role === 'agent' ? 'Atendente' : 
+                         user.role === 'viewer' ? 'Visualizador' : 
+                         user.role || 'Consultor'}
+                      </span>
                       <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">
-                        {teams.find(t => t.id === user.teamId)?.name || 'Geral'}
+                        {user.team_name || teams.find(t => t.id === (user.team_id || user.teamId))?.name || 'Geral'}
                       </span>
                     </div>
                   </td>
                   <td className="px-8 py-6">
-                    <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${user.status === 'INACTIVE' ? 'bg-slate-100 text-slate-500' : 'bg-emerald-50 text-emerald-600'}`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${user.status === 'INACTIVE' ? 'bg-slate-400' : 'bg-emerald-500'} shadow-sm`}></span>
-                      {user.status === 'INACTIVE' ? 'Inativo' : 'Ativo'}
+                    <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${user.is_active === false || user.status === 'INACTIVE' ? 'bg-slate-100 text-slate-500' : 'bg-emerald-50 text-emerald-600'}`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${user.is_active === false || user.status === 'INACTIVE' ? 'bg-slate-400' : 'bg-emerald-500'} shadow-sm`}></span>
+                      {user.is_active === false || user.status === 'INACTIVE' ? 'Inativo' : 'Ativo'}
                     </div>
+                    {(user as any).must_change_password && (
+                       <p className="text-[8px] text-amber-500 font-black uppercase mt-1">Exige troca de senha</p>
+                    )}
                   </td>
                   <td className="px-8 py-6 text-right relative">
                     <div className="flex items-center justify-end gap-2">
@@ -297,9 +335,9 @@ export default function UsersSettingsPage() {
                               )}
                            </button>
                            
-                           <button onClick={() => handleResetPassword(user.name)} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-2xl transition-all text-xs font-bold text-slate-600 group">
+                           <button onClick={() => handleResetPassword(user)} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 rounded-2xl transition-all text-xs font-bold text-slate-600 group">
                               <Key className="w-4 h-4 text-slate-300 group-hover:text-primary" />
-                              Resetar Senha / Enviar Link
+                              Redefinir Senha
                            </button>
 
                            <div className="h-px bg-slate-50 my-1 mx-2" />
@@ -406,7 +444,8 @@ export default function UsersSettingsPage() {
                     <input 
                       required
                       type="email" 
-                      className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-4 focus:ring-primary/10 focus:border-primary/10 transition-all text-sm font-medium"
+                      disabled={!!editingUser}
+                      className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-4 focus:ring-primary/10 focus:border-primary/10 transition-all text-sm font-medium disabled:opacity-50"
                       placeholder="joao@viva.com"
                       value={formData.email}
                       onChange={(e) => setFormData({...formData, email: e.target.value})}
@@ -422,11 +461,10 @@ export default function UsersSettingsPage() {
                         value={formData.role}
                         onChange={(e) => setFormData({...formData, role: e.target.value})}
                       >
-                        <option value="ADMIN">Administrador do Sistema</option>
-                        <option value="MANAGER">Gestor de Equipes</option>
-                        <option value="SUPERVISOR">Supervisor</option>
-                        <option value="CONSULTANT">Consultor de Viagens</option>
-                        <option value="SUPPORT">Atendimento ao Cliente</option>
+                        <option value="admin">Administrador</option>
+                        <option value="supervisor">Supervisor</option>
+                        <option value="agent">Atendente</option>
+                        <option value="viewer">Visualizador</option>
                       </select>
                       <ArrowRight className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 rotate-90" />
                     </div>
@@ -441,14 +479,46 @@ export default function UsersSettingsPage() {
                         value={formData.teamId}
                         onChange={(e) => setFormData({...formData, teamId: e.target.value})}
                       >
-                        <option value="">Sem Equipe</option>
-                        {teams.map(t => (
+                        <option value="comercial">Comercial</option>
+                        {teams.filter(t => t.id !== 'comercial').map(t => (
                           <option key={t.id} value={t.id}>{t.name}</option>
                         ))}
                       </select>
                       <ArrowRight className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 rotate-90" />
                     </div>
                   </div>
+
+                  {!editingUser && (
+                    <>
+                      <div className="space-y-2">
+                        <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] px-2 flex items-center gap-2">
+                          <Key className="w-3 h-3 text-primary" /> Senha Inicial
+                        </label>
+                        <input 
+                          required
+                          type="password" 
+                          className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-4 focus:ring-primary/10 transition-all text-sm font-medium transition-all"
+                          placeholder="Mínimo 8 caracteres"
+                          value={formData.password}
+                          onChange={(e) => setFormData({...formData, password: e.target.value})}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] px-2 flex items-center gap-2">
+                          <Key className="w-3 h-3 text-primary" /> Confirmar Senha
+                        </label>
+                        <input 
+                          required
+                          type="password" 
+                          className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-4 focus:ring-primary/10 transition-all text-sm font-medium transition-all"
+                          placeholder="Repita a senha"
+                          value={formData.confirmPassword}
+                          onChange={(e) => setFormData({...formData, confirmPassword: e.target.value})}
+                        />
+                      </div>
+                    </>
+                  )}
+
                   <div className="space-y-2">
                     <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] px-2 flex items-center gap-2">
                        <Phone className="w-3 h-3 text-primary" /> Telefone / WhatsApp
@@ -482,6 +552,83 @@ export default function UsersSettingsPage() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Reset Password Modal */}
+      <AnimatePresence>
+        {showResetModal && resettingUser && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+            <motion.div 
+               initial={{ opacity: 0 }}
+               animate={{ opacity: 1 }}
+               exit={{ opacity: 0 }}
+               onClick={() => {
+                 setShowResetModal(false);
+                 setResettingUser(null);
+               }}
+               className="absolute inset-0 bg-slate-900/60 backdrop-blur-md"
+            />
+            <motion.div 
+               initial={{ opacity: 0, scale: 0.95, y: 20 }}
+               animate={{ opacity: 1, scale: 1, y: 0 }}
+               exit={{ opacity: 0, scale: 0.95, y: 20 }}
+               className="relative w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl border border-slate-100 overflow-hidden"
+            >
+               <div className="p-8 border-b border-slate-50 bg-slate-50/30">
+                  <h2 className="text-lg font-black text-slate-800 uppercase tracking-widest flex items-center gap-3">
+                     <Key className="w-5 h-5 text-primary" /> Redefinir Senha
+                  </h2>
+                  <p className="text-xs text-slate-400 font-bold mt-1 uppercase tracking-tighter">
+                     Defina uma nova senha de acesso para {resettingUser.name}
+                  </p>
+               </div>
+               
+               <form onSubmit={submitResetPassword} className="p-8 space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] px-2">Nova Senha</label>
+                    <input 
+                      required
+                      type="password" 
+                      className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-4 focus:ring-primary/10 transition-all text-sm font-medium"
+                      placeholder="Mínimo 8 caracteres"
+                      value={resetData.password}
+                      onChange={(e) => setResetData({...resetData, password: e.target.value})}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] px-2">Confirmar Nova Senha</label>
+                    <input 
+                      required
+                      type="password" 
+                      className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-4 focus:ring-primary/10 transition-all text-sm font-medium"
+                      placeholder="Repita a nova senha"
+                      value={resetData.confirmPassword}
+                      onChange={(e) => setResetData({...resetData, confirmPassword: e.target.value})}
+                    />
+                  </div>
+                  
+                  <div className="flex items-center justify-end gap-4 pt-4">
+                    <button 
+                      type="button"
+                      onClick={() => {
+                        setShowResetModal(false);
+                        setResettingUser(null);
+                      }}
+                      className="px-6 py-3 text-slate-400 font-black text-[10px] uppercase tracking-widest hover:bg-slate-50 rounded-2xl transition-all"
+                    >
+                      Cancelar
+                    </button>
+                    <button 
+                      type="submit"
+                      className="px-8 py-4 bg-slate-800 text-white font-black text-xs uppercase tracking-[0.2em] rounded-2xl shadow-xl shadow-slate-900/20 hover:brightness-110 transition-all active:scale-95"
+                    >
+                      Alterar Senha
+                    </button>
+                  </div>
+               </form>
             </motion.div>
           </div>
         )}

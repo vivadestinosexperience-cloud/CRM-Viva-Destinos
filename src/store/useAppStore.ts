@@ -863,16 +863,61 @@ export const useAppStore = create<AppState>()(
           }));
           toast.warning('Removido localmente');
         }
+        // 3. Listen to CRM Users
+        const usersChannel = supabase
+          .channel('users-realtime')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_users' }, (payload) => {
+            const { eventType, new: newRecord, old: oldRecord } = payload;
+            set(state => {
+              if (eventType === 'INSERT' || eventType === 'UPDATE') {
+                const user = newRecord as any;
+                const matchIndex = state.users.findIndex(u => u.id === user.id);
+                if (matchIndex > -1) {
+                  const updatedUsers = [...state.users];
+                  updatedUsers[matchIndex] = { ...updatedUsers[matchIndex], ...user };
+                  return { users: updatedUsers };
+                }
+                return { users: [user, ...state.users] };
+              } else if (eventType === 'DELETE') {
+                return { users: state.users.filter(u => u.id !== oldRecord.id) };
+              }
+              return state;
+            });
+          })
+          .subscribe();
+
+        // 4. Listen to Teams
+        const teamsChannel = supabase
+          .channel('teams-realtime')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_teams' }, (payload) => {
+            const { eventType, new: newRecord, old: oldRecord } = payload;
+            set(state => {
+              if (eventType === 'INSERT' || eventType === 'UPDATE') {
+                const team = newRecord as any;
+                const matchIndex = state.teams.findIndex(t => t.id === team.id);
+                if (matchIndex > -1) {
+                  const updatedTeams = [...state.teams];
+                  updatedTeams[matchIndex] = { ...updatedTeams[matchIndex], ...team };
+                  return { teams: updatedTeams };
+                }
+                return { teams: [team, ...state.teams] };
+              } else if (eventType === 'DELETE') {
+                return { teams: state.teams.filter(t => t.id !== oldRecord.id) };
+              }
+              return state;
+            });
+          })
+          .subscribe();
       },
 
       resetState: () => set({
         appearance: DEFAULT_APPEARANCE,
-        users: MOCK_USERS,
-        teams: MOCK_TEAMS,
-        whatsAppAccounts: MOCK_WHATSAPP_ACCOUNTS,
-        customers: MOCK_CUSTOMERS,
-        conversations: MOCK_CONVERSATIONS,
-        messages: MOCK_MESSAGES,
+        users: [],
+        teams: [],
+        whatsAppAccounts: [],
+        customers: [],
+        conversations: [],
+        messages: [],
         campaigns: [],
         campaignRecipients: [],
         tags: [],

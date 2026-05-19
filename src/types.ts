@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type UserRole = 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'CONSULTANT' | 'SUPPORT' | 'FINANCE' | 'POSTVENDAS' | 'VIEWER';
+export type UserRole = 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'CONSULTANT' | 'SUPPORT' | 'FINANCE' | 'POSTVENDAS' | 'VIEWER' | 'admin' | 'supervisor' | 'agent' | 'viewer';
 
 export interface User {
   id: string;
@@ -16,6 +16,14 @@ export interface User {
   active: boolean;
   status?: string;
   teamId?: string;
+  
+  // New CRM fields
+  team_id?: string;
+  team_name?: string;
+  is_active?: boolean;
+  must_change_password?: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Team {
@@ -118,7 +126,13 @@ export interface Message {
   to_phone?: string;
   message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'template' | 'internal_note';
   content: string;
+  caption?: string;
   media_url?: string;
+  media_storage_url?: string;
+  storage_path?: string;
+  media_mime_type?: string;
+  media_file_name?: string;
+  media_size?: number;
   status: 'sent' | 'delivered' | 'read' | 'failed' | 'deleted' | 'sending' | 'received';
   is_internal?: boolean;
   raw_payload?: any;
@@ -130,6 +144,7 @@ export interface Message {
   created_at?: string;
   
   // Legacy compatibility
+  display_media_url?: string;
   timestamp?: string;
   conversationId?: string;
   type?: string;
@@ -207,12 +222,17 @@ export interface Conversation {
   assigned_user_id?: string;
   assigned_user_name?: string;
   queue_id?: string;
+  queue_name?: string;
+  team_id?: string;
+  team_name?: string;
   last_message?: string;
   last_message_at?: string;
   unread_count?: number;
   source?: string;
   created_at?: string;
   updated_at?: string;
+  started_at?: string;
+  closed_at?: string;
 
   // Internal Note
   internal_note?: InternalNote;

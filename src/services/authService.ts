@@ -38,10 +38,17 @@ export const authService = {
     
     if (user) {
       const { data: profile } = await supabase
-        .from('profiles')
+        .from('crm_users')
         .select('*')
-        .eq('id', user.id)
+        .eq('auth_user_id', user.id)
         .single();
+      
+      // Fallback if crm_users doesn't have the entry yet (e.g. legacy/direct auth)
+      if (!profile) {
+        console.warn(`[AUTH] User ${user.id} has no crm_users entry.`);
+        return { user: { ...user }, error: null };
+      }
+
       return { user: { ...user, profile }, error: null };
     }
     

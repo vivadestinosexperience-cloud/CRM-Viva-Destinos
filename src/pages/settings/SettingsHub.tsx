@@ -17,8 +17,12 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
+import { useAppStore } from '../../store/useAppStore';
+
 export default function SettingsHub() {
   const navigate = useNavigate();
+  const { currentUser } = useAppStore();
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'ADMIN';
 
   const settingCards = [
     {
@@ -27,7 +31,8 @@ export default function SettingsHub() {
       description: 'Gerencie os usuários que podem acessar a ferramenta.',
       icon: Users,
       color: 'bg-blue-500',
-      path: '/app/ajustes/usuarios'
+      path: '/app/ajustes/usuarios',
+      adminOnly: true
     },
     {
       id: 'equipes',
@@ -35,7 +40,8 @@ export default function SettingsHub() {
       description: 'Organize consultores, atendimento e equipes da agência.',
       icon: Briefcase,
       color: 'bg-emerald-500',
-      path: '/app/ajustes/equipes'
+      path: '/app/ajustes/equipes',
+      adminOnly: true
     },
     {
       id: 'permissoes',
@@ -43,7 +49,8 @@ export default function SettingsHub() {
       description: 'Defina o que cada perfil pode visualizar e executar.',
       icon: ShieldCheck,
       color: 'bg-purple-500',
-      path: '/app/ajustes/permissoes'
+      path: '/app/ajustes/permissoes',
+      adminOnly: true
     },
     {
       id: 'canais',
@@ -51,7 +58,8 @@ export default function SettingsHub() {
       description: 'Configure os canais usados para atendimento omnichannel.',
       icon: MessageSquare,
       color: 'bg-green-500',
-      path: '/app/ajustes/canais'
+      path: '/app/ajustes/canais',
+      adminOnly: true
     },
     {
       id: 'conta',
@@ -59,7 +67,8 @@ export default function SettingsHub() {
       description: 'Configure dados da agência, logo e horários de atendimento.',
       icon: Settings,
       color: 'bg-slate-500',
-      path: '/app/ajustes/conta'
+      path: '/app/ajustes/conta',
+      adminOnly: true
     },
     {
       id: 'tags',
@@ -67,7 +76,8 @@ export default function SettingsHub() {
       description: 'Crie e organize etiquetas para segmentar seus clientes e conversas.',
       icon: TagIcon,
       color: 'bg-amber-500',
-      path: '/app/ajustes/tags'
+      path: '/app/ajustes/tags',
+      adminOnly: false
     },
     {
       id: 'aparencia',
@@ -75,9 +85,10 @@ export default function SettingsHub() {
       description: 'Personalize o tema, cores e densidade visual do CRM.',
       icon: Palette,
       color: 'bg-pink-500',
-      path: '/app/ajustes/aparencia'
+      path: '/app/ajustes/aparencia',
+      adminOnly: false
     }
-  ];
+  ].filter(card => !card.adminOnly || isAdmin);
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8">

@@ -98,22 +98,31 @@ export default function OmnichannelPage() {
   function getApiBaseUrl() {
     const envUrl = import.meta.env.VITE_API_BASE_URL;
     if (envUrl) return envUrl.replace(/\/$/, "");
-    if (
-      window.location.hostname === "localhost" ||
-      window.location.hostname.includes("webcontainer") ||
-      window.location.hostname.includes("preview") ||
-      window.location.hostname.includes("aistudio")
-    ) {
-      return "https://crm-viva-destinos-experience.onrender.com";
-    }
     return "";
   }
 
-  const isClosedConversation = (conversation: any) => {
+  const isIgnoredConversation = (conversation: any) => {
     const status = String(conversation.status || "").toUpperCase();
-    return ["CLOSED", "RESOLVED", "CONCLUIDO", "CONCLUÍDO"].includes(status);
+    return ["IGNORED", "IGNORADO"].includes(status);
   };
 
+  const isClosedConversation = (conversation: any) => {
+    const status = String(conversation.status || "").toUpperCase();
+    return ["CLOSED", "RESOLVED", "CONCLUIDO", "CONCLUÍDO", "FINALIZADO"].includes(status);
+  };
+
+  // Sync state if active conversation becomes ignored
+  useEffect(() => {
+    if (!activeConversationId) return;
+    const active = conversations.find(c => c.id === activeConversationId);
+    if (active && isIgnoredConversation(active)) {
+      setActiveConversationId(null);
+      setMessages([]);
+    }
+  }, [conversations, activeConversationId]);
+
+  const visibleConversations = conversations.filter(c => !isIgnoredConversation(c));
+  
   async function loadConversations(silent = false) {
     if (!silent) setLoadingConversations(true);
     try {
@@ -225,8 +234,9 @@ export default function OmnichannelPage() {
   function renderMessageContent(message: Message) {
     if (!message) return null;
 
-    const type = message.message_type || (message as any).type || "text";
-    const content = renderSafeText(message.content, "Mensagem recebida");
+    const type = (message as any).message_type || (message as any).type || "text";
+    const content = renderSafeText(message.content, "");
+    const mediaUrl = (message as any).display_media_url || (message as any).media_storage_url || message.media_url;
 
     if (type === "internal_note" || (message as any).is_internal) {
       return (
@@ -245,16 +255,19 @@ export default function OmnichannelPage() {
     if (type === "image") {
       return (
         <div className="space-y-2">
-          {message.media_url && (
+          {mediaUrl ? (
              <img 
-               src={message.media_url} 
-               alt="Anexo" 
-               className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity shadow-sm"
-               onClick={() => window.open(message.media_url, '_blank')}
+               src={mediaUrl} 
+               alt={message.caption || content || "Imagem"} 
+               className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity shadow-sm border border-slate-100"
+               onClick={() => window.open(mediaUrl, '_blank')}
+               onError={(e) => { e.currentTarget.style.display = 'none'; }}
              />
+          ) : (
+            <div className="text-[10px] text-red-500 italic">Imagem indisponível</div>
           )}
-          {content && content !== "Imagem enviada" && content !== "Imagem recebida" && (
-            <p className="text-sm">{content}</p>
+          {(message.caption || (content && content !== "Imagem enviada" && content !== "Imagem recebida")) && (
+            <p className="text-sm">{message.caption || content}</p>
           )}
         </div>
       );
@@ -263,10 +276,12 @@ export default function OmnichannelPage() {
     if (type === "audio") {
       return (
         <div className="space-y-2 min-w-[200px]">
-          {message.media_url && (
-            <audio controls src={message.media_url} className="w-full h-8" />
+          {mediaUrl ? (
+            <audio controls src={mediaUrl} className="w-full h-10" />
+          ) : (
+            <div className="text-[10px] text-red-500 italic">Áudio indisponível</div>
           )}
-          {content && content !== "Áudio enviado" && content !== "Áudio recebido" && (
+          {(content && content !== "Áudio enviado" && content !== "Áudio recebido") && (
             <p className="text-sm">{content}</p>
           )}
         </div>
@@ -276,11 +291,13 @@ export default function OmnichannelPage() {
     if (type === "video") {
       return (
         <div className="space-y-2">
-          {message.media_url && (
-            <video controls src={message.media_url} className="max-w-full rounded-lg shadow-sm" />
+          {mediaUrl ? (
+            <video controls src={mediaUrl} className="max-w-full rounded-lg shadow-sm border border-slate-100" />
+          ) : (
+            <div className="text-[10px] text-red-500 italic">Vídeo indisponível</div>
           )}
-          {content && content !== "Vídeo enviado" && content !== "Vídeo recebido" && (
-            <p className="text-sm">{content}</p>
+          {(message.caption || (content && content !== "Vídeo enviado" && content !== "Vídeo recebido")) && (
+            <p className="text-sm">{message.caption || content}</p>
           )}
         </div>
       );
@@ -289,26 +306,26 @@ export default function OmnichannelPage() {
     if (type === "document") {
       return (
         <div className="space-y-2">
-          {message.media_url ? (
+          {mediaUrl ? (
             <a 
-              href={message.media_url} 
+              href={mediaUrl} 
               target="_blank" 
               rel="noreferrer"
-              className="flex items-center gap-2 p-2 bg-black/5 rounded-lg hover:bg-black/10 transition-colors"
+              className="flex items-center gap-2 p-3 bg-black/5 rounded-xl hover:bg-black/10 transition-colors border border-black/5"
             >
-              <FileIcon className="w-5 h-5 shrink-0" />
+              <FileIcon className="w-6 h-6 shrink-0 text-blue-600" />
               <div className="min-w-0">
-                <p className="text-xs font-bold truncate">{(message.metadata as any)?.fileName || 'Documento'}</p>
-                <p className="text-[10px] opacity-60">Clique para abrir</p>
+                <p className="text-xs font-bold truncate">{(message as any).media_file_name || (message.metadata as any)?.fileName || 'Documento'}</p>
+                <p className="text-[10px] opacity-60">Clique aqui para baixar</p>
               </div>
             </a>
           ) : (
             <div className="flex items-center gap-2 p-2 bg-black/5 rounded-lg opacity-50">
-              <FileIcon className="w-5 h-5" />
+              <FileIcon className="w-5 h-5 font-bold" />
               <p className="text-xs">Documento indisponível</p>
             </div>
           )}
-          {content && content !== "Documento enviado" && content !== "Documento recebido" && (
+          {(content && content !== "Documento enviado" && content !== "Documento recebido") && (
             <p className="text-sm">{content}</p>
           )}
         </div>
@@ -413,7 +430,7 @@ export default function OmnichannelPage() {
   };
 
   const handleSendAudio = async () => {
-    if (!audioBlob || !activeConversationId || !activeCustomer) return;
+    if (!audioBlob || !activeConversationId) return;
     
     // Max 16MB
     if (audioBlob.size > 16 * 1024 * 1024) {
@@ -422,21 +439,27 @@ export default function OmnichannelPage() {
     }
 
     setIsSendingMedia(true);
+    const agentName = getAgentDisplayName(currentUser);
+
     await safeAction(async () => {
-      const base64 = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(audioBlob);
-        reader.onloadend = () => resolve(reader.result as string);
-      });
-
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/zapi/send-audio`, {
+      const audioFile = new File([audioBlob], `audio-${Date.now()}.webm`, { type: audioBlob.type || 'audio/webm' });
+      
+      const formData = new FormData();
+      formData.append('file', audioFile);
+      formData.append('type', 'audio');
+      formData.append('sender_user_id', currentUser?.id || '');
+      formData.append('sender_name', agentName);
+
+      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-media`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: activeCustomer.phone, audio: base64 })
+        body: formData
       });
 
-      if (!res.ok) throw await res.json();
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw errorData;
+      }
 
       await loadMessages(activeConversationId, true);
       await loadConversations(true);
@@ -449,7 +472,7 @@ export default function OmnichannelPage() {
     setIsSendingMedia(false);
   };
   function getFilteredConversations() {
-    return conversations.filter((conversation) => {
+    return visibleConversations.filter((conversation) => {
       const isClosed = isClosedConversation(conversation);
       const assignedUserId = conversation.assigned_user_id;
 
@@ -506,8 +529,9 @@ export default function OmnichannelPage() {
         body: JSON.stringify({ 
           assigned_user_id: currentUser?.id, 
           assigned_user_name: agentName,
-          status: 'OPEN'
-          // started_at is handled by backend PATCH
+          status: 'OPEN',
+          team_id: 'comercial', // Default to Comercial if missing
+          team_name: 'Comercial'
         })
       });
       
@@ -594,13 +618,17 @@ export default function OmnichannelPage() {
       }
 
       // 2. Create conversation
+      const selectedTeam = teams.find(t => t.id === newChatData.teamId);
       const convRes = await fetch(`${baseUrl}/api/omnichannel/conversations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customer_id: finalCustomerId,
           whatsapp_account_id: newChatData.accountId,
+          team_id: newChatData.teamId,
+          team_name: selectedTeam?.name || 'Comercial',
           queue_id: newChatData.teamId,
+          queue_name: selectedTeam?.name || 'Comercial',
           assigned_user_id: currentUser?.id,
           assigned_user_name: getAgentDisplayName(currentUser),
           status: 'OPEN',
@@ -809,48 +837,35 @@ export default function OmnichannelPage() {
   };
 
   const handleSendMedia = async () => {
-    if (!selectedFile || !activeConversationId || !activeCustomer) return;
+    if (!selectedFile || !activeConversationId) return;
 
     setIsSendingMedia(true);
     const agentName = getAgentDisplayName(currentUser);
-    const formattedCaption = mediaCaption ? formatOutgoingWhatsAppMessage(mediaCaption, agentName) : '';
     
     setShowMediaPreview(false);
 
     await safeAction(async () => {
-      const base64 = await fileToBase64(selectedFile);
       const baseUrl = getApiBaseUrl();
-      
-      let endpoint = '';
-      let body: any = { phone: activeCustomer.phone };
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('type', mediaType || 'document');
+      formData.append('caption', mediaCaption || '');
+      formData.append('sender_user_id', currentUser?.id || '');
+      formData.append('sender_name', agentName);
 
-      if (mediaType === 'image') {
-        endpoint = `${baseUrl}/api/zapi/send-image`;
-        body.image = base64;
-        body.caption = formattedCaption;
-      } else if (mediaType === 'video') {
-        endpoint = `${baseUrl}/api/zapi/send-video`;
-        body.video = base64;
-        body.caption = formattedCaption;
-      } else if (mediaType === 'document') {
-        endpoint = `${baseUrl}/api/zapi/send-document`;
-        body.document = base64;
-        body.fileName = selectedFile.name;
-        body.extension = selectedFile.name.split('.').pop() || '';
-        body.caption = formattedCaption;
-      }
-
-      const res = await fetch(endpoint, {
+      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-media`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: formData
       });
 
-      if (!res.ok) throw await res.json();
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw errorData;
+      }
       
       await loadMessages(activeConversationId, true);
       await loadConversations(true);
-      toast.success(`${mediaType === 'image' ? 'Foto' : (mediaType === 'video' ? 'Vídeo' : 'Documento')} enviado com sucesso!`);
+      toast.success('Mídia enviada com sucesso!');
 
       // Reset state
       setSelectedFile(null);
@@ -944,47 +959,32 @@ export default function OmnichannelPage() {
             </div>
           </div>
 
-          {/* Temporarily Debug Block */}
-          <div className="mb-4 p-3 bg-amber-50 border border-amber-100 rounded-xl text-[9px] font-mono text-amber-800 space-y-1">
-             <div className="flex justify-between font-bold border-b border-amber-100 pb-1 mb-1">
-                <span>DIAGNÓSTICO API</span>
-                <span>{new Date().toLocaleTimeString()}</span>
-             </div>
-             <p>• Total Bruto: {conversations.length}</p>
-             <p>• Novos: {conversations.filter(c => !c.assigned_user_id && !isClosedConversation(c)).length}</p>
-             <p>• Meus: {conversations.filter(c => c.assigned_user_id === currentUser?.id && !isClosedConversation(c)).length}</p>
-             <p>• Concluídos: {conversations.filter(c => isClosedConversation(c)).length}</p>
-             {conversations.length > 0 && (
-               <div className="mt-1 pt-1 border-t border-amber-100 text-[8px] opacity-70">
-                 Primeiro da fila: {conversations[0]?.customer_phone_normalized} | ID: {conversations[0]?.id.substring(0,8)}...
-               </div>
-             )}
-          </div>
+
           
           <div className="flex bg-slate-50 p-1 rounded-xl mb-4 overflow-x-auto no-scrollbar">
             <button 
               onClick={() => setActiveTab('novos')}
               className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${activeTab === 'novos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              Novos ({conversations.filter(c => !c.assigned_user_id && !isClosedConversation(c)).length})
+              Novos ({visibleConversations.filter(c => !c.assigned_user_id && !isClosedConversation(c)).length})
             </button>
             <button 
               onClick={() => setActiveTab('meus')}
               className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${activeTab === 'meus' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              Meus ({conversations.filter(c => c.assigned_user_id === currentUser?.id && !isClosedConversation(c)).length})
+              Meus ({visibleConversations.filter(c => c.assigned_user_id === currentUser?.id && !isClosedConversation(c)).length})
             </button>
             <button 
               onClick={() => setActiveTab('concluidos')}
               className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${activeTab === 'concluidos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              Concluídos ({conversations.filter(c => isClosedConversation(c)).length})
+              Concluídos ({visibleConversations.filter(c => isClosedConversation(c)).length})
             </button>
             <button 
               onClick={() => setActiveTab('todos')}
               className={`flex-1 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${activeTab === 'todos' ? 'bg-white shadow-md text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              Todos ({conversations.length})
+              Todos ({visibleConversations.length})
             </button>
           </div>
 
@@ -1001,11 +1001,7 @@ export default function OmnichannelPage() {
         </div>
 
           <div className="flex-1 overflow-y-auto divide-y divide-slate-50">
-          {conversations.length > 0 && filteredConversations.length === 0 && (
-            <div className="p-4 bg-red-50 border-b border-red-100 text-[10px] text-red-600 font-bold text-center animate-pulse">
-              ALERTA: A API retornou {conversations.length} conversas, mas o filtro da aba "{activeTab}" está ocultando tudo.
-            </div>
-          )}
+
           {filteredConversations.length === 0 ? (
             <div className="p-10 flex flex-col items-center justify-center text-center opacity-40">
               <MessageSquare className="w-12 h-12 mb-4" />
@@ -1019,7 +1015,8 @@ export default function OmnichannelPage() {
           ) : filteredConversations.map((conv) => {
             const customer = conv.customer || customers.find(c => c.id === conv.customer_id);
             const isActive = activeConversationId === conv.id;
-            const team = teams.find(t => t.id === conv.queue_id);
+            const teamId = conv.team_id || conv.queue_id;
+            const team = teams.find(t => t.id === teamId);
             const account = whatsAppAccounts.find(a => a.id === conv.whatsapp_account_id);
             const lastMsgAt = conv.last_message_at || conv.updated_at || conv.created_at;
 
@@ -1205,7 +1202,7 @@ export default function OmnichannelPage() {
               </div>
               <div className="flex items-center gap-4">
                 <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Número: {currentAccount?.phone_number || currentAccount?.number || '---'}</span>
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Equipe: {teams.find(t => t.id === activeConversation?.queue_id)?.name || 'Geral'}</span>
+                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">Equipe: {teams.find(t => t.id === (activeConversation?.team_id || activeConversation?.queue_id))?.name || 'Geral'}</span>
               </div>
             </div>
 
@@ -1951,13 +1948,13 @@ export default function OmnichannelPage() {
                   </select>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Consultor de Destino (Opcional)</label>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Atendente de Destino (Opcional)</label>
                   <select 
                     className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 transition-all appearance-none"
                     value={transferData.userId}
                     onChange={(e) => setTransferData({...transferData, userId: e.target.value})}
                   >
-                    <option value="">Qualquer Consultor</option>
+                    <option value="">Qualquer Atendente</option>
                     {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
                   </select>
                 </div>
