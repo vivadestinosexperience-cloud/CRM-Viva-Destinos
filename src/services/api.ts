@@ -1,6 +1,12 @@
 import { supabase } from '../integrations/supabase/client';
 
 export function getApiBaseUrl() {
+  // Em desenvolvimento ou se estivermos rodando no editor do AI Studio,
+  // preferimos caminhos relativos para evitar erros de CORS ou apontar para o servidor errado.
+  if (import.meta.env.DEV) {
+    return "";
+  }
+
   const envUrl = import.meta.env.VITE_API_BASE_URL;
 
   if (envUrl && String(envUrl).trim()) {

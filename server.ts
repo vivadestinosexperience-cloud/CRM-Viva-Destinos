@@ -911,10 +911,20 @@ const DEFAULT_TEAM = {
 
   // --- Campaign Helpers ---
   function renderCampaignMessage(template: string, recipient: any) {
-    return String(template || "")
+    let result = String(template || "")
       .replaceAll("{{nome}}", recipient.name || "cliente")
       .replaceAll("{name}", recipient.name || "cliente")
       .replaceAll("{{telefone}}", recipient.phone_normalized || recipient.phone || "");
+
+    // Substituir campos extras do metadata
+    if (recipient.metadata && typeof recipient.metadata === 'object') {
+      Object.entries(recipient.metadata).forEach(([key, value]) => {
+        const placeholder = `{{${key}}}`;
+        result = result.replaceAll(placeholder, String(value || ""));
+      });
+    }
+
+    return result;
   }
 
   async function refreshCampaignStats(campaignId: string) {
@@ -1182,7 +1192,7 @@ const DEFAULT_TEAM = {
       } catch (error) {
         console.error("[CAMPAIGN WORKER LOOP ERROR]", error);
       }
-    }, 15000); // Check every 15 seconds
+    }, 10000); // Check every 10 seconds
   }
 
   async function saveWebhookLog(data: any) {
@@ -3186,6 +3196,53 @@ const DEFAULT_TEAM = {
     }
   });
 
+  app.post("/api/campaigns/:id/retry-failed", async (req, res) => {
+    try {
+      const { id } = req.params;
+      
+      // Marcar destinatários FAILED como PENDING
+      const { error } = await supabaseAdmin
+        .from(TABLES.campaign_recipients)
+        .update({
+          status: "PENDING",
+          error_message: null,
+          attempts: 0,
+          updated_at: new Date().toISOString()
+        })
+        .eq("campaign_id", id)
+        .eq("status", "FAILED");
+
+      if (error) throw error;
+
+      // Se a campanha não estiver rodando, coloca pra rodar
+      const { data: campaign } = await supabaseAdmin
+        .from(TABLES.campaigns)
+        .select("status")
+        .eq("id", id)
+        .single();
+
+      if (campaign?.status !== "RUNNING") {
+        await supabaseAdmin.from(TABLES.campaigns).update({
+          status: "RUNNING",
+          updated_at: new Date().toISOString()
+        }).eq("id", id);
+      }
+
+      await supabaseAdmin.from(TABLES.campaign_events).insert({
+        campaign_id: id,
+        event_type: "campaign.retry_failed",
+        message: "Retentativa de falhas iniciada."
+      });
+
+      // Processar imediatamente
+      processCampaignBatch(id);
+
+      return res.json({ success: true, message: "Falhas marcadas para reenvio." });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   app.get("/api/debug/campaigns", async (req, res) => {
     try {
       const { instanceId, instanceToken, clientToken } = getZapiConfig();
@@ -3295,7 +3352,8 @@ const DEFAULT_TEAM = {
       if (!normalized) throw new Error("Telefone inválido.");
 
       const zapiResponse = await callZapi("/send-text", {
-        body: { phone: normalized, message }
+         phone: normalized, 
+         message 
       });
 
       return res.json({ success: true, zapiResponse });
