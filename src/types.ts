@@ -87,9 +87,11 @@ export type ChannelType = 'WHATSAPP' | 'INSTAGRAM' | 'FACEBOOK' | 'WEBCHAT' | 'M
 export interface Tag {
   id: string;
   name: string;
-  color?: string;
+  color: string;
   category?: string;
+  description?: string;
   active?: boolean;
+  is_active?: boolean;
 }
 
 export interface WhatsAppAccount {
@@ -196,6 +198,8 @@ export interface Campaign {
   completed_at?: string;
   
   // Settings
+  min_interval?: number;
+  max_interval?: number;
   interval_seconds: number;
   batch_size: number;
   batch_interval_minutes: number;
@@ -232,13 +236,6 @@ export interface InternalNote {
   updated_at: string;
 }
 
-export interface Tag {
-  id: string;
-  name: string;
-  color: string;
-  description?: string;
-  is_active?: boolean;
-}
 
 export interface ConversationTag {
   id: string;

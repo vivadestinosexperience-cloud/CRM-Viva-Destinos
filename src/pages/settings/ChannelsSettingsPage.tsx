@@ -13,6 +13,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useAppStore } from '../../store/useAppStore';
+import { authorizedFetch } from '../../services/api';
 import { WhatsAppAccount } from '../../types';
 import { toast } from 'sonner';
 import { getErrorMessage as getGlobalErrorMessage } from '../../utils/getErrorMessage';
@@ -116,7 +117,7 @@ export default function ChannelsSettingsPage() {
   const fetchDiagnostic = async () => {
     setIsLoadingDiagnostic(true);
     await safeAction(async () => {
-      const res = await fetch('/api/zapi/diagnostic');
+      const res = await authorizedFetch('/api/zapi/diagnostic');
       const data = await safeReadJson(res);
       setDiagnosticData(data);
       setShowDiagnosticModal(true);
@@ -145,7 +146,7 @@ export default function ChannelsSettingsPage() {
 
   const handleReprocessLog = async (logId: string) => {
     toast.promise(
-      fetch(`/api/zapi/webhook-logs/${logId}/reprocess`, { method: 'POST' })
+      authorizedFetch(`/api/zapi/webhook-logs/${logId}/reprocess`, { method: 'POST' })
         .then(async res => {
           const data = await safeReadJson(res);
           if (!res.ok || !data.success) throw data;
@@ -165,8 +166,8 @@ export default function ChannelsSettingsPage() {
   const refreshConfigStatus = async () => {
     return safeAction(async () => {
       const [statusRes, urlsRes] = await Promise.all([
-        fetch('/api/zapi/config-status'),
-        fetch('/api/zapi/webhook-urls')
+        authorizedFetch('/api/zapi/config-status'),
+        authorizedFetch('/api/zapi/webhook-urls')
       ]);
       
       const statusData = await safeReadJson(statusRes);
@@ -209,7 +210,7 @@ export default function ChannelsSettingsPage() {
       setIsCheckingConfig(true);
       setQrError(null);
 
-      const response = await fetch("/api/zapi/config-status");
+      const response = await authorizedFetch("/api/zapi/config-status");
       const data = await safeReadJson(response);
 
       setConfigStatus(data);
@@ -234,7 +235,7 @@ export default function ChannelsSettingsPage() {
       setQrError(null);
       setQrCodeData(null);
 
-      const statusResponse = await fetch("/api/zapi/config-status");
+      const statusResponse = await authorizedFetch("/api/zapi/config-status");
       const statusData = await safeReadJson(statusResponse);
 
       if (!statusResponse.ok || !statusData.configured) {
@@ -243,7 +244,7 @@ export default function ChannelsSettingsPage() {
         return;
       }
 
-      const response = await fetch("/api/zapi/qrcode");
+      const response = await authorizedFetch("/api/zapi/qrcode");
       const data = await safeReadJson(response);
 
       if (!response.ok) {
@@ -273,7 +274,7 @@ export default function ChannelsSettingsPage() {
     // Polling more frequently for connection
     statusIntervalRef.current = setInterval(async () => {
       try {
-        const res = await fetch(`/api/zapi/status`);
+        const res = await authorizedFetch(`/api/zapi/status`);
         const data = await safeReadJson(res);
         
         if (data.connected) {
@@ -339,7 +340,7 @@ export default function ChannelsSettingsPage() {
 
   const handleCleanupGroups = async () => {
     toast.promise(
-      fetch('/api/zapi/cleanup-group-leaks', { method: 'POST' })
+      authorizedFetch('/api/zapi/cleanup-group-leaks', { method: 'POST' })
         .then(async res => {
           const data = await safeReadJson(res);
           if (!res.ok || !data.success) throw data;
@@ -433,7 +434,7 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
             <button 
               onClick={async () => {
                 await safeAction(async () => {
-                  const res = await fetch('/api/zapi/register-all-webhooks', { method: 'POST' });
+                  const res = await authorizedFetch('/api/zapi/register-all-webhooks', { method: 'POST' });
                   const data = await safeReadJson(res);
                   if (!res.ok || !data.success) throw data;
                   
@@ -495,7 +496,7 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                 <button 
                   onClick={async () => {
                     await safeAction(async () => {
-                      const res = await fetch('/api/zapi/test-received-webhook', { method: 'POST' });
+                      const res = await authorizedFetch('/api/zapi/test-received-webhook', { method: 'POST' });
                       const data = await safeReadJson(res);
                       if (!res.ok || !data.success) throw data;
                       toast.success("Webhook de teste disparado!");
@@ -563,7 +564,7 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                   onClick={async () => {
                     if (!confirm('Deseja marcar como IGNORED conversas de grupos que já caíram no CRM?')) return;
                     try {
-                      const res = await fetch('/api/admin/cleanup-group-conversations', { method: 'POST' });
+                      const res = await authorizedFetch('/api/admin/cleanup-group-conversations', { method: 'POST' });
                       const data = await res.json();
                       if (data.success) {
                         alert(data.message);

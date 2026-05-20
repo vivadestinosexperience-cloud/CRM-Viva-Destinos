@@ -99,7 +99,8 @@ export default function CampaignsPage() {
     selectedTags: [] as string[],
     manualListText: '',
     validatedList: [] as { name: string; phone: string; valid: boolean; reason: string }[],
-    interval: 3,
+    minInterval: 8,
+    maxInterval: 15,
     batchSize: 30,
     batchInterval: 5,
     saveToCrm: false
@@ -136,7 +137,8 @@ export default function CampaignsPage() {
       selectedTags: [],
       manualListText: '',
       validatedList: [],
-      interval: 3,
+      minInterval: 8,
+      maxInterval: 15,
       batchSize: 30,
       batchInterval: 5,
       saveToCrm: false
@@ -229,7 +231,8 @@ export default function CampaignsPage() {
         read_count: 0,
         replied_count: 0,
         opt_out_count: 0,
-        interval_seconds: formData.interval,
+        min_interval: formData.minInterval,
+        max_interval: formData.maxInterval,
         batch_size: formData.batchSize,
         batch_interval_minutes: formData.batchInterval,
         target_tags: formData.selectedTags,
@@ -244,82 +247,17 @@ export default function CampaignsPage() {
 
   const handleStartSending = async (campaign: Campaign) => {
     await safeAction(async () => {
-      // Check channel
-      const account = whatsAppAccounts.find(a => a.id === campaign.whatsapp_account_id);
-      if (!account || account.status !== 'CONNECTED') {
-        toast.error('O canal de envio está desconectado. Reconecte em Configurações > Canais.');
-        return;
+      const { campaignService } = await import('../services/dataService');
+      const res = await campaignService.start(campaign.id);
+      
+      if (res.success) {
+        toast.info('Disparo iniciado no servidor!');
+        // Refresh local state status
+        updateCampaign(campaign.id, { status: 'SENDING', started_at: new Date().toISOString() });
+      } else {
+        throw new Error(res.error || 'Erro ao iniciar disparo');
       }
-
-      updateCampaign(campaign.id, { status: 'SENDING', started_at: new Date().toISOString() });
-      toast.info('Disparo iniciado!');
-      
-      // In a real production app, this loop would be in a background worker or server-side.
-      // Here we simulate it but checking for status in every step.
-      
-      const campaignRecipients = await getCampaignRecipients(campaign.id);
-      const pending = campaignRecipients.filter(r => r.status === 'PENDING' || r.status === 'FAILED');
-      
-      let sentCount = campaign.sent_count || 0;
-      let failedCount = campaign.failed_count || 0;
-      
-      for (let i = 0; i < pending.length; i++) {
-        // RE-FETCH Current Campaign status to see if it was paused or cancelled by the user
-        const currentCampaign = useAppStore.getState().campaigns.find(c => c.id === campaign.id);
-        if (!currentCampaign || currentCampaign.status !== 'SENDING') {
-          console.log('Disparo interrompido pelo status:', currentCampaign?.status);
-          break;
-        }
-
-        const recipient = pending[i];
-        
-        // WhatsApp Preview Message with variables
-        let message = campaign.content.replace(/{{nome}}/g, recipient.name).replace(/{name}/g, recipient.name);
-        message = message.replace(/{{consultor}}/g, campaign.created_by_name || 'Consultor');
-        message = message.replace(/{{empresa}}/g, 'Viva Destinos Experience');
-
-        try {
-          const res = await fetch('/api/zapi/send-text', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phone: recipient.phone, message, instanceId: account.instance_id })
-          });
-
-          if (res.ok) {
-            sentCount++;
-            await updateCampaignRecipient(recipient.id, { status: 'SENT', sent_at: new Date().toISOString() });
-          } else {
-            failedCount++;
-            const data = await res.json();
-            await updateCampaignRecipient(recipient.id, { status: 'FAILED', error_message: getErrorMessage(data) });
-          }
-        } catch (err) {
-          failedCount++;
-          await updateCampaignRecipient(recipient.id, { status: 'FAILED', error_message: 'Erro de rede' });
-        }
-
-        // Update campaign stats every few messages
-        if ((i + 1) % 5 === 0 || (i + 1) === pending.length) {
-          updateCampaign(campaign.id, { 
-            sent_count: sentCount, 
-            failed_count: failedCount,
-            status: (sentCount + failedCount >= campaign.recipients_count) ? 'COMPLETED' : 'SENDING',
-            completed_at: (sentCount + failedCount >= campaign.recipients_count) ? new Date().toISOString() : undefined
-          });
-        }
-
-        // Batch pause logic if applicable
-        if (campaign.batch_size > 0 && (i + 1) % campaign.batch_size === 0 && (i + 1) < pending.length) {
-          console.log(`Lote de ${campaign.batch_size} atingido. Aguardando ${campaign.batch_interval_minutes} minutos...`);
-          // Note: In frontend this is tricky, so we'll just wait a bit or let it be server-side
-          await new Promise(resolve => setTimeout(resolve, 5000)); 
-        }
-
-        // Interval between messages
-        await new Promise(resolve => setTimeout(resolve, campaign.interval_seconds * 1000));
-      }
-      
-    }, { label: 'Falha durante o disparo' });
+    }, { label: 'Falha ao iniciar disparo' });
   };
 
   const handleExportCSV = (campaign: Campaign) => {
@@ -856,7 +794,7 @@ export default function CampaignsPage() {
                                   </div>
                                   <div className="space-y-1">
                                      <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Intervalo</p>
-                                     <p className="text-lg font-black">{formData.interval}s</p>
+                                     <p className="text-lg font-black">{formData.minInterval}-{formData.maxInterval}s</p>
                                   </div>
                                   <div className="space-y-1">
                                      <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Lote</p>
@@ -874,13 +812,22 @@ export default function CampaignsPage() {
                                <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 flex flex-col items-center gap-3">
                                   <Clock className="w-5 h-5 text-indigo-600" />
                                   <div className="text-center">
-                                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-tight mb-1">Tempo Mínimo</p>
-                                     <input 
-                                       type="number" 
-                                       className="w-16 bg-white border border-slate-200 rounded-lg text-center font-black py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
-                                       value={formData.interval}
-                                       onChange={e => setFormData({ ...formData, interval: Number(e.target.value) })}
-                                     />
+                                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-tight mb-1">Delay (Min-Max)</p>
+                                     <div className="flex items-center gap-1 justify-center">
+                                       <input 
+                                         type="number" 
+                                         className="w-12 bg-white border border-slate-200 rounded-lg text-center font-black py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                         value={formData.minInterval}
+                                         onChange={e => setFormData({ ...formData, minInterval: Number(e.target.value) })}
+                                       />
+                                       <span className="text-slate-400 mx-0.5">-</span>
+                                       <input 
+                                         type="number" 
+                                         className="w-12 bg-white border border-slate-200 rounded-lg text-center font-black py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                         value={formData.maxInterval}
+                                         onChange={e => setFormData({ ...formData, maxInterval: Number(e.target.value) })}
+                                       />
+                                     </div>
                                      <span className="text-[10px] font-bold text-slate-400 ml-1">seg</span>
                                   </div>
                                </div>

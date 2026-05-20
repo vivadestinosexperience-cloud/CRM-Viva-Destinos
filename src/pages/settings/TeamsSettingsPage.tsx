@@ -29,6 +29,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../../store/useAppStore';
+import { authorizedFetch } from '../../services/api';
 import { Team, TeamMember, User } from '../../types';
 import { toast } from 'sonner';
 import { getErrorMessage } from '../../utils/getErrorMessage';
@@ -64,7 +65,7 @@ export default function TeamsSettingsPage() {
     setLoading(true);
     try {
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/teams`);
+      const res = await authorizedFetch(`${baseUrl}/api/teams`);
       const data = await res.json();
       if (data.success) {
         setTeams(data.teams || []);
@@ -82,7 +83,7 @@ export default function TeamsSettingsPage() {
     setLoadingMembers(true);
     try {
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/teams/${teamId}/members`);
+      const res = await authorizedFetch(`${baseUrl}/api/teams/${teamId}/members`);
       const data = await res.json();
       if (data.success) {
         setTeamMembers(data.members || []);
@@ -120,9 +121,8 @@ export default function TeamsSettingsPage() {
         distribution_mode: editingTeam ? editingTeam.distribution_mode : 'round_robin'
       };
 
-      const res = await fetch(url, {
+      const res = await authorizedFetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       
@@ -147,7 +147,7 @@ export default function TeamsSettingsPage() {
 
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/teams/${team.id}`, { method: 'DELETE' });
+      const res = await authorizedFetch(`${baseUrl}/api/teams/${team.id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw data;
 
@@ -161,9 +161,8 @@ export default function TeamsSettingsPage() {
 
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/teams/${selectedTeam.id}/members/${userId}`, {
+      const res = await authorizedFetch(`${baseUrl}/api/teams/${selectedTeam.id}/members/${userId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates)
       });
       
@@ -182,9 +181,8 @@ export default function TeamsSettingsPage() {
 
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/teams/${selectedTeam.id}/members`, {
+      const res = await authorizedFetch(`${baseUrl}/api/teams/${selectedTeam.id}/members`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           user_id: user.id,
           user_name: user.name,
@@ -211,7 +209,7 @@ export default function TeamsSettingsPage() {
 
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/teams/${selectedTeam.id}/members/${userId}`, {
+      const res = await authorizedFetch(`${baseUrl}/api/teams/${selectedTeam.id}/members/${userId}`, {
         method: 'DELETE'
       });
       
@@ -226,9 +224,8 @@ export default function TeamsSettingsPage() {
   const toggleDistribution = async (team: Team) => {
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/teams/${team.id}/distribution`, {
+      const res = await authorizedFetch(`${baseUrl}/api/teams/${team.id}/distribution`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           distribution_enabled: !team.distribution_enabled,
           distribution_mode: team.distribution_mode || 'round_robin'

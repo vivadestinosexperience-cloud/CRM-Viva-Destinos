@@ -19,14 +19,6 @@ import {
   Tag,
   InternalNote
 } from '../types';
-import { 
-  MOCK_USERS, 
-  MOCK_TEAMS, 
-  MOCK_WHATSAPP_ACCOUNTS, 
-  MOCK_CUSTOMERS, 
-  MOCK_CONVERSATIONS, 
-  MOCK_MESSAGES
-} from '../data/mockData';
 import {
   profilesService,
   teamService,
@@ -163,19 +155,15 @@ const DEFAULT_APPEARANCE: AppearanceSettings = {
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
-      currentUser: MOCK_USERS[0],
+      currentUser: null,
       appearance: DEFAULT_APPEARANCE,
       permissions: {},
-      users: MOCK_USERS,
-      teams: MOCK_TEAMS.map(t => ({
-        ...t,
-        active: true,
-        sla_minutes: 60
-      })),
-      whatsAppAccounts: MOCK_WHATSAPP_ACCOUNTS,
-      customers: MOCK_CUSTOMERS,
-      conversations: MOCK_CONVERSATIONS,
-      messages: MOCK_MESSAGES,
+      users: [],
+      teams: [],
+      whatsAppAccounts: [],
+      customers: [],
+      conversations: [],
+      messages: [],
       campaigns: [],
       campaignRecipients: [],
       tags: [],
@@ -200,6 +188,14 @@ export const useAppStore = create<AppState>()(
       initializeAppData: async () => {
         set({ isLoading: true, error: null });
         try {
+          // Fetch current user FIRST
+          const { authService } = await import('../services/authService');
+          const { user } = await authService.getCurrentUser();
+          
+          if (user) {
+            set({ currentUser: user });
+          }
+
           const [
             users,
             teams,
@@ -246,8 +242,8 @@ export const useAppStore = create<AppState>()(
           // Setup realtime listeners after initial load
           get().setupRealtimeListeners();
         } catch (err) {
-          console.error('Failed to initialize app data from Supabase, using local/mock data', err);
-          set({ isLoading: false, error: 'Falha ao sincronizar com servidor. Usando dados locais.' });
+          console.error('Failed to initialize app data from Supabase', err);
+          set({ isLoading: false, error: 'Falha ao sincronizar com servidor.' });
         }
       },
 
@@ -671,7 +667,7 @@ export const useAppStore = create<AppState>()(
             created_by: get().currentUser?.id
           });
           
-          if (recipients.length > 0) {
+          if (recipients && recipients.length > 0) {
             const enrichedRecipients = recipients.map(r => ({
               ...r,
               campaign_id: newCampaign.id
@@ -679,28 +675,20 @@ export const useAppStore = create<AppState>()(
             await campaignRecipientService.bulkCreate(enrichedRecipients);
           }
           
+          const campaignWithCount = {
+            ...newCampaign,
+            recipients_count: recipients?.length || 0
+          };
+
           set((state) => ({ 
-            campaigns: [newCampaign, ...state.campaigns],
+            campaigns: [campaignWithCount, ...state.campaigns],
             isSaving: false 
           }));
-          return newCampaign;
+          return campaignWithCount;
         } catch (err) {
-          const tempCampaign = { 
-            id: `cp-${Date.now()}`, 
-            created_at: new Date().toISOString(),
-            status: 'DRAFT',
-            sent_count: 0,
-            failed_count: 0,
-            read_count: 0,
-            replied_count: 0,
-            opt_out_count: 0,
-            ...campaign 
-          } as Campaign;
-          set((state) => ({ 
-            campaigns: [tempCampaign, ...state.campaigns],
-            isSaving: false 
-          }));
-          return tempCampaign;
+          console.error("Error creating campaign", err);
+          set({ isSaving: false });
+          throw err;
         }
       },
       updateCampaign: async (id, updates) => {
@@ -710,28 +698,50 @@ export const useAppStore = create<AppState>()(
         try {
           await campaignService.update(id, updates);
         } catch (err) {
-          console.error('Campaign update only local', err);
+          console.error('Campaign update error', err);
         }
       },
       deleteCampaign: async (id) => {
         set((state) => ({ campaigns: state.campaigns.filter(c => c.id !== id) }));
         try {
           await campaignService.remove(id);
+          toast.success('Campanha excluída');
         } catch (err) {
-          console.error('Campaign delete only local', err);
+          console.error('Campaign delete error', err);
         }
       },
       pauseCampaign: async (id) => {
-        await get().updateCampaign(id, { status: 'PAUSED' });
-        toast.info('Campanha pausada');
+        try {
+          await campaignService.pause(id);
+          set((state) => ({
+            campaigns: state.campaigns.map(c => c.id === id ? { ...c, status: 'PAUSED' } : c)
+          }));
+          toast.info('Campanha pausada');
+        } catch (err) {
+          toast.error('Erro ao pausar campanha');
+        }
       },
       resumeCampaign: async (id) => {
-        await get().updateCampaign(id, { status: 'SENDING' });
-        toast.info('Campanha retomada');
+        try {
+          await campaignService.resume(id);
+          set((state) => ({
+            campaigns: state.campaigns.map(c => c.id === id ? { ...c, status: 'SENDING' } : c)
+          }));
+          toast.info('Campanha retomada');
+        } catch (err) {
+          toast.error('Erro ao retomar campanha');
+        }
       },
       cancelCampaign: async (id) => {
-        await get().updateCampaign(id, { status: 'CANCELLED' });
-        toast.info('Campanha cancelada');
+        try {
+          await campaignService.cancel(id);
+          set((state) => ({
+            campaigns: state.campaigns.map(c => c.id === id ? { ...c, status: 'CANCELLED' } : c)
+          }));
+          toast.info('Campanha cancelada');
+        } catch (err) {
+          toast.error('Erro ao cancelar campanha');
+        }
       },
 
       // Campaign Recipients
@@ -863,51 +873,6 @@ export const useAppStore = create<AppState>()(
           }));
           toast.warning('Removido localmente');
         }
-        // 3. Listen to CRM Users
-        const usersChannel = supabase
-          .channel('users-realtime')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_users' }, (payload) => {
-            const { eventType, new: newRecord, old: oldRecord } = payload;
-            set(state => {
-              if (eventType === 'INSERT' || eventType === 'UPDATE') {
-                const user = newRecord as any;
-                const matchIndex = state.users.findIndex(u => u.id === user.id);
-                if (matchIndex > -1) {
-                  const updatedUsers = [...state.users];
-                  updatedUsers[matchIndex] = { ...updatedUsers[matchIndex], ...user };
-                  return { users: updatedUsers };
-                }
-                return { users: [user, ...state.users] };
-              } else if (eventType === 'DELETE') {
-                return { users: state.users.filter(u => u.id !== oldRecord.id) };
-              }
-              return state;
-            });
-          })
-          .subscribe();
-
-        // 4. Listen to Teams
-        const teamsChannel = supabase
-          .channel('teams-realtime')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_teams' }, (payload) => {
-            const { eventType, new: newRecord, old: oldRecord } = payload;
-            set(state => {
-              if (eventType === 'INSERT' || eventType === 'UPDATE') {
-                const team = newRecord as any;
-                const matchIndex = state.teams.findIndex(t => t.id === team.id);
-                if (matchIndex > -1) {
-                  const updatedTeams = [...state.teams];
-                  updatedTeams[matchIndex] = { ...updatedTeams[matchIndex], ...team };
-                  return { teams: updatedTeams };
-                }
-                return { teams: [team, ...state.teams] };
-              } else if (eventType === 'DELETE') {
-                return { teams: state.teams.filter(t => t.id !== oldRecord.id) };
-              }
-              return state;
-            });
-          })
-          .subscribe();
       },
 
       resetState: () => set({

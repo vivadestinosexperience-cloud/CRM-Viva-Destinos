@@ -1,4 +1,5 @@
 import { supabase } from '../integrations/supabase/client';
+import { authorizedFetch } from './api';
 
 // Generic error handler
 const handleError = (error: any, context: string) => {
@@ -9,7 +10,7 @@ const handleError = (error: any, context: string) => {
 export const profilesService = {
   async list() {
     try {
-      const res = await fetch('/api/admin/users');
+      const res = await authorizedFetch('/api/admin/users');
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar usuários');
       return data.users || [];
@@ -27,9 +28,8 @@ export const profilesService = {
   },
   async create(user: any) {
     try {
-      const res = await fetch('/api/admin/users', {
+      const res = await authorizedFetch('/api/admin/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(user)
       });
       const data = await res.json();
@@ -41,9 +41,8 @@ export const profilesService = {
   },
   async update(id: string, updates: any) {
     try {
-      const res = await fetch(`/api/admin/users/${id}`, {
+      const res = await authorizedFetch(`/api/admin/users/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates)
       });
       const data = await res.json();
@@ -55,9 +54,8 @@ export const profilesService = {
   },
   // Reset password helper
   async resetPassword(id: string, passwordData: any) {
-    const res = await fetch(`/api/admin/users/${id}/reset-password`, {
+    const res = await authorizedFetch(`/api/admin/users/${id}/reset-password`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(passwordData)
     });
     const data = await res.json();
@@ -73,7 +71,7 @@ export const profilesService = {
 export const teamService = {
   async list() {
     try {
-      const res = await fetch('/api/teams');
+      const res = await authorizedFetch('/api/teams');
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar equipes');
       return data.teams || [];
@@ -86,9 +84,8 @@ export const teamService = {
   },
   async create(team: any) {
     try {
-      const res = await fetch('/api/teams', {
+      const res = await authorizedFetch('/api/teams', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(team)
       });
       const data = await res.json();
@@ -100,9 +97,8 @@ export const teamService = {
   },
   async update(id: string, updates: any) {
     try {
-      const res = await fetch(`/api/teams/${id}`, {
+      const res = await authorizedFetch(`/api/teams/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates)
       });
       const data = await res.json();
@@ -114,7 +110,7 @@ export const teamService = {
   },
   async remove(id: string) {
     try {
-      const res = await fetch(`/api/teams/${id}`, { method: 'DELETE' });
+      const res = await authorizedFetch(`/api/teams/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Erro ao excluir equipe');
       return data;
@@ -193,7 +189,7 @@ export const customerService = {
 export const conversationService = {
   async list() {
     try {
-      const res = await fetch('/api/omnichannel/conversations');
+      const res = await authorizedFetch('/api/omnichannel/conversations');
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar conversas');
       return data.conversations || [];
@@ -222,7 +218,7 @@ export const messageService = {
   },
   async listByConversation(conversationId: string) {
     try {
-      const res = await fetch(`/api/omnichannel/conversations/${conversationId}/messages`);
+      const res = await authorizedFetch(`/api/omnichannel/conversations/${conversationId}/messages`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar mensagens');
       return data.messages || [];
@@ -250,7 +246,7 @@ export const messageService = {
 export const conversationTagService = {
   async list(conversationId: string) {
     try {
-      const res = await fetch(`/api/omnichannel/conversations/${conversationId}/tags`);
+      const res = await authorizedFetch(`/api/omnichannel/conversations/${conversationId}/tags`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar etiquetas da conversa');
       return data.tags || [];
@@ -260,9 +256,8 @@ export const conversationTagService = {
   },
   async link(conversationId: string, tagId: string, userId?: string, userName?: string) {
     try {
-      const res = await fetch(`/api/omnichannel/conversations/${conversationId}/tags`, {
+      const res = await authorizedFetch(`/api/omnichannel/conversations/${conversationId}/tags`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tag_id: tagId, created_by: userId, created_by_name: userName })
       });
       const data = await res.json();
@@ -274,7 +269,7 @@ export const conversationTagService = {
   },
   async unlink(conversationId: string, tagId: string) {
     try {
-      const res = await fetch(`/api/omnichannel/conversations/${conversationId}/tags/${tagId}`, {
+      const res = await authorizedFetch(`/api/omnichannel/conversations/${conversationId}/tags/${tagId}`, {
         method: 'DELETE'
       });
       const data = await res.json();
@@ -337,7 +332,7 @@ export const templateService = {
 export const tagService = {
   async list() {
     try {
-      const res = await fetch('/api/tags');
+      const res = await authorizedFetch('/api/tags');
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar etiquetas');
       return data.tags || [];
@@ -349,9 +344,8 @@ export const tagService = {
   },
   async create(tag: any) {
     try {
-      const res = await fetch('/api/tags', {
+      const res = await authorizedFetch('/api/tags', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tag)
       });
       const data = await res.json();
@@ -363,9 +357,8 @@ export const tagService = {
   },
   async update(id: string, updates: any) {
     try {
-      const res = await fetch(`/api/tags/${id}`, {
+      const res = await authorizedFetch(`/api/tags/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates)
       });
       const data = await res.json();
@@ -377,7 +370,7 @@ export const tagService = {
   },
   async remove(id: string) {
     try {
-      const res = await fetch(`/api/tags/${id}`, { method: 'DELETE' });
+      const res = await authorizedFetch(`/api/tags/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Erro ao excluir etiqueta');
       return data;
@@ -389,54 +382,104 @@ export const tagService = {
 
 export const campaignService = {
   async list() {
-    const { data, error } = await supabase.from('campaigns').select('*').order('created_at', { ascending: false });
-    if (error) handleError(error, 'campaignService.list');
-    return data;
+    try {
+      const res = await authorizedFetch('/api/campaigns');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao carregar campanhas');
+      return data.campaigns || [];
+    } catch (err: any) {
+      handleError(err, 'campaignService.list');
+      return [];
+    }
   },
   async create(campaign: any) {
-    const { data, error } = await supabase.from('campaigns').insert(campaign).select().single();
-    if (error) handleError(error, 'campaignService.create');
-    return data;
+    try {
+      const res = await authorizedFetch('/api/campaigns', {
+        method: 'POST',
+        body: JSON.stringify(campaign)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao criar campanha');
+      return data.campaign;
+    } catch (err: any) {
+      handleError(err, 'campaignService.create');
+      throw err;
+    }
   },
   async update(id: string, updates: any) {
-    const { data, error } = await supabase.from('campaigns').update(updates).eq('id', id).select().single();
-    if (error) handleError(error, 'campaignService.update');
-    return data;
+    try {
+      const { data, error } = await supabase.from('crm_campaigns').update(updates).eq('id', id).select().single();
+      if (error) throw error;
+      return data;
+    } catch (err: any) {
+      handleError(err, 'campaignService.update');
+      throw err;
+    }
   },
   async remove(id: string) {
-    const { error } = await supabase.from('campaigns').delete().eq('id', id);
-    if (error) handleError(error, 'campaignService.remove');
+    try {
+      const res = await authorizedFetch(`/api/campaigns/${id}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao excluir campanha');
+      return data;
+    } catch (err: any) {
+      handleError(err, 'campaignService.remove');
+      throw err;
+    }
+  },
+  async start(id: string) {
+    const res = await authorizedFetch(`/api/campaigns/${id}/start`, { method: 'POST' });
+    return res.json();
+  },
+  async pause(id: string) {
+    const res = await authorizedFetch(`/api/campaigns/${id}/pause`, { method: 'POST' });
+    return res.json();
+  },
+  async resume(id: string) {
+    const res = await authorizedFetch(`/api/campaigns/${id}/resume`, { method: 'POST' });
+    return res.json();
+  },
+  async cancel(id: string) {
+    const res = await authorizedFetch(`/api/campaigns/${id}/cancel`, { method: 'POST' });
+    return res.json();
+  },
+  async retryFailed(id: string) {
+    const res = await authorizedFetch(`/api/campaigns/${id}/retry-failed`, { method: 'POST' });
+    return res.json();
+  },
+  async optimize(list: string) {
+    const res = await authorizedFetch('/api/campaigns/optimize', {
+      method: 'POST',
+      body: JSON.stringify({ list })
+    });
+    return res.json();
   }
 };
 
 export const campaignRecipientService = {
   async listByCampaign(campaignId: string) {
-    const { data, error } = await supabase.from('campaign_recipients').select('*').eq('campaign_id', campaignId).order('created_at', { ascending: true });
-    if (error) handleError(error, 'campaignRecipientService.listByCampaign');
-    return data;
-  },
-  async create(recipient: any) {
-    const { data, error } = await supabase.from('campaign_recipients').insert(recipient).select().single();
-    if (error) handleError(error, 'campaignRecipientService.create');
-    return data;
-  },
-  async bulkCreate(recipients: any[]) {
-    const { data, error } = await supabase.from('campaign_recipients').insert(recipients).select();
-    if (error) handleError(error, 'campaignRecipientService.bulkCreate');
-    return data;
+    try {
+      const res = await authorizedFetch(`/api/campaigns/${campaignId}/recipients`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao carregar destinatários');
+      return data.recipients || [];
+    } catch (err: any) {
+      handleError(err, 'campaignRecipientService.listByCampaign');
+      return [];
+    }
   },
   async update(id: string, updates: any) {
-    const { data, error } = await supabase.from('campaign_recipients').update(updates).eq('id', id).select().single();
+    const { data, error } = await supabase.from('crm_campaign_recipients').update(updates).eq('id', id).select().single();
     if (error) handleError(error, 'campaignRecipientService.update');
     return data;
   },
-  async updateMany(campaignId: string, updates: any, filters: any = {}) {
-    let query = supabase.from('campaign_recipients').update(updates).eq('campaign_id', campaignId);
-    Object.keys(filters).forEach(key => {
-      query = query.eq(key, filters[key]);
-    });
-    const { data, error } = await query;
-    if (error) handleError(error, 'campaignRecipientService.updateMany');
+  async bulkCreate(recipients: any[]) {
+    // Note: Creating many recipients might be slow via direct Supabase if the list is huge,
+    // but the POST /api/campaigns already handles creation of campaign + recipients in one go usually.
+    const { data, error } = await supabase.from('crm_campaign_recipients').insert(recipients).select();
+    if (error) handleError(error, 'campaignRecipientService.bulkCreate');
     return data;
   }
 };

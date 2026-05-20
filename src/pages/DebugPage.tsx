@@ -2,18 +2,20 @@ import React, { useEffect, useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { getErrorMessage } from '../utils/getErrorMessage';
 
+import { authorizedFetch } from '../services/api';
+
 export default function DebugPage() {
   const { whatsAppAccounts } = useAppStore();
   const [configStatus, setConfigStatus] = useState<any>(null);
   const [debugLog, setDebugLog] = useState<any>(null);
 
   useEffect(() => {
-    fetch('/api/zapi/config-status')
+    authorizedFetch('/api/zapi/config-status')
       .then(res => res.json())
       .then(setConfigStatus)
       .catch(err => setConfigStatus({ error: getErrorMessage(err) }));
 
-    fetch('/api/zapi/debug-config')
+    authorizedFetch('/api/zapi/debug-config')
       .then(res => res.json())
       .then(setDebugLog)
       .catch(err => setDebugLog({ error: getErrorMessage(err) }));

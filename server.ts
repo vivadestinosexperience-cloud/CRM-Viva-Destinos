@@ -639,6 +639,70 @@ async function startServer() {
     });
   }
 
+  async function getAuthenticatedUser(req: express.Request) {
+    const authHeader = req.headers.authorization || "";
+    const token = authHeader.replace("Bearer ", "");
+
+    if (!token) {
+      throw new Error("Token ausente.");
+    }
+
+    const { data, error } = await supabaseAdmin.auth.getUser(token);
+
+    if (error || !data?.user) {
+      throw new Error("Usuário não autenticado.");
+    }
+
+    const authUser = data.user;
+
+    const { data: crmUser, error: crmError } = await supabaseAdmin
+      .from(TABLES.users)
+      .select("*")
+      .eq("auth_user_id", authUser.id)
+      .single();
+
+    if (crmError || !crmUser) {
+      // Tentar buscar por email se não achar por auth_user_id (migração suave)
+      const { data: crmUserByEmail } = await supabaseAdmin
+        .from(TABLES.users)
+        .select("*")
+        .eq("email", authUser.email)
+        .maybeSingle();
+
+      if (crmUserByEmail) {
+        // Atualizar auth_user_id se necessário
+        if (!crmUserByEmail.auth_user_id) {
+          await supabaseAdmin.from(TABLES.users).update({ auth_user_id: authUser.id }).eq('id', crmUserByEmail.id);
+        }
+        return crmUserByEmail;
+      }
+      
+      throw new Error("Perfil do usuário não encontrado.");
+    }
+
+    if (crmUser.is_active === false) {
+      throw new Error("Usuário inativo.");
+    }
+
+    return crmUser;
+  }
+
+  function formatAgentMessageForWhatsApp(message: string, senderName: string) {
+    const cleanMessage = String(message || "").trim();
+    const cleanSenderName = String(senderName || "Atendente").trim();
+
+    if (!cleanMessage) return "";
+
+    const prefix = `*${cleanSenderName}:*`;
+
+    // Evitar duplicação se já vier com o prefixo
+    if (cleanMessage.startsWith(prefix)) {
+      return cleanMessage;
+    }
+
+    return `${prefix}\n${cleanMessage}`;
+  }
+
 const TABLES = {
   customers: 'crm_customers',
   conversations: 'crm_conversations',
@@ -650,7 +714,10 @@ const TABLES = {
   users: 'crm_users',
   presence: 'crm_user_presence',
   tags: 'crm_tags',
-  conversation_tags: 'crm_conversation_tags'
+  conversation_tags: 'crm_conversation_tags',
+  campaigns: 'crm_campaigns',
+  campaign_recipients: 'crm_campaign_recipients',
+  campaign_events: 'crm_campaign_events'
 };
 
 const DEFAULT_TEAM = {
@@ -837,6 +904,183 @@ const DEFAULT_TEAM = {
       conversation_id: conversation.id,
       message_db_id: message.id
     };
+  }
+
+  // --- Campaign Helpers ---
+  function normalizeBrazilianPhone(rawPhone: string): string {
+    const digits = rawPhone.replace(/\D/g, "");
+    if (!digits) return "";
+    
+    let normalized = digits;
+    
+    // Se tem 10 ou 11 dígitos e não começa com 55, adiciona 55
+    if ((normalized.length === 10 || normalized.length === 11) && !normalized.startsWith("55")) {
+      normalized = "55" + normalized;
+    }
+    
+    // Se tem 12 dígitos, começa com 55 e o DDD (pos 2,3) é <= 27, pode faltar o 9.
+    // Mas a Z-API costuma lidar bem se enviarmos o número que o WhatsApp espera.
+    // Regra geral: Garantir 55 + DDD + [9] + Número.
+    
+    return normalized;
+  }
+
+  const campaignProcessingLocks = new Set<string>();
+
+  async function processCampaignBatch(campaignId: string) {
+    if (campaignProcessingLocks.has(campaignId)) return;
+    campaignProcessingLocks.add(campaignId);
+
+    try {
+      // 1. Buscar campanha
+      const { data: campaign, error: cErr } = await supabaseAdmin.from(TABLES.campaigns).select('*').eq('id', campaignId).single();
+      if (cErr || !campaign || campaign.status !== 'RUNNING') {
+        campaignProcessingLocks.delete(campaignId);
+        return;
+      }
+
+      // 2. Buscar destinatários pendentes
+      const { data: recipients, error: rErr } = await supabaseAdmin.from(TABLES.campaign_recipients)
+        .select('*')
+        .eq('campaign_id', campaignId)
+        .eq('status', 'PENDING')
+        .limit(campaign.batch_size || 5);
+
+      if (rErr || !recipients || recipients.length === 0) {
+        // Se não tem mais nenhum PENDING, marca como COMPLETED
+        const { count } = await supabaseAdmin.from(TABLES.campaign_recipients)
+          .select('*', { count: 'exact', head: true })
+          .eq('campaign_id', campaignId)
+          .eq('status', 'PENDING');
+          
+        if (count === 0) {
+          await supabaseAdmin.from(TABLES.campaigns).update({ 
+            status: 'COMPLETED',
+            completed_at: new Date().toISOString()
+          }).eq('id', campaignId);
+          broadcastEvent("campaign.updated", { id: campaignId, status: 'COMPLETED' });
+        }
+        
+        campaignProcessingLocks.delete(campaignId);
+        return;
+      }
+
+      // 3. Buscar instância Z-API
+      const { data: whatsappAccount } = await supabaseAdmin.from(TABLES.whatsapp_accounts)
+        .select('*')
+        .eq('id', campaign.whatsapp_account_id)
+        .single();
+
+      if (!whatsappAccount || !whatsappAccount.zapi_instance_id || !whatsappAccount.zapi_token) {
+        await supabaseAdmin.from(TABLES.campaigns).update({ 
+          status: 'FAILED',
+          error_log: 'Instância WhatsApp não configurada ou inválida.'
+        }).eq('id', campaignId);
+        campaignProcessingLocks.delete(campaignId);
+        return;
+      }
+
+      const zapiId = whatsappAccount.zapi_instance_id;
+      const zapiToken = whatsappAccount.zapi_token;
+      const zapiSecurity = whatsappAccount.zapi_client_token;
+
+      // 4. Disparar mensagens
+      for (const recipient of recipients) {
+        // Check if campaign was paused/cancelled mid-batch
+        const { data: latestCampaign } = await supabaseAdmin.from(TABLES.campaigns).select('status').eq('id', campaignId).single();
+        if (latestCampaign?.status !== 'RUNNING') break;
+
+        try {
+          await supabaseAdmin.from(TABLES.campaign_recipients).update({ status: 'SENDING' }).eq('id', recipient.id);
+          
+          let content = campaign.content;
+          // Replace variables
+          if (recipient.name) content = content.replace(/{{nome}}/g, recipient.name).replace(/{name}/g, recipient.name);
+          content = content.replace(/{{telefone}}/g, recipient.phone);
+
+          const payload: any = {
+            phone: recipient.phone_normalized,
+            message: content
+          };
+
+          // TODO: Check if it's an image/media campaign
+          const endpoint = campaign.media_url ? "/send-image" : "/send-text";
+          if (campaign.media_url) {
+            payload.image = campaign.media_url;
+            payload.caption = content;
+          }
+
+          const { config: zapiGlobalConfig } = getZapiConfig();
+          const response = await fetch(`${zapiGlobalConfig.baseUrl}/instances/${zapiId}/token/${zapiToken}${endpoint}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(zapiSecurity ? { 'Client-Token': zapiSecurity } : {})
+            },
+            body: JSON.stringify(payload)
+          });
+
+          const result = await response.json();
+
+          if (response.ok && (result.zaapId || result.messageId)) {
+            await supabaseAdmin.from(TABLES.campaign_recipients).update({ 
+              status: 'SENT',
+              sent_at: new Date().toISOString(),
+              error_message: null
+            }).eq('id', recipient.id);
+          } else {
+            throw new Error(result.error || result.message || "Erro desconhecido na Z-API");
+          }
+        } catch (error: any) {
+          console.error(`Error sending campaign message to ${recipient.phone}:`, error);
+          await supabaseAdmin.from(TABLES.campaign_recipients).update({ 
+            status: 'FAILED',
+            error_message: error.message || 'Erro no envio'
+          }).eq('id', recipient.id);
+        }
+
+        // Intervalo entre mensagens
+        const interval = Math.floor(Math.random() * ((campaign.max_interval || 10) - (campaign.min_interval || 5) + 1)) + (campaign.min_interval || 5);
+        await new Promise(resolve => setTimeout(resolve, interval * 1000));
+      }
+
+      // Update campaign stats after batch
+      const { data: stats } = await supabaseAdmin.from(TABLES.campaign_recipients)
+        .select('status')
+        .eq('campaign_id', campaignId);
+
+      const sentCount = stats?.filter(r => r.status === 'SENT').length || 0;
+      const failedCount = stats?.filter(r => r.status === 'FAILED').length || 0;
+      const pendingCount = stats?.filter(r => r.status === 'PENDING').length || 0;
+
+      if (pendingCount === 0) {
+        await supabaseAdmin.from(TABLES.campaigns).update({ 
+          status: 'COMPLETED',
+          completed_at: new Date().toISOString(),
+          sent_count: sentCount,
+          failed_count: failedCount,
+          pending_count: 0
+        }).eq('id', campaignId);
+        broadcastEvent("campaign.updated", { id: campaignId, status: 'COMPLETED' });
+      } else {
+        await supabaseAdmin.from(TABLES.campaigns).update({ 
+          sent_count: sentCount,
+          failed_count: failedCount,
+          pending_count: pendingCount
+        }).eq('id', campaignId);
+        
+        // Schedule next batch if still running
+        const { data: finalCheck } = await supabaseAdmin.from(TABLES.campaigns).select('status').eq('id', campaignId).single();
+        if (finalCheck?.status === 'RUNNING') {
+          setTimeout(() => processCampaignBatch(campaignId), 2000); // 2s gap between batches
+        }
+      }
+
+    } catch (err) {
+      console.error("Critical error in processCampaignBatch", err);
+    } finally {
+      campaignProcessingLocks.delete(campaignId);
+    }
   }
 
   async function saveWebhookLog(data: any) {
@@ -1459,6 +1703,8 @@ const DEFAULT_TEAM = {
     const body = req.body;
 
     try {
+      const currentUser = await getAuthenticatedUser(req);
+      
       const allowedFields = [
         "status",
         "assigned_user_id",
@@ -1482,16 +1728,25 @@ const DEFAULT_TEAM = {
         }
       }
 
-      // Apply fallbacks for team/queue
-      if (updates.team_id === undefined && !updates.assigned_user_id && !updates.status) {
-         // We might not want to force fallback on EVERY patch, but if we are assigning or changing status, ensure team exists
+      // Se o usuário está assumindo a conversa (assigned_user_id está sendo definido)
+      // Garantimos que ele só pode assumir para SI MESMO, a menos que seja admin/supervisor
+      if (updates.assigned_user_id && updates.assigned_user_id !== currentUser.id) {
+        if (currentUser.role !== 'admin' && currentUser.role !== 'supervisor') {
+          // Forçar assumir para si mesmo
+          updates.assigned_user_id = currentUser.id;
+          updates.assigned_user_name = currentUser.name;
+        }
       }
 
-      if (updates.assigned_user_id || updates.status === 'OPEN') {
-         if (!updates.team_id) {
-           updates.team_id = DEFAULT_TEAM.id;
-           updates.team_name = DEFAULT_TEAM.name;
-         }
+      // Se está abrindo sem atribuição, mas quem chamou é um agente, atribui automaticamente?
+      // Melhor seguir o que o frontend enviou, mas validar.
+
+      if (updates.status === 'OPEN' && !updates.assigned_user_id) {
+        // Se um agente abre, ele assume
+        if (currentUser.role === 'agent') {
+          updates.assigned_user_id = currentUser.id;
+          updates.assigned_user_name = currentUser.name;
+        }
       }
 
       if (updates.team_id) {
@@ -1609,9 +1864,12 @@ const DEFAULT_TEAM = {
 
   app.post("/api/omnichannel/conversations/:id/send-message", async (req, res) => {
     const { id } = req.params;
-    const { message, agentId, agentName } = req.body;
+    const { message } = req.body;
 
     try {
+      // Autenticação Real
+      const currentUser = await getAuthenticatedUser(req);
+
       // 0. Check Z-API config
       const { missing } = getZapiConfig();
       if (missing.includes("ZAPI_INSTANCE_ID") || missing.includes("ZAPI_INSTANCE_TOKEN")) {
@@ -1622,16 +1880,19 @@ const DEFAULT_TEAM = {
       }
 
       // 1. Get conversation and customer
-      const { data: conversation, error: convErr } = await supabase.from(TABLES.conversations).select('*, customer:customer_id(*)').eq('id', id).single();
+      const { data: conversation, error: convErr } = await supabaseAdmin.from(TABLES.conversations).select('*, customer:customer_id(*)').eq('id', id).single();
       if (convErr || !conversation) throw new Error("Conversa não encontrada.");
 
       const phone = conversation.customer_phone_normalized || (conversation.customer as any)?.phone_normalized || (conversation.customer as any)?.phone;
       if (!phone) throw new Error("Telefone do cliente não encontrado.");
 
+      // 1.5 Format Message with Agent Name
+      const finalMessage = formatAgentMessageForWhatsApp(message, currentUser.name);
+
       // 2. Send via Z-API
       const zapiResult = await callZapi("/send-text", {
         method: "POST",
-        body: JSON.stringify({ phone, message })
+        body: JSON.stringify({ phone, message: finalMessage })
       });
 
       if (!zapiResult.ok) {
@@ -1639,11 +1900,13 @@ const DEFAULT_TEAM = {
       }
 
       // 3. Save to database
-      const { data: newMsg, error: msgErr } = await supabase.from(TABLES.messages).insert({
+      const { data: newMsg, error: msgErr } = await supabaseAdmin.from(TABLES.messages).insert({
         conversation_id: id,
+        customer_phone_normalized: phone,
         sender_type: 'agent',
-        sender_name: agentName || 'Agente',
-        content: message,
+        sender_user_id: currentUser.id,
+        sender_name: currentUser.name,
+        content: finalMessage,
         message_type: 'text',
         status: 'sent',
         external_message_id: zapiResult.data?.messageId || `msg-${Date.now()}`,
@@ -1654,28 +1917,21 @@ const DEFAULT_TEAM = {
 
       // 4. Update conversation & Auto-assign if needed
       const convUpdates: any = {
-        last_message: message,
+        last_message: finalMessage,
         last_message_at: new Date().toISOString(),
         status: 'OPEN',
         updated_at: new Date().toISOString()
       };
 
-      if (!conversation.team_id) {
-        convUpdates.team_id = DEFAULT_TEAM.id;
-        convUpdates.team_name = DEFAULT_TEAM.name;
-        convUpdates.queue_id = DEFAULT_TEAM.id;
-        convUpdates.queue_name = DEFAULT_TEAM.name;
-      }
-
-      if (!conversation.assigned_user_id && agentId) {
-        convUpdates.assigned_user_id = agentId;
-        convUpdates.assigned_user_name = agentName || 'Agente';
+      if (!conversation.assigned_user_id) {
+        convUpdates.assigned_user_id = currentUser.id;
+        convUpdates.assigned_user_name = currentUser.name;
         if (!conversation.started_at) {
           convUpdates.started_at = new Date().toISOString();
         }
       }
 
-      const { data: updatedConv, error: updateErr } = await supabase.from(TABLES.conversations)
+      const { data: updatedConv, error: updateErr } = await supabaseAdmin.from(TABLES.conversations)
         .update(convUpdates)
         .eq('id', id)
         .select()
@@ -1685,8 +1941,14 @@ const DEFAULT_TEAM = {
 
       broadcastEvent("message.received", {
         conversation: updatedConv || conversation,
-        message: newMsg
+        message: {
+          ...newMsg,
+          normalized_message_type: 'text',
+          display_content: newMsg.content
+        }
       });
+
+      broadcastEvent("conversation.updated", { conversation: updatedConv || conversation });
 
       return res.json({ success: true, message: newMsg, conversation: updatedConv || conversation });
     } catch (err: any) {
@@ -1784,13 +2046,14 @@ const DEFAULT_TEAM = {
 
   app.post("/api/omnichannel/conversations/:id/internal-note", async (req, res) => {
     const { id } = req.params;
-    const { note, sender_user_id, sender_name } = req.body;
+    const { note } = req.body;
 
     if (!note || note.trim() === "") {
       return res.status(400).json({ success: false, error: "A nota não pode ser vazia." });
     }
 
     try {
+      const currentUser = await getAuthenticatedUser(req);
       const { data: conversation, error: convErr } = await supabaseAdmin.from(TABLES.conversations).select("*").eq("id", id).single();
       if (convErr || !conversation) {
         return res.status(404).json({ success: false, error: "Conversa não encontrada." });
@@ -1800,7 +2063,8 @@ const DEFAULT_TEAM = {
         conversation_id: id,
         customer_phone_normalized: conversation.customer_phone_normalized || "",
         sender_type: "internal",
-        sender_name: sender_name || "Operador",
+        sender_user_id: currentUser.id,
+        sender_name: currentUser.name,
         message_type: "internal_note",
         content: note,
         is_internal: true,
@@ -1844,10 +2108,11 @@ const DEFAULT_TEAM = {
       }
 
       const { id } = req.params;
-      const { type, caption, sender_user_id, sender_name } = req.body;
+      const { type, caption } = req.body;
       const file = req.file;
 
       try {
+        const currentUser = await getAuthenticatedUser(req);
         if (!file) throw new Error("Arquivo não recebido.");
 
         const { missing } = getZapiConfig();
@@ -1859,7 +2124,7 @@ const DEFAULT_TEAM = {
         }
 
         // 1. Get conversation and customer
-        const { data: conversation, error: convErr } = await supabase.from(TABLES.conversations).select('*, customer:customer_id(*)').eq('id', id).single();
+        const { data: conversation, error: convErr } = await supabaseAdmin.from(TABLES.conversations).select('*, customer:customer_id(*)').eq('id', id).single();
         if (convErr || !conversation) throw new Error("Conversa não encontrada.");
 
         const phone = conversation.customer_phone_normalized || (conversation.customer as any)?.phone_normalized || (conversation.customer as any)?.phone;
@@ -1871,7 +2136,7 @@ const DEFAULT_TEAM = {
         const datePath = new Date().toISOString().slice(0, 10);
         const storagePath = `sent/${datePath}/${Date.now()}-${safeName}`;
 
-        const { error: uploadErr } = await supabase.storage
+        const { error: uploadErr } = await supabaseAdmin.storage
           .from("chat-media")
           .upload(storagePath, file.buffer, {
             contentType: file.mimetype,
@@ -1880,24 +2145,38 @@ const DEFAULT_TEAM = {
 
         if (uploadErr) throw uploadErr;
 
-        const { data: storageData } = supabase.storage.from("chat-media").getPublicUrl(storagePath);
+        const { data: storageData } = supabaseAdmin.storage.from("chat-media").getPublicUrl(storagePath);
         const publicUrl = storageData.publicUrl;
 
+        // 2.5 Prep Agent Prefix Message for Audio/Document
+        if (type === 'audio' || type === 'document') {
+          const typeLabel = type === 'audio' ? 'um áudio' : 'um arquivo';
+          const introMsg = formatAgentMessageForWhatsApp(`Estou enviando ${typeLabel}.`, currentUser.name);
+          await callZapi("/send-text", {
+            method: "POST",
+            body: JSON.stringify({ phone, message: introMsg })
+          });
+        }
+
         // 3. Send via Z-API
+        const finalCaption = (type === 'image' || type === 'video') 
+          ? formatAgentMessageForWhatsApp(caption || '', currentUser.name)
+          : null;
+
         let zapiPath = "";
         let zapiBody: any = { phone };
 
         if (type === 'image') {
           zapiPath = "/send-image";
           zapiBody.image = publicUrl;
-          zapiBody.caption = caption || "";
+          if (finalCaption) zapiBody.caption = finalCaption;
         } else if (type === 'audio') {
           zapiPath = "/send-audio";
           zapiBody.audio = publicUrl;
         } else if (type === 'video') {
           zapiPath = "/send-video";
           zapiBody.video = publicUrl;
-          zapiBody.caption = caption || "";
+          if (finalCaption) zapiBody.caption = finalCaption;
         } else if (type === 'document') {
           zapiPath = `/send-document/${extension}`;
           zapiBody.document = publicUrl;
@@ -1916,13 +2195,15 @@ const DEFAULT_TEAM = {
         }
 
         // 4. Save to database
-        const content = getOutgoingMediaLabel(type, caption, file.originalname);
-        const { data: newMsg, error: msgErr } = await supabase.from(TABLES.messages).insert({
+        const content = finalCaption || (type === 'audio' ? 'Áudio enviado' : `Arquivo: ${safeName}`);
+        const { data: newMsg, error: msgErr } = await supabaseAdmin.from(TABLES.messages).insert({
           conversation_id: id,
+          customer_phone_normalized: phone,
           sender_type: 'agent',
-          sender_name: sender_name || 'Agente',
+          sender_user_id: currentUser.id,
+          sender_name: currentUser.name,
           content,
-          caption,
+          caption: finalCaption,
           message_type: type,
           media_url: publicUrl,
           media_storage_url: publicUrl,
@@ -1945,13 +2226,13 @@ const DEFAULT_TEAM = {
           updated_at: new Date().toISOString()
         };
 
-        if (!conversation.assigned_user_id && sender_user_id) {
-          convUpdates.assigned_user_id = sender_user_id;
-          convUpdates.assigned_user_name = sender_name || 'Agente';
+        if (!conversation.assigned_user_id) {
+          convUpdates.assigned_user_id = currentUser.id;
+          convUpdates.assigned_user_name = currentUser.name;
           convUpdates.started_at = new Date().toISOString();
         }
 
-        const { data: updatedConv, error: updateErr } = await supabase.from(TABLES.conversations)
+        const { data: updatedConv, error: updateErr } = await supabaseAdmin.from(TABLES.conversations)
           .update(convUpdates)
           .eq('id', id)
           .select()
@@ -1959,8 +2240,15 @@ const DEFAULT_TEAM = {
 
         broadcastEvent("message.received", {
           conversation: updatedConv || conversation,
-          message: newMsg
+          message: {
+            ...newMsg,
+            normalized_message_type: type,
+            display_content: newMsg.content,
+            display_media_url: publicUrl
+          }
         });
+
+        broadcastEvent("conversation.updated", { conversation: updatedConv || conversation });
 
         return res.json({ success: true, message: newMsg, conversation: updatedConv || conversation });
       } catch (err: any) {
@@ -2042,30 +2330,56 @@ const DEFAULT_TEAM = {
   });
 
   app.post("/api/admin/users", async (req, res) => {
-    const { name, email, password, confirmPassword, role, team_id, team_name, is_active } = req.body;
-
     try {
+      const currentUser = await getAuthenticatedUser(req);
+      if (currentUser.role !== 'admin') {
+        return res.status(403).json({ success: false, error: "Apenas administradores podem criar usuários." });
+      }
+
+      const { name, email, password, confirmPassword, role, team_id, team_name, is_active } = req.body;
       if (!name || !email || !password) throw new Error("Campos obrigatórios: Nome, e-mail e senha.");
       if (password !== confirmPassword) throw new Error("A senha e a confirmação não conferem.");
       if (password.length < 8) throw new Error("A senha deve ter no mínimo 8 caracteres.");
 
-      // 1. Check if user already exists in DB
-      const { data: existingUser } = await supabase.from(TABLES.users).select('id').eq('email', email).maybeSingle();
-      if (existingUser) throw new Error("Já existe um usuário cadastrado com este e-mail.");
+      // 1. Check if user already exists in CRM DB
+      const { data: existingCrmUser } = await supabaseAdmin.from(TABLES.users).select('id').eq('email', email).maybeSingle();
+      
+      let authUserId = null;
 
-      // 2. Create in Supabase Auth
+      // 2. Try to create in Supabase Auth
       const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
         email,
         password,
         email_confirm: true,
-        user_metadata: { name, role, team_id, team_name }
+        user_metadata: { name, role, team_id: team_id || DEFAULT_TEAM.id, team_name: team_name || DEFAULT_TEAM.name }
       });
 
-      if (authError) throw authError;
+      if (authError) {
+        // Se já existe no Auth
+        if (authError.message.includes("already registered") || authError.status === 422) {
+          // Se já existe no CRM
+          if (existingCrmUser) {
+            return res.status(400).json({ success: false, error: "Já existe um usuário cadastrado com este e-mail no CRM." });
+          }
+          
+          // Se existe no Auth mas não no CRM, pegamos o ID
+          const { data: listData, error: listError } = await supabaseAdmin.auth.admin.listUsers();
+          if (listError) throw listError;
+          
+          const existingAuthUser = (listData.users as any[]).find(u => u.email === email);
+          if (!existingAuthUser) throw new Error("Usuário já registrado no Auth, mas erro ao recuperar ID.");
+          
+          authUserId = existingAuthUser.id;
+        } else {
+          throw authError;
+        }
+      } else {
+        authUserId = authData.user.id;
+      }
 
-      // 3. Create in crm_users
-      const { data: newUser, error: dbError } = await supabase.from(TABLES.users).insert({
-        auth_user_id: authData.user.id,
+      // 3. Create or update in crm_users (Profile)
+      const { data: newUser, error: dbError } = await supabaseAdmin.from(TABLES.users).upsert({
+        auth_user_id: authUserId,
         name,
         email,
         role: role || 'agent',
@@ -2073,12 +2387,24 @@ const DEFAULT_TEAM = {
         team_name: team_name || DEFAULT_TEAM.name,
         is_active: is_active !== undefined ? is_active : true,
         must_change_password: true
-      }).select().single();
+      }, { onConflict: 'email' }).select().single();
 
-      if (dbError) {
-        // Rollback Auth user
-        await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
-        throw dbError;
+      if (dbError) throw dbError;
+
+      // 4. Create or reactivate link in crm_team_members
+      const { error: teamError } = await supabaseAdmin.from(TABLES.team_members).upsert({
+        team_id: newUser.team_id || team_id || DEFAULT_TEAM.id,
+        user_id: newUser.id,
+        user_name: newUser.name,
+        user_email: newUser.email,
+        role_in_team: newUser.role,
+        is_active: true,
+        receives_queue: true,
+        is_available: true
+      }, { onConflict: 'team_id,user_id' });
+
+      if (teamError) {
+        console.error("[TEAM MEMBER ERR]", teamError);
       }
 
       return res.json({ success: true, message: "Usuário criado com sucesso.", user: newUser });
@@ -2180,16 +2506,15 @@ const DEFAULT_TEAM = {
   // --- Presence Routes ---
   app.post("/api/me/presence/heartbeat", async (req, res) => {
     try {
-      const { user_id, user_name, user_email, current_route } = req.body;
-      if (!user_id) return res.status(400).json({ success: false, error: "user_id is required" });
-
+      const currentUser = await getAuthenticatedUser(req);
+      const { current_route } = req.body;
       const now = new Date().toISOString();
 
       // Update Presence Table
       await supabaseAdmin.from(TABLES.presence).upsert({
-        user_id,
-        user_name,
-        user_email,
+        user_id: currentUser.id,
+        user_name: currentUser.name,
+        user_email: currentUser.email,
         is_online: true,
         last_seen_at: now,
         current_route,
@@ -2201,34 +2526,32 @@ const DEFAULT_TEAM = {
         is_online: true,
         last_seen_at: now,
         updated_at: now
-      }).eq("user_id", user_id);
+      }).eq("user_id", currentUser.id);
 
       return res.json({ success: true, timestamp: now });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+      return res.status(401).json({ success: false, error: err.message });
     }
   });
 
   app.post("/api/me/presence/offline", async (req, res) => {
     try {
-      const { user_id } = req.body;
-      if (!user_id) return res.status(400).json({ success: false, error: "user_id is required" });
-
+      const currentUser = await getAuthenticatedUser(req);
       const now = new Date().toISOString();
 
       await supabaseAdmin.from(TABLES.presence).update({
         is_online: false,
         updated_at: now
-      }).eq("user_id", user_id);
+      }).eq("user_id", currentUser.id);
 
       await supabaseAdmin.from(TABLES.team_members).update({
         is_online: false,
         updated_at: now
-      }).eq("user_id", user_id);
+      }).eq("user_id", currentUser.id);
 
       return res.json({ success: true });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+      return res.status(401).json({ success: false, error: err.message });
     }
   });
 
@@ -2344,6 +2667,234 @@ const DEFAULT_TEAM = {
   });
 
   // --- Tags Management ---
+  // --- User Identity ---
+  app.get("/api/me", async (req, res) => {
+    try {
+      const user = await getAuthenticatedUser(req);
+      return res.json({ success: true, user });
+    } catch (err: any) {
+      return res.status(401).json({ success: false, error: err.message });
+    }
+  });
+
+  app.get("/api/admin/users/diagnostic", async (req, res) => {
+    try {
+      const { data: users, error } = await supabaseAdmin.from(TABLES.users).select('*');
+      if (error) throw error;
+
+      const authIds = users?.map(u => u.auth_user_id).filter(id => !!id) || [];
+      const duplicates = authIds.filter((item, index) => authIds.indexOf(item) !== index);
+
+      const diagnostic = {
+        total: users?.length || 0,
+        no_auth_id: users?.filter(u => !u.auth_user_id).map(u => u.email) || [],
+        duplicate_auth_id: users?.filter(u => u.auth_user_id && duplicates.includes(u.auth_user_id)).map(u => u.email) || [],
+        no_team: users?.filter(u => !u.team_id).map(u => u.email) || [],
+        inactive: users?.filter(u => !u.is_active).map(u => u.email) || []
+      };
+
+      return res.json({ success: true, diagnostic });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // --- Campaign Routes ---
+  app.get("/api/campaigns", async (req, res) => {
+    try {
+      const { data, error } = await supabaseAdmin.from(TABLES.campaigns).select('*').order('created_at', { ascending: false });
+      if (error) throw error;
+      return res.json({ success: true, campaigns: data });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post("/api/campaigns/optimize", async (req, res) => {
+    try {
+      const { contacts } = req.body;
+      if (!contacts || !Array.isArray(contacts)) {
+        return res.status(400).json({ success: false, error: "Lista de contatos inválida" });
+      }
+
+      const optimized = contacts.reduce((acc: any[], current: any) => {
+        const phone = String(current.phone || "").replace(/\D/g, "");
+        if (!phone || phone.length < 10) return acc;
+
+        const normalized = normalizeBrazilianPhone(phone);
+        const isDuplicate = acc.some(item => item.phone_normalized === normalized);
+
+        if (!isDuplicate) {
+          acc.push({
+            name: current.name || "",
+            phone: phone,
+            phone_normalized: normalized,
+            variables: current.variables || {}
+          });
+        }
+        return acc;
+      }, []);
+
+      return res.json({ 
+        success: true, 
+        originalCount: contacts.length,
+        optimizedCount: optimized.length,
+        contacts: optimized 
+      });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post("/api/campaigns", async (req, res) => {
+    try {
+      const user = await getAuthenticatedUser(req);
+      const { name, whatsapp_account_id, content, media_url, contacts, batch_size, min_interval, max_interval } = req.body;
+
+      if (!name || !whatsapp_account_id || !content || !contacts || !Array.isArray(contacts)) {
+        return res.status(400).json({ success: false, error: "Dados incompletos para criação da campanha" });
+      }
+
+      const { data: campaign, error: cErr } = await supabaseAdmin.from(TABLES.campaigns).insert({
+        name,
+        whatsapp_account_id,
+        content,
+        media_url,
+        status: 'DRAFT',
+        recipients_count: contacts.length,
+        pending_count: contacts.length,
+        batch_size: batch_size || 5,
+        min_interval: min_interval || 5,
+        max_interval: max_interval || 10,
+        created_by: user.id
+      }).select().single();
+
+      if (cErr) throw cErr;
+
+      const recipients = contacts.map(c => ({
+        campaign_id: campaign.id,
+        name: c.name,
+        phone: c.phone,
+        phone_normalized: c.phone_normalized,
+        variables: c.variables || {},
+        status: 'PENDING'
+      }));
+
+      // Inserir destinatários em lotes para evitar timeout do Supabase
+      const chunkSize = 500;
+      for (let i = 0; i < recipients.length; i += chunkSize) {
+        const chunk = recipients.slice(i, i + chunkSize);
+        await supabaseAdmin.from(TABLES.campaign_recipients).insert(chunk);
+      }
+
+      return res.json({ success: true, campaign });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.get("/api/campaigns/:id", async (req, res) => {
+    try {
+      const { data, error } = await supabaseAdmin.from(TABLES.campaigns).select('*').eq('id', req.params.id).single();
+      if (error) throw error;
+      return res.json({ success: true, campaign: data });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.get("/api/campaigns/:id/recipients", async (req, res) => {
+    try {
+      const { data, error } = await supabaseAdmin.from(TABLES.campaign_recipients).select('*').eq('campaign_id', req.params.id).order('created_at', { ascending: true });
+      if (error) throw error;
+      return res.json({ success: true, recipients: data });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post("/api/campaigns/:id/start", async (req, res) => {
+    try {
+      const { data: campaign } = await supabaseAdmin.from(TABLES.campaigns).update({
+        status: 'RUNNING',
+        started_at: new Date().toISOString()
+      }).eq('id', req.params.id).select().single();
+
+      processCampaignBatch(req.params.id);
+
+      return res.json({ success: true, campaign });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post("/api/campaigns/:id/pause", async (req, res) => {
+    try {
+      const { data: campaign } = await supabaseAdmin.from(TABLES.campaigns).update({
+        status: 'PAUSED'
+      }).eq('id', req.params.id).select().single();
+
+      return res.json({ success: true, campaign });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post("/api/campaigns/:id/resume", async (req, res) => {
+    try {
+      const { data: campaign } = await supabaseAdmin.from(TABLES.campaigns).update({
+        status: 'RUNNING'
+      }).eq('id', req.params.id).select().single();
+
+      processCampaignBatch(req.params.id);
+
+      return res.json({ success: true, campaign });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post("/api/campaigns/:id/cancel", async (req, res) => {
+    try {
+      const { data: campaign } = await supabaseAdmin.from(TABLES.campaigns).update({
+        status: 'CANCELED'
+      }).eq('id', req.params.id).select().single();
+
+      return res.json({ success: true, campaign });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.delete("/api/campaigns/:id", async (req, res) => {
+    try {
+      await supabaseAdmin.from(TABLES.campaigns).delete().eq('id', req.params.id);
+      return res.json({ success: true });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post("/api/campaigns/:id/retry-failed", async (req, res) => {
+    try {
+      await supabaseAdmin.from(TABLES.campaign_recipients)
+        .update({ status: 'PENDING' })
+        .eq('campaign_id', req.params.id)
+        .eq('status', 'FAILED');
+
+      const { data: campaign } = await supabaseAdmin.from(TABLES.campaigns).update({
+        status: 'RUNNING',
+        failed_count: 0
+      }).eq('id', req.params.id).select().single();
+
+      processCampaignBatch(req.params.id);
+
+      return res.json({ success: true, campaign });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   app.get("/api/tags", async (req, res) => {
     try {
       const { data: tags, error } = await supabaseAdmin
@@ -3142,7 +3693,24 @@ const DEFAULT_TEAM = {
     app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
-  app.listen(PORT, "0.0.0.0", () => console.log(`Server on port ${PORT}`));
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
+    
+    // Resume running campaigns on start after a short delay
+    setTimeout(async () => {
+      try {
+        const { data: runningCampaigns } = await supabaseAdmin.from(TABLES.campaigns).select('id').eq('status', 'RUNNING');
+        if (runningCampaigns && runningCampaigns.length > 0) {
+          console.log(`[CAMPAIGNS] Resuming ${runningCampaigns.length} campaigns...`);
+          for (const camp of runningCampaigns) {
+            processCampaignBatch(camp.id);
+          }
+        }
+      } catch (err) {
+        console.error("[CAMPAIGNS] Failed to resume campaigns on start", err);
+      }
+    }, 5000);
+  });
 }
 
 startServer();

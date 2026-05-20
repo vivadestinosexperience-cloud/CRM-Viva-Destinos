@@ -28,13 +28,14 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../../store/useAppStore';
 import { toast } from 'sonner';
+import { authorizedFetch } from '../../services/api';
 import { User, UserRole } from '../../types';
 import { getErrorMessage } from '../../utils/getErrorMessage';
 import { safeAction } from '../../utils/safeAction';
 
 export default function UsersSettingsPage() {
   const navigate = useNavigate();
-  const { users, addUser, updateUser, deleteUser, teams, loadUsers } = useAppStore();
+  const { users, addUser, updateUser, deleteUser, teams, refreshData: loadUsers } = useAppStore();
   
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -71,7 +72,52 @@ export default function UsersSettingsPage() {
     status: 'ACTIVE'
   });
 
+  const [showDiagnostic, setShowDiagnostic] = useState(false);
+  const [diagnosticData, setDiagnosticData] = useState<any>(null);
+  const [isRunningDiagnostic, setIsRunningDiagnostic] = useState(false);
   const [showResetModal, setShowResetModal] = useState(false);
+
+  const runDiagnostic = async () => {
+    setIsRunningDiagnostic(true);
+    await safeAction(async () => {
+      const res = await authorizedFetch('/api/admin/users/diagnostic');
+      const data = await res.json();
+      if (data.success) {
+        setDiagnosticData(data.diagnosis);
+        setShowDiagnostic(true);
+      }
+    }, { label: 'Erro ao rodar diagnóstico' });
+    setIsRunningDiagnostic(false);
+  };
+
+  const handleFixUser = async (user: any) => {
+    toast.info(`Tentando recriar acesso para ${user.name}...`);
+    await safeAction(async () => {
+      const res = await authorizedFetch('/api/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: user.name,
+          email: user.email,
+          role: user.role || 'agent',
+          team_id: user.team_id || 'comercial',
+          team_name: user.team_name || 'Comercial',
+          is_active: true,
+          // Senha padrão temporária para manutenção
+          password: 'Viva' + Math.random().toString(36).slice(-6) + '@!',
+          confirmPassword: '' // backend doesn't check confirmPassword
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(`Acesso recriado para ${user.name}. Nova senha gerada.`);
+        loadUsers();
+        if (showDiagnostic) runDiagnostic();
+      } else {
+        throw data;
+      }
+    }, { label: 'Erro ao recriar acesso' });
+  };
   const [resettingUser, setResettingUser] = useState<User | null>(null);
   const [resetData, setResetData] = useState({
     password: '',
@@ -208,17 +254,27 @@ export default function UsersSettingsPage() {
             <p className="text-slate-500 text-sm mt-1">Gerencie os acessos e permissões da sua equipe comercial.</p>
           </div>
         </div>
-        <button 
-          onClick={() => {
-            resetForm();
-            setEditingUser(null);
-            setShowCreateModal(true);
-          }}
-          className="bg-primary hover:brightness-110 text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg shadow-primary/10 flex items-center gap-2 transition-all active:scale-95"
-        >
-          <Plus className="w-4 h-4" />
-          Criar Usuário
-        </button>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={runDiagnostic}
+            disabled={isRunningDiagnostic}
+            className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-all active:scale-95 border border-slate-200 ${isRunningDiagnostic ? 'bg-slate-50 text-slate-400' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+          >
+            <RefreshCw className={`w-4 h-4 ${isRunningDiagnostic ? 'animate-spin' : ''}`} />
+            {isRunningDiagnostic ? 'Diagnosticando...' : 'Diagnóstico'}
+          </button>
+          <button 
+            onClick={() => {
+              resetForm();
+              setEditingUser(null);
+              setShowCreateModal(true);
+            }}
+            className="bg-primary hover:brightness-110 text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg shadow-primary/10 flex items-center gap-2 transition-all active:scale-95"
+          >
+            <Plus className="w-4 h-4" />
+            Criar Usuário
+          </button>
+        </div>
       </div>
 
       {/* Stats Cards */}
@@ -584,7 +640,121 @@ export default function UsersSettingsPage() {
         )}
       </AnimatePresence>
 
-      {/* Reset Password Modal */}
+      {/* User Diagnostic Modal */}
+      <AnimatePresence>
+        {showDiagnostic && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" onClick={() => setShowDiagnostic(false)} />
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} className="relative w-full max-w-4xl bg-white rounded-[2.5rem] shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[80vh]">
+               <div className="p-8 border-b border-slate-50 bg-slate-50/30 shrink-0">
+                  <h2 className="text-xl font-black text-slate-800 uppercase tracking-widest flex items-center gap-3">
+                     <Shield className="w-6 h-6 text-primary" /> Diagnóstico de Identidade
+                  </h2>
+                  <p className="text-xs text-slate-400 font-bold mt-1 uppercase tracking-tighter">
+                     Identificando usuários com desajustes de autenticação ou perfil.
+                  </p>
+               </div>
+               
+               <div className="p-8 overflow-y-auto space-y-8">
+                  {diagnosticData ? (
+                    <>
+                      {/* Section: Missing Auth ID */}
+                      <div className="space-y-4">
+                        <h3 className="text-[10px] font-black text-amber-500 uppercase tracking-widest flex items-center gap-2">
+                           <UserX className="w-4 h-4" /> Usuários Sem Vínculo de Autenticação ({diagnosticData.missing_auth_id.length})
+                        </h3>
+                        {diagnosticData.missing_auth_id.length > 0 ? (
+                          <div className="grid gap-3">
+                            {diagnosticData.missing_auth_id.map((user: any) => (
+                              <div key={user.id} className="p-4 bg-amber-50 border border-amber-100 rounded-2xl flex items-center justify-between">
+                                <div>
+                                  <p className="text-sm font-bold text-amber-900">{user.name}</p>
+                                  <p className="text-[10px] text-amber-700 font-bold uppercase">{user.email || 'Sem e-mail'}</p>
+                                </div>
+                                <button 
+                                  onClick={() => handleFixUser(user)}
+                                  className="px-4 py-2 bg-amber-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-amber-600 transition-all active:scale-95 shadow-sm"
+                                >
+                                  Recriar Acesso
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-400 italic">✅ Nenhum usuário afetado.</p>
+                        )}
+                      </div>
+
+                      {/* Section: Duplicate Auth ID */}
+                      <div className="space-y-4 pt-4 border-t border-slate-50">
+                        <h3 className="text-[10px] font-black text-red-500 uppercase tracking-widest flex items-center gap-2">
+                           <XCircle className="w-4 h-4" /> IDs de Autenticação Duplicados ({diagnosticData.duplicate_auth_ids.length})
+                        </h3>
+                        {diagnosticData.duplicate_auth_ids.length > 0 ? (
+                          <div className="grid gap-3">
+                            {diagnosticData.duplicate_auth_ids.map((dup: any) => (
+                              <div key={dup.auth_user_id} className="p-4 bg-red-50 border border-red-100 rounded-2xl">
+                                <p className="text-[10px] font-black text-red-700 uppercase mb-2">ID Comprometido: {dup.auth_user_id}</p>
+                                <div className="space-y-1">
+                                  {dup.users.map((u: any) => (
+                                    <p key={u.id} className="text-xs font-bold text-red-900">• {u.name} ({u.email})</p>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-400 italic">✅ Nenhum conflito detectado.</p>
+                        )}
+                      </div>
+
+                      {/* Section: Team Issues */}
+                      <div className="space-y-4 pt-4 border-t border-slate-50">
+                        <h3 className="text-[10px] font-black text-purple-500 uppercase tracking-widest flex items-center gap-2">
+                           <Users className="w-4 h-4" /> Usuários Sem Equipe Configurada ({diagnosticData.no_team_link.length})
+                        </h3>
+                        {diagnosticData.no_team_link.length > 0 ? (
+                          <div className="grid gap-3">
+                            {diagnosticData.no_team_link.map((user: any) => (
+                              <div key={user.id} className="p-4 bg-purple-50 border border-purple-100 rounded-2xl flex items-center justify-between">
+                                <div>
+                                  <p className="text-sm font-bold text-purple-900">{user.name}</p>
+                                  <p className="text-[10px] text-purple-700 font-bold uppercase">{user.email}</p>
+                                </div>
+                                <button 
+                                  onClick={() => handleEditClick(user)}
+                                  className="px-4 py-2 bg-purple-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-purple-600 transition-all active:scale-95 shadow-sm"
+                                >
+                                  Vincular Equipe
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-400 italic">✅ Todos usuários vinculados.</p>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-20 gap-4">
+                      <RefreshCw className="w-12 h-12 text-slate-200 animate-spin" />
+                      <p className="text-slate-400 font-bold text-sm tracking-tight">Analisando base de dados...</p>
+                    </div>
+                  )}
+               </div>
+
+               <div className="p-8 border-t border-slate-50 bg-slate-50/30 flex justify-end shrink-0">
+                  <button 
+                    onClick={() => setShowDiagnostic(false)}
+                    className="px-10 py-4 bg-slate-800 text-white font-black text-xs uppercase tracking-[0.2em] rounded-2xl shadow-xl shadow-slate-900/20 hover:brightness-110 transition-all active:scale-95"
+                  >
+                    Fechar Diagnóstico
+                  </button>
+               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
       <AnimatePresence>
         {showResetModal && resettingUser && (
           <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">

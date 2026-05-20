@@ -22,12 +22,10 @@ export default function AuditSettingsPage() {
   const [searchTerm, setSearchTerm] = useState('');
 
   const logs = [
-    { id: 1, user: 'Gustavo Alves', action: 'Permissão alterada', module: 'Segurança', target: 'Consultores', time: 'Agora', status: 'SUCCESS' },
     { id: 2, user: 'Maria Júlia', action: 'WhatsApp Desconectado', module: 'Canais', target: 'Pós-venda (+55 64...)', time: 'Há 12 min', status: 'WARNING' },
     { id: 3, user: 'Ana Luiza', action: 'Cotação Criada', module: 'Vendas', target: 'Lead: João Silva', time: 'Há 45 min', status: 'SUCCESS' },
     { id: 4, user: 'Sistema', action: 'Backup Automático', module: 'Database', target: 'Cloud Storage', time: 'Há 2 horas', status: 'SUCCESS' },
     { id: 5, user: 'Higor Santos', action: 'Login realizado', module: 'Sessão', target: 'IP 192.168.1.5', time: 'Há 4 horas', status: 'SUCCESS' },
-    { id: 6, user: 'Gustavo Alves', action: 'Usuário Inativado', module: 'RH', target: 'Paula Souza', time: 'Ontem', status: 'SUCCESS' },
   ];
 
   return (

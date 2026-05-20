@@ -42,6 +42,7 @@ import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
 import { Conversation, Message, Customer, Team } from '../types';
 import { supabase } from '../integrations/supabase/client';
 import { useAppStore } from '../store/useAppStore';
+import { authorizedFetch } from '../services/api';
 import { toast } from 'sonner';
 import { getErrorMessage, renderSafeText } from '../utils/renderSafeText';
 import { safeAction } from '../utils/safeAction';
@@ -100,6 +101,8 @@ export default function OmnichannelPage() {
   const [closeReason, setCloseReason] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTeamId, setSelectedTeamId] = useState('all');
+  const [selectedTagId, setSelectedTagId] = useState('all');
+  const { tags } = useAppStore();
   
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -136,7 +139,7 @@ export default function OmnichannelPage() {
     try {
       const baseUrl = getApiBaseUrl();
       const teamParam = selectedTeamId !== 'all' ? `?team_id=${selectedTeamId}` : '';
-      const response = await fetch(`${baseUrl}/api/omnichannel/conversations${teamParam}`);
+      const response = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations${teamParam}`);
       const data = await response.json();
 
       if (data.success) {
@@ -165,7 +168,7 @@ export default function OmnichannelPage() {
     if (!silent) setLoadingMessages(true);
     try {
       const baseUrl = getApiBaseUrl();
-      const response = await fetch(`${baseUrl}/api/omnichannel/conversations/${conversationId}/messages`);
+      const response = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${conversationId}/messages`);
       const data = await response.json();
 
       if (data.success) {
@@ -195,7 +198,7 @@ export default function OmnichannelPage() {
 
     // Mark as read locally and via API
     const baseUrl = getApiBaseUrl();
-    fetch(`${baseUrl}/api/omnichannel/conversations/${conversation.id}`, {
+    authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${conversation.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ unread_count: 0 })
@@ -482,7 +485,7 @@ export default function OmnichannelPage() {
       formData.append('sender_user_id', currentUser?.id || '');
       formData.append('sender_name', agentName);
 
-      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-media`, {
+      const res = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-media`, {
         method: 'POST',
         body: formData
       });
@@ -510,6 +513,12 @@ export default function OmnichannelPage() {
       // Filter by Team
       if (selectedTeamId !== 'all') {
         if (conversation.team_id !== selectedTeamId) return false;
+      }
+
+      // Filter by Tag
+      if (selectedTagId !== 'all') {
+        const convTags = conversation.tags || [];
+        if (!convTags.some((t: any) => t.id === selectedTagId)) return false;
       }
 
       // Filter by Search
@@ -563,7 +572,7 @@ export default function OmnichannelPage() {
     setLoadingTransferMembers(true);
     try {
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/teams/${teamId}/members`);
+      const res = await authorizedFetch(`${baseUrl}/api/teams/${teamId}/members`);
       const data = await res.json();
       if (data.success) {
         // Apenas membros ativos
@@ -585,7 +594,7 @@ export default function OmnichannelPage() {
       const assignedTeamId = currentUser?.team_id || activeConversation?.team_id || 'comercial';
       const assignedTeamName = teams.find(t => t.id === assignedTeamId)?.name || 'Comercial';
 
-      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${conversationId}`, {
+      const res = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${conversationId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -621,7 +630,7 @@ export default function OmnichannelPage() {
       const selectedTeam = teams.find(t => t.id === transferData.teamId);
       const selectedUser = transferMembers.find(m => m.user_id === transferData.userId);
 
-      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/transfer`, {
+      const res = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/transfer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -661,7 +670,7 @@ export default function OmnichannelPage() {
           return;
         }
         
-        const custRes = await fetch(`${baseUrl}/api/crm/customers`, {
+        const custRes = await authorizedFetch(`${baseUrl}/api/crm/customers`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -677,7 +686,7 @@ export default function OmnichannelPage() {
 
       // 2. Create conversation
       const selectedTeam = teams.find(t => t.id === newChatData.teamId);
-      const convRes = await fetch(`${baseUrl}/api/omnichannel/conversations`, {
+      const convRes = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -713,7 +722,7 @@ export default function OmnichannelPage() {
 
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}`, {
+      const res = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -737,7 +746,7 @@ export default function OmnichannelPage() {
       .join('\n');
 
     toast.promise(
-      fetch('/api/ai/suggestion', {
+      authorizedFetch('/api/ai/suggestion', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: history })
@@ -766,7 +775,7 @@ export default function OmnichannelPage() {
       .join('\n');
 
     toast.promise(
-      fetch('/api/ai/classify', {
+      authorizedFetch('/api/ai/classify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: history })
@@ -804,13 +813,11 @@ export default function OmnichannelPage() {
       setNewMessage('');
       
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-message`, {
+      const res = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          message: originalContent,
-          agentId: currentUser?.id,
-          agentName: agentName
+          message: originalContent
         })
       });
 
@@ -842,7 +849,7 @@ export default function OmnichannelPage() {
     if (!activeConversation) return;
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversation.id}`, {
+      const res = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${activeConversation.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'OPEN' })
@@ -913,10 +920,8 @@ export default function OmnichannelPage() {
       formData.append('file', selectedFile);
       formData.append('type', mediaType || 'document');
       formData.append('caption', mediaCaption || '');
-      formData.append('sender_user_id', currentUser?.id || '');
-      formData.append('sender_name', agentName);
 
-      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-media`, {
+      const res = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-media`, {
         method: 'POST',
         body: formData
       });
@@ -956,7 +961,7 @@ export default function OmnichannelPage() {
         return;
       }
 
-      const res = await fetch(endpoint, {
+      const res = await authorizedFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -980,13 +985,11 @@ export default function OmnichannelPage() {
       setIsInternalMode(false);
       
       const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/internal-note`, {
+      const res = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${activeConversationId}/internal-note`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          note,
-          sender_user_id: currentUser?.id,
-          sender_name: agentName
+          note
         })
       });
 
@@ -1088,6 +1091,25 @@ export default function OmnichannelPage() {
                 className={`shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${selectedTeamId === team.id ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
               >
                 {team.name}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-2">
+            <button 
+              onClick={() => setSelectedTagId('all')}
+              className={`shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${selectedTagId === 'all' ? 'bg-slate-800 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+            >
+              Qualquer Tag
+            </button>
+            {tags.map(tag => (
+              <button 
+                key={tag.id}
+                onClick={() => setSelectedTagId(tag.id)}
+                className={`shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${selectedTagId === tag.id ? 'text-white border-2' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                style={selectedTagId === tag.id ? { backgroundColor: tag.color, borderColor: 'white' } : {}}
+              >
+                {tag.name}
               </button>
             ))}
           </div>

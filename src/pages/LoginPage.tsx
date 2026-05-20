@@ -6,12 +6,13 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { authService } from '../services/authService';
+import { authorizedFetch } from '../services/api';
 import { toast } from 'sonner';
 import Logo from '../components/Logo';
 
 export default function LoginPage({ onLogin }: { onLogin: () => void }) {
-  const [email, setEmail] = useState('admin@viva.com');
-  const [password, setPassword] = useState('123456');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,9 +54,8 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
 
     setLoading(true);
     try {
-      const res = await fetch('/api/me/change-password', {
+      const res = await authorizedFetch('/api/me/change-password', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ auth_user_id: tempUserId, password: newPasswords.password })
       });
       const data = await res.json();

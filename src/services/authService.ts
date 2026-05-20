@@ -2,19 +2,6 @@ import { supabase } from '../integrations/supabase/client';
 
 export const authService = {
   async signIn(email: string, password: string) {
-    // Mock bypass for development credentials
-    if (email === 'admin@viva.com' && password === '123456') {
-      console.log('Using mock login for admin@viva.com');
-      localStorage.setItem('viva_mock_auth', 'true');
-      return { 
-        data: { 
-          user: { id: 'mock-user-id', email: 'admin@viva.com' },
-          session: { access_token: 'mock-token', user: { id: 'mock-user-id', email: 'admin@viva.com' } }
-        }, 
-        error: null 
-      };
-    }
-
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -23,50 +10,40 @@ export const authService = {
   },
 
   async signOut() {
-    localStorage.removeItem('viva_mock_auth');
     const { error } = await supabase.auth.signOut();
     return { error };
   },
 
   async getCurrentUser() {
-    // Check mock first
-    if (localStorage.getItem('viva_mock_auth') === 'true') {
-      return { user: { id: 'mock-user-id', email: 'admin@viva.com', profile: { name: 'Gustavo Alves (Admin)' } }, error: null };
-    }
-
-    const { data: { user }, error } = await supabase.auth.getUser();
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
     
-    if (user) {
-      const { data: profile } = await supabase
-        .from('crm_users')
-        .select('*')
-        .eq('auth_user_id', user.id)
-        .single();
+    if (!token) return { user: null, error: null };
+
+    try {
+      const res = await fetch('/api/me', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
       
-      // Fallback if crm_users doesn't have the entry yet (e.g. legacy/direct auth)
-      if (!profile) {
-        console.warn(`[AUTH] User ${user.id} has no crm_users entry.`);
-        return { user: { ...user }, error: null };
+      if (!res.ok) {
+        // Se o token expirou ou usuário foi deletado do backend
+        if (res.status === 401 || res.status === 403 || data.error?.includes('inativo')) {
+          await supabase.auth.signOut();
+        }
+        throw new Error(data.error || 'Erro ao carregar perfil');
       }
-
-      return { user: { ...user, profile }, error: null };
+      
+      return { user: data.user, error: null };
+    } catch (err: any) {
+      console.error('[AUTH] Failed to get current user:', err);
+      return { user: null, error: err.message };
     }
-    
-    return { user: null, error: null };
   },
 
   async getSession() {
-    // Check mock first
-    if (localStorage.getItem('viva_mock_auth') === 'true') {
-      return { 
-        session: { 
-          access_token: 'mock-token', 
-          user: { id: 'mock-user-id', email: 'admin@viva.com' } 
-        }, 
-        error: null 
-      };
-    }
-
     const { data: { session }, error } = await supabase.auth.getSession();
     return { session, error };
   }

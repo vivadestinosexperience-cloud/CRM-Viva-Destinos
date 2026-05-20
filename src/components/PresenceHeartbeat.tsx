@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
+import { authorizedFetch } from '../services/api';
 
 export default function PresenceHeartbeat() {
   const { currentUser } = useAppStore();
@@ -15,13 +16,9 @@ export default function PresenceHeartbeat() {
     const sendHeartbeat = async () => {
       try {
         const baseUrl = getApiBaseUrl();
-        await fetch(`${baseUrl}/api/me/presence/heartbeat`, {
+        await authorizedFetch(`${baseUrl}/api/me/presence/heartbeat`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            user_id: currentUser.id,
-            user_name: currentUser.name || currentUser.email,
-            user_email: currentUser.email,
             current_route: window.location.pathname
           })
         });
@@ -33,10 +30,8 @@ export default function PresenceHeartbeat() {
     const setOffline = async () => {
       try {
         const baseUrl = getApiBaseUrl();
-        await fetch(`${baseUrl}/api/me/presence/offline`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: currentUser.id })
+        await authorizedFetch(`${baseUrl}/api/me/presence/offline`, {
+          method: 'POST'
         });
       } catch (err) {
         // Silent error
@@ -51,13 +46,18 @@ export default function PresenceHeartbeat() {
 
     // Handle beforeunload (tab close)
     const handleUnload = () => {
+      // We attempt authorizedFetch with keepalive for reliability
       const baseUrl = getApiBaseUrl();
       const url = `${baseUrl}/api/me/presence/offline`;
-      const data = JSON.stringify({ user_id: currentUser.id });
       
-      // Use sendBeacon for reliability on close
-      // Note: sendBeacon only supports string or Blob
-      navigator.sendBeacon(url, new Blob([data], { type: 'application/json' }));
+      // Need to get session synchronously or use a pre-fetched token if possible
+      // But since initializedFetch is async, we'll just try our best here.
+      // Alternatively, the backend could have a beacon-friendly endpoint that uses cookies if we used them.
+      // For now, let's just stick to standard fetch.
+      authorizedFetch(url, { 
+        method: 'POST', 
+        keepalive: true 
+      });
     };
 
     window.addEventListener('beforeunload', handleUnload);
