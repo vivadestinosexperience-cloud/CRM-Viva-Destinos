@@ -3684,6 +3684,31 @@ const DEFAULT_TEAM = {
     }
   });
 
+  app.get("/api/debug/send-message-config", async (req, res) => {
+    try {
+      const { config } = getZapiConfig();
+      return res.json({
+        success: true,
+        hasZapiInstanceId: Boolean(config.instanceId),
+        hasZapiInstanceToken: Boolean(config.instanceToken),
+        hasZapiClientToken: Boolean(config.clientToken),
+        hasSupabaseUrl: Boolean(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL),
+        hasServiceRole: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY)
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  // Ensure /api routes always return JSON 404 instead of HTML
+  app.use("/api", (req, res) => {
+    return res.status(404).json({
+      success: false,
+      error: "Rota de API não encontrada.",
+      path: req.originalUrl
+    });
+  });
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);

@@ -18,7 +18,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { toast } from 'sonner';
-import { authorizedFetch } from '../services/api';
+import { authorizedFetch, safeReadJson } from '../services/api';
 
 interface LeadDetailsModalProps {
   conversationId: string;
@@ -37,7 +37,7 @@ export default function LeadDetailsModal({ conversationId, onClose }: LeadDetail
     try {
       setLoading(true);
       const res = await authorizedFetch(`/api/omnichannel/conversations/${conversationId}/details`);
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw data;
       setDetails(data.details);
     } catch (err: any) {

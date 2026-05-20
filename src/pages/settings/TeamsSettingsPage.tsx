@@ -29,7 +29,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../../store/useAppStore';
-import { authorizedFetch } from '../../services/api';
+import { authorizedFetch, safeReadJson, getApiBaseUrl } from '../../services/api';
 import { Team, TeamMember, User } from '../../types';
 import { toast } from 'sonner';
 import { getErrorMessage } from '../../utils/getErrorMessage';
@@ -66,7 +66,7 @@ export default function TeamsSettingsPage() {
     try {
       const baseUrl = getApiBaseUrl();
       const res = await authorizedFetch(`${baseUrl}/api/teams`);
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (data.success) {
         setTeams(data.teams || []);
       } else {
@@ -84,7 +84,7 @@ export default function TeamsSettingsPage() {
     try {
       const baseUrl = getApiBaseUrl();
       const res = await authorizedFetch(`${baseUrl}/api/teams/${teamId}/members`);
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (data.success) {
         setTeamMembers(data.members || []);
       }
@@ -126,7 +126,7 @@ export default function TeamsSettingsPage() {
         body: JSON.stringify(payload)
       });
       
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw data;
 
       toast.success(editingTeam ? "Equipe atualizada!" : "Equipe criada com sucesso!");
@@ -148,7 +148,7 @@ export default function TeamsSettingsPage() {
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();
       const res = await authorizedFetch(`${baseUrl}/api/teams/${team.id}`, { method: 'DELETE' });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw data;
 
       toast.success("Equipe excluída");
@@ -166,7 +166,7 @@ export default function TeamsSettingsPage() {
         body: JSON.stringify(updates)
       });
       
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw data;
 
       toast.success("Membro atualizado");
@@ -194,7 +194,7 @@ export default function TeamsSettingsPage() {
         })
       });
       
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw data;
 
       toast.success(`${user.name} adicionado à equipe`);
@@ -213,7 +213,7 @@ export default function TeamsSettingsPage() {
         method: 'DELETE'
       });
       
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw data;
 
       toast.success("Membro removido");
@@ -232,7 +232,7 @@ export default function TeamsSettingsPage() {
         })
       });
       
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw data;
 
       toast.success(`Distribuição ${!team.distribution_enabled ? 'ativada' : 'desativada'} para ${team.name}`);

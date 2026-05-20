@@ -42,7 +42,7 @@ import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
 import { Conversation, Message, Customer, Team } from '../types';
 import { supabase } from '../integrations/supabase/client';
 import { useAppStore } from '../store/useAppStore';
-import { authorizedFetch } from '../services/api';
+import { authorizedFetch, safeReadJson, getApiBaseUrl } from '../services/api';
 import { toast } from 'sonner';
 import { getErrorMessage, renderSafeText } from '../utils/renderSafeText';
 import { safeAction } from '../utils/safeAction';
@@ -490,9 +490,9 @@ export default function OmnichannelPage() {
         body: formData
       });
 
+      const data = await safeReadJson(res);
       if (!res.ok) {
-        const errorData = await res.json();
-        throw errorData;
+        throw data;
       }
 
       await loadMessages(activeConversationId, true);
@@ -606,7 +606,8 @@ export default function OmnichannelPage() {
         })
       });
       
-      if (!res.ok) throw await res.json();
+      const data = await safeReadJson(res);
+      if (!res.ok) throw data;
       
       await loadConversations(true);
       setActiveConversationId(conversationId);
@@ -821,10 +822,10 @@ export default function OmnichannelPage() {
         })
       });
 
+      const data = await safeReadJson(res);
       if (!res.ok) {
-        const errorData = await res.json();
         setNewMessage(originalContent); // Restore on error
-        throw errorData;
+        throw data;
       }
       
       await loadMessages(activeConversationId, true);
@@ -926,9 +927,9 @@ export default function OmnichannelPage() {
         body: formData
       });
 
+      const data = await safeReadJson(res);
       if (!res.ok) {
-        const errorData = await res.json();
-        throw errorData;
+        throw data;
       }
       
       await loadMessages(activeConversationId, true);
@@ -993,11 +994,11 @@ export default function OmnichannelPage() {
         })
       });
 
+      const data = await safeReadJson(res);
       if (!res.ok) {
-        const errorData = await res.json();
         setNewMessage(note);
         setIsInternalMode(true);
-        throw errorData;
+        throw data;
       }
       
       await loadMessages(activeConversationId, true);

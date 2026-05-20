@@ -28,7 +28,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../../store/useAppStore';
 import { toast } from 'sonner';
-import { authorizedFetch } from '../../services/api';
+import { authorizedFetch, safeReadJson } from '../../services/api';
 import { User, UserRole } from '../../types';
 import { getErrorMessage } from '../../utils/getErrorMessage';
 import { safeAction } from '../../utils/safeAction';
@@ -81,7 +81,7 @@ export default function UsersSettingsPage() {
     setIsRunningDiagnostic(true);
     await safeAction(async () => {
       const res = await authorizedFetch('/api/admin/users/diagnostic');
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (data.success) {
         setDiagnosticData(data.diagnosis);
         setShowDiagnostic(true);
@@ -95,7 +95,6 @@ export default function UsersSettingsPage() {
     await safeAction(async () => {
       const res = await authorizedFetch('/api/admin/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: user.name,
           email: user.email,

@@ -6,7 +6,7 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { authService } from '../services/authService';
-import { authorizedFetch } from '../services/api';
+import { authorizedFetch, safeReadJson } from '../services/api';
 import { toast } from 'sonner';
 import Logo from '../components/Logo';
 
@@ -58,7 +58,7 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
         method: 'POST',
         body: JSON.stringify({ auth_user_id: tempUserId, password: newPasswords.password })
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao alterar senha');
       
       toast.success("Senha alterada com sucesso! Bem-vindo.");

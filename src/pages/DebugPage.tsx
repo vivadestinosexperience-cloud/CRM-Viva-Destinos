@@ -2,23 +2,29 @@ import React, { useEffect, useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { getErrorMessage } from '../utils/getErrorMessage';
 
-import { authorizedFetch } from '../services/api';
+import { authorizedFetch, safeReadJson } from '../services/api';
 
 export default function DebugPage() {
   const { whatsAppAccounts } = useAppStore();
   const [configStatus, setConfigStatus] = useState<any>(null);
   const [debugLog, setDebugLog] = useState<any>(null);
+  const [msgConfig, setMsgConfig] = useState<any>(null);
 
   useEffect(() => {
     authorizedFetch('/api/zapi/config-status')
-      .then(res => res.json())
+      .then(safeReadJson)
       .then(setConfigStatus)
       .catch(err => setConfigStatus({ error: getErrorMessage(err) }));
 
     authorizedFetch('/api/zapi/debug-config')
-      .then(res => res.json())
+      .then(safeReadJson)
       .then(setDebugLog)
       .catch(err => setDebugLog({ error: getErrorMessage(err) }));
+
+    authorizedFetch('/api/debug/send-message-config')
+      .then(safeReadJson)
+      .then(setMsgConfig)
+      .catch(err => setMsgConfig({ error: getErrorMessage(err) }));
   }, []);
 
   if (process.env.NODE_ENV !== 'development') {
@@ -55,6 +61,13 @@ export default function DebugPage() {
         <h2 className="text-lg font-bold bg-slate-800 text-white px-4 py-1">Z-API Debug Config</h2>
         <pre className="bg-slate-900 text-blue-400 p-6 rounded-xl overflow-auto shadow-2xl">
           {JSON.stringify(debugLog, null, 2)}
+        </pre>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-lg font-bold bg-slate-800 text-white px-4 py-1">Send Message Config (Debug)</h2>
+        <pre className="bg-slate-900 text-purple-400 p-6 rounded-xl overflow-auto shadow-2xl">
+          {JSON.stringify(msgConfig, null, 2)}
         </pre>
       </section>
 

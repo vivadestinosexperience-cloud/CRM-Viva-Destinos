@@ -13,7 +13,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useAppStore } from '../../store/useAppStore';
-import { authorizedFetch } from '../../services/api';
+import { authorizedFetch, safeReadJson } from '../../services/api';
 import { WhatsAppAccount } from '../../types';
 import { toast } from 'sonner';
 import { getErrorMessage as getGlobalErrorMessage } from '../../utils/getErrorMessage';
@@ -127,18 +127,6 @@ export default function ChannelsSettingsPage() {
 
   const qrIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const statusIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  const safeReadJson = async (response: Response) => {
-    const text = await response.text();
-    if (!text) {
-      return { success: false, error: "Resposta vazia do servidor.", status: response.status };
-    }
-    try {
-      return JSON.parse(text);
-    } catch (error) {
-      return { success: false, error: "Resposta inválida do servidor.", raw: text, status: response.status };
-    }
-  };
 
   const refreshWebhookLogs = async () => {
     await fetchDiagnostic();
@@ -565,7 +553,7 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                     if (!confirm('Deseja marcar como IGNORED conversas de grupos que já caíram no CRM?')) return;
                     try {
                       const res = await authorizedFetch('/api/admin/cleanup-group-conversations', { method: 'POST' });
-                      const data = await res.json();
+                      const data = await safeReadJson(res);
                       if (data.success) {
                         alert(data.message);
                         fetchDiagnostic();
