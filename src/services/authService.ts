@@ -1,4 +1,5 @@
 import { supabase } from '../integrations/supabase/client';
+import { authorizedFetch, safeReadJson, getApiBaseUrl } from './api';
 
 export const authService = {
   async signIn(email: string, password: string) {
@@ -15,18 +16,9 @@ export const authService = {
   },
 
   async getCurrentUser() {
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
-    
-    if (!token) return { user: null, error: null };
-
     try {
-      const res = await fetch('/api/me', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      const data = await res.json();
+      const res = await authorizedFetch('/api/me');
+      const data = await safeReadJson(res);
       
       if (!res.ok) {
         // Se o token expirou ou usuário foi deletado do backend
@@ -38,7 +30,9 @@ export const authService = {
       
       return { user: data.user, error: null };
     } catch (err: any) {
-      console.error('[AUTH] Failed to get current user:', err);
+      if (err.message !== 'Failed to fetch') {
+        console.error('[AUTH] Failed to get current user:', err);
+      }
       return { user: null, error: err.message };
     }
   },

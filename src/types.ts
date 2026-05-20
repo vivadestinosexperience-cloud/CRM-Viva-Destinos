@@ -172,7 +172,7 @@ export interface Message {
   senderId?: string;
 }
 
-export type CampaignStatus = 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'PAUSED' | 'COMPLETED' | 'CANCELLED' | 'ERROR';
+export type CampaignStatus = 'DRAFT' | 'READY' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'CANCELED' | 'SCHEDULED' | 'SENDING' | 'ERROR';
 
 export interface Campaign {
   id: string;
@@ -180,11 +180,18 @@ export interface Campaign {
   type: string;
   whatsapp_account_id: string;
   content: string;
+  message_type?: 'text' | 'image' | 'video' | 'document';
+  media_url?: string;
+  media_file_name?: string;
+  media_mime_type?: string;
   status: CampaignStatus;
   target_tags?: string[];
   recipients_count: number;
+  pending_count: number;
+  sending_count: number;
   sent_count: number;
   failed_count: number;
+  skipped_count: number;
   read_count: number;
   replied_count: number;
   opt_out_count: number;
@@ -195,14 +202,19 @@ export interface Campaign {
   updated_at?: string;
   scheduled_at?: string;
   started_at?: string;
+  paused_at?: string;
   completed_at?: string;
+  finished_at?: string;
+  last_processed_at?: string;
+  last_error?: string;
   
   // Settings
   min_interval?: number;
   max_interval?: number;
-  interval_seconds: number;
+  interval_seconds?: number;
   batch_size: number;
-  batch_interval_minutes: number;
+  batch_interval_minutes?: number;
+  max_attempts?: number;
   allowed_start_time?: string;
   allowed_end_time?: string;
 }
@@ -213,15 +225,28 @@ export interface CampaignRecipient {
   customer_id?: string;
   name: string;
   phone: string;
+  phone_normalized: string;
   source: 'crm' | 'manual_list';
   save_to_crm: boolean;
-  status: 'PENDING' | 'SENDING' | 'SENT' | 'FAILED' | 'READ' | 'REPLIED' | 'OPT_OUT' | 'CANCELLED';
+  status: 'PENDING' | 'SENDING' | 'SENT' | 'FAILED' | 'SKIPPED' | 'READ' | 'REPLIED' | 'OPT_OUT' | 'CANCELLED';
   error_message?: string;
+  raw_response?: any;
+  attempts?: number;
+  last_attempt_at?: string;
   sent_at?: string;
   delivered_at?: string;
   read_at?: string;
   replied_at?: string;
   opt_out?: boolean;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface CampaignEvent {
+  id: string;
+  campaign_id: string;
+  event_type: string;
+  data: any;
   created_at: string;
 }
 

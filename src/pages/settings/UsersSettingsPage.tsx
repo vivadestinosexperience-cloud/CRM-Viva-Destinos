@@ -107,7 +107,7 @@ export default function UsersSettingsPage() {
           confirmPassword: '' // backend doesn't check confirmPassword
         })
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (data.success) {
         toast.success(`Acesso recriado para ${user.name}. Nova senha gerada.`);
         loadUsers();

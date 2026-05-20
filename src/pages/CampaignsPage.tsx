@@ -38,7 +38,11 @@ import {
   ShieldCheck,
   SmartphoneNfc,
   Check,
-  ExternalLink
+  ExternalLink,
+  MoreHorizontal,
+  RotateCcw,
+  Terminal,
+  Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAppStore } from '../store/useAppStore';
@@ -49,14 +53,18 @@ import { safeAction } from '../utils/safeAction';
 import { getAgentDisplayName } from '../utils/userUtils';
 import { normalizeBrazilPhone } from '../utils/phoneUtils';
 
-const STATUS_CONFIG: Record<CampaignStatus, { label: string; color: string; bg: string }> = {
+import CampaignDetailsModal from '../components/CampaignDetailsModal';
+import CampaignDebugModal from '../components/CampaignDebugModal';
+
+const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
   'DRAFT': { label: 'Rascunho', color: 'text-slate-500', bg: 'bg-slate-100' },
-  'SCHEDULED': { label: 'Agendada', color: 'text-indigo-600', bg: 'bg-indigo-50' },
-  'SENDING': { label: 'Em disparo', color: 'text-blue-600', bg: 'bg-blue-50' },
-  'COMPLETED': { label: 'Concluída', color: 'text-emerald-600', bg: 'bg-emerald-50' },
+  'READY': { label: 'Pronta', color: 'text-indigo-600', bg: 'bg-indigo-50' },
+  'RUNNING': { label: 'Em disparo', color: 'text-emerald-600', bg: 'bg-emerald-50' },
   'PAUSED': { label: 'Pausada', color: 'text-amber-600', bg: 'bg-amber-50' },
-  'CANCELLED': { label: 'Cancelada', color: 'text-rose-600', bg: 'bg-rose-50' },
-  'ERROR': { label: 'Erro', color: 'text-red-600', bg: 'bg-red-50' }
+  'COMPLETED': { label: 'Concluída', color: 'text-blue-600', bg: 'bg-blue-50' },
+  'FAILED': { label: 'Erro', color: 'text-rose-600', bg: 'bg-rose-50' },
+  'CANCELED': { label: 'Cancelada', color: 'text-slate-400', bg: 'bg-slate-200' },
+  'SCHEDULED': { label: 'Agendada', color: 'text-indigo-400', bg: 'bg-indigo-50' }
 };
 
 export default function CampaignsPage() {
@@ -68,8 +76,9 @@ export default function CampaignsPage() {
     pauseCampaign, 
     resumeCampaign, 
     cancelCampaign,
+    retryFailedCampaign,
+    processCampaignBatch,
     getCampaignRecipients,
-    updateCampaignRecipient,
     whatsAppAccounts, 
     customers,
     currentUser,
@@ -78,14 +87,13 @@ export default function CampaignsPage() {
   } = useAppStore();
   
   const [showAddModal, setShowAddModal] = useState(false);
-  const [showViewModal, setShowViewModal] = useState(false);
-  const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
-  const [recipients, setRecipients] = useState<CampaignRecipient[]>([]);
-  const [isLoadingRecipients, setIsLoadingRecipients] = useState(false);
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [showDebugModal, setShowDebugModal] = useState(false);
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
   
   const [searchTerm, setSearchTerm] = useState('');
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
-  const [filterStatus, setFilterStatus] = useState<CampaignStatus | 'ALL'>('ALL');
+  const [filterStatus, setFilterStatus] = useState<string | 'ALL'>('ALL');
   
   // New Campaign Form State
   const [step, setStep] = useState(1);
@@ -95,35 +103,38 @@ export default function CampaignsPage() {
     accountId: '',
     teamId: '',
     content: '',
+    messageType: 'text' as 'text' | 'image' | 'video' | 'document',
+    mediaUrl: '',
+    mediaFileName: '',
+    mediaMimeType: '',
     audienceType: 'crm' as 'crm' | 'manual_list',
     selectedTags: [] as string[],
     manualListText: '',
-    validatedList: [] as { name: string; phone: string; valid: boolean; reason: string }[],
-    minInterval: 8,
-    maxInterval: 15,
-    batchSize: 30,
-    batchInterval: 5,
+    validatedList: [] as any[],
+    minInterval: 5,
+    maxInterval: 10,
+    batchSize: 5,
     saveToCrm: false
   });
 
-  const allTags = Array.from(new Set(customers.flatMap(c => c.tags || [])));
-
-  const filteredCampaigns = campaigns.filter(c => {
-    const matchesSearch = c.name.toLowerCase().includes(searchTerm.toLowerCase());
+  const safeCampaigns = Array.isArray(campaigns) ? campaigns : [];
+  
+  const filteredCampaigns = safeCampaigns.filter(c => {
+    const matchesSearch = c.name?.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = filterStatus === 'ALL' || c.status === filterStatus;
     return matchesSearch && matchesStatus;
   });
 
   // Calculate Metrics
   const metrics = {
-    total: campaigns.length,
-    sending: campaigns.filter(c => c.status === 'SENDING').length,
-    paused: campaigns.filter(c => c.status === 'PAUSED').length,
-    completed: campaigns.filter(c => c.status === 'COMPLETED').length,
-    failed: campaigns.filter(c => c.status === 'ERROR').length,
-    totalSent: campaigns.reduce((acc, c) => acc + (c.sent_count || 0), 0),
-    totalFailed: campaigns.reduce((acc, c) => acc + (c.failed_count || 0), 0),
-    successRate: campaigns.length > 0 ? Math.round((campaigns.reduce((acc, c) => acc + (c.sent_count || 0), 0) / campaigns.reduce((acc, c) => acc + (c.recipients_count || 0), 0)) * 100) : 0
+    total: safeCampaigns.length,
+    running: safeCampaigns.filter(c => c.status === 'RUNNING').length,
+    paused: safeCampaigns.filter(c => c.status === 'PAUSED').length,
+    completed: safeCampaigns.filter(c => c.status === 'COMPLETED').length,
+    failed: safeCampaigns.filter(c => c.status === 'FAILED').length,
+    totalSent: safeCampaigns.reduce((acc, c) => acc + (c.sent_count || 0), 0),
+    totalError: safeCampaigns.reduce((acc, c) => acc + (c.failed_count || 0), 0),
+    avgProgress: safeCampaigns.length > 0 ? Math.round((safeCampaigns.reduce((acc, c) => acc + (c.sent_count || 0), 0) / (safeCampaigns.reduce((acc, c) => acc + (c.recipients_count || 0), 0) || 1)) * 100) : 0
   };
 
   const resetForm = () => {
@@ -133,57 +144,44 @@ export default function CampaignsPage() {
       accountId: '',
       teamId: '',
       content: '',
+      messageType: 'text',
+      mediaUrl: '',
+      mediaFileName: '',
+      mediaMimeType: '',
       audienceType: 'crm',
       selectedTags: [],
       manualListText: '',
       validatedList: [],
-      minInterval: 8,
-      maxInterval: 15,
-      batchSize: 30,
-      batchInterval: 5,
+      minInterval: 5,
+      maxInterval: 10,
+      batchSize: 5,
       saveToCrm: false
     });
     setStep(1);
     setShowAddModal(false);
   };
 
-  const handleValidateList = () => {
-    const lines = formData.manualListText.split('\n').filter(l => l.trim());
-    const validated = lines.map(line => {
-      // Split by ; , or - to guess name and phone
-      let name = '';
-      let phonePart = line.trim();
-      
-      const separators = [';', ',', '-'];
-      for (const sep of separators) {
-        if (line.includes(sep)) {
-          const parts = line.split(sep);
-          name = parts[0].trim();
-          phonePart = parts[1]?.trim() || parts[0].trim();
-          break;
-        }
-      }
-      
-      const result = normalizeBrazilPhone(phonePart);
-      return { 
-        name: name || result.phone, 
-        phone: result.phone, 
-        valid: result.valid, 
-        reason: result.reason 
-      };
-    });
-    
-    setFormData({ ...formData, validatedList: validated });
-    if (validated.some(v => v.valid)) {
-      toast.success(`${validated.filter(v => v.valid).length} contatos válidos encontrados.`);
-    } else {
-      toast.error('Nenhum contato válido encontrado na lista.');
+  const handleValidateList = async () => {
+    if (!formData.manualListText.trim()) {
+      toast.error('Informe os contatos para validar');
+      return;
     }
+
+    await safeAction(async () => {
+      const { campaignService } = await import('../services/dataService');
+      const res = await campaignService.optimize(formData.manualListText);
+      if (res.success) {
+        setFormData({ ...formData, validatedList: res.valid });
+        toast.success(`Validado: ${res.total_valid} ok, ${res.total_invalid} inválidos, ${res.total_duplicates} duplicados.`);
+      } else {
+        throw new Error(res.error);
+      }
+    }, { label: 'Erro ao validar lista' });
   };
 
   const handleCreate = async () => {
     await safeAction(async () => {
-      const finalRecipients: Partial<CampaignRecipient>[] = [];
+      const contacts: any[] = [];
       
       if (formData.audienceType === 'crm') {
          const targetCustomers = customers.filter(c => {
@@ -192,55 +190,46 @@ export default function CampaignsPage() {
            return formData.selectedTags.some(tag => c.tags?.includes(tag));
          });
          targetCustomers.forEach(c => {
-           finalRecipients.push({
-             customer_id: c.id,
+           contacts.push({
              name: c.name,
              phone: c.phone,
-             source: 'crm',
-             status: 'PENDING',
-             save_to_crm: false
+             phone_normalized: c.phone_normalized,
+             variables: { name: c.name }
            });
          });
       } else {
-        formData.validatedList.filter(v => v.valid).forEach(v => {
-          finalRecipients.push({
+        formData.validatedList.forEach(v => {
+          contacts.push({
             name: v.name,
             phone: v.phone,
-            source: 'manual_list',
-            status: 'PENDING',
-            save_to_crm: formData.saveToCrm
+            phone_normalized: v.phone_normalized,
+            variables: { name: v.name }
           });
         });
       }
 
-      if (finalRecipients.length === 0) {
+      if (contacts.length === 0) {
         toast.error('Nenhum destinatário válido selecionado.');
         return;
       }
 
-      const campaignData: Partial<Campaign> = {
+      const campaignData = {
         name: formData.name,
         type: formData.type,
         whatsapp_account_id: formData.accountId,
         team_id: formData.teamId,
         content: formData.content,
-        status: 'DRAFT',
-        recipients_count: finalRecipients.length,
-        sent_count: 0,
-        failed_count: 0,
-        read_count: 0,
-        replied_count: 0,
-        opt_out_count: 0,
-        min_interval: formData.minInterval,
-        max_interval: formData.maxInterval,
+        message_type: formData.messageType,
+        media_url: formData.mediaUrl,
+        media_file_name: formData.mediaFileName,
+        media_mime_type: formData.mediaMimeType,
         batch_size: formData.batchSize,
-        batch_interval_minutes: formData.batchInterval,
-        target_tags: formData.selectedTags,
-        created_by_name: getAgentDisplayName(currentUser)
+        min_interval: formData.minInterval,
+        max_interval: formData.maxInterval
       };
 
-      await addCampaign(campaignData, finalRecipients);
-      toast.success('Campanha criada com sucesso!');
+      await addCampaign(campaignData, contacts);
+      toast.success('Campanha READY! Inicie o disparo quando desejar.');
       resetForm();
     }, { label: 'Erro ao criar campanha' });
   };
@@ -249,24 +238,29 @@ export default function CampaignsPage() {
     await safeAction(async () => {
       const { campaignService } = await import('../services/dataService');
       const res = await campaignService.start(campaign.id);
-      
       if (res.success) {
-        toast.info('Disparo iniciado no servidor!');
-        // Refresh local state status
-        updateCampaign(campaign.id, { status: 'SENDING', started_at: new Date().toISOString() });
+        toast.success('Worker ativado para a campanha!');
       } else {
-        throw new Error(res.error || 'Erro ao iniciar disparo');
+        throw new Error(res.error);
       }
-    }, { label: 'Falha ao iniciar disparo' });
+    }, { label: 'Erro ao iniciar disparo' });
+  };
+
+  const openDetails = (id: string) => {
+    setSelectedCampaignId(id);
+    setShowDetailsModal(true);
+  };
+
+  const openDebug = (id: string) => {
+    setSelectedCampaignId(id);
+    setShowDebugModal(true);
   };
 
   const handleExportCSV = (campaign: Campaign) => {
     toast.info('Exportando relatório...');
-    // Real CSV generation logic
-    const headers = ['Destinatário', 'Telefone', 'Status', 'Erro', 'Enviado em'];
-    // In a real app we'd fetch recipients then format. Here we'll just mock the download.
+    const headers = ['Destinatário', 'Telefone', 'Status', 'Horário'];
     const csvContent = "data:text/csv;charset=utf-8," + headers.join(",") + "\n" + 
-      `Maria,5564999999999,SENT,,2026-05-18 14:00:00\nJoão,5564988888888,FAILED,Inexistente,`;
+      `Campanha: ${campaign.name}\nTotal: ${campaign.recipients_count}\nSucesso: ${campaign.sent_count}\nFalhas: ${campaign.failed_count}`;
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
@@ -274,18 +268,6 @@ export default function CampaignsPage() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  };
-
-  const openViewModal = async (campaign: Campaign) => {
-    setSelectedCampaign(campaign);
-    setShowViewModal(true);
-    setIsLoadingRecipients(true);
-    try {
-      const data = await getCampaignRecipients(campaign.id);
-      setRecipients(data);
-    } finally {
-      setIsLoadingRecipients(false);
-    }
   };
 
   return (
@@ -314,18 +296,18 @@ export default function CampaignsPage() {
       {/* Metrics Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
         {[
-          { label: 'Total', value: metrics.total, icon: Megaphone, color: 'indigo' },
-          { label: 'Disparo', value: metrics.sending, icon: PlayCircle, color: 'blue' },
+          { label: 'Total', value: metrics.total, icon: Megaphone, color: 'slate' },
+          { label: 'Em Disparo', value: metrics.running, icon: PlayCircle, color: 'emerald' },
           { label: 'Pausadas', value: metrics.paused, icon: PauseCircle, color: 'amber' },
-          { label: 'Concluídas', value: metrics.completed, icon: CheckCircle2, color: 'emerald' },
-          { label: 'Falhas', value: metrics.failed, icon: AlertCircle, color: 'rose' },
-          { label: 'Enviados', value: metrics.totalSent, icon: Send, color: 'sky' },
-          { label: 'Erros Envio', value: metrics.totalFailed, icon: X, color: 'red' },
-          { label: 'Sucesso', value: `${metrics.successRate}%`, icon: BarChart3, color: 'violet' }
+          { label: 'Concluídas', value: metrics.completed, icon: CheckCircle2, color: 'blue' },
+          { label: 'Com Erro', value: metrics.failed, icon: AlertCircle, color: 'rose' },
+          { label: 'Enviados', value: metrics.totalSent, icon: Send, color: 'emerald' },
+          { label: 'Falhas Envio', value: metrics.totalError, icon: X, color: 'red' },
+          { label: 'Média Progresso', value: `${metrics.avgProgress}%`, icon: BarChart3, color: 'violet' }
         ].map((stat, i) => (
-          <div key={i} className="bg-white p-4 rounded-3xl border border-slate-100 shadow-sm">
+          <div key={i} className="bg-white p-4 rounded-3xl border border-slate-100 shadow-sm grow">
              <div className="flex items-center justify-between mb-2">
-                <div className={`w-8 h-8 rounded-xl bg-${stat.color}-50 flex items-center justify-center text-${stat.color}-600`}>
+                <div className={`w-8 h-8 rounded-xl bg-slate-50 flex items-center justify-center text-slate-500`}>
                    <stat.icon className="w-4 h-4" />
                 </div>
              </div>
@@ -350,19 +332,19 @@ export default function CampaignsPage() {
             />
          </div>
          <div className="flex flex-wrap items-center gap-2">
-            {(['ALL', 'DRAFT', 'SCHEDULED', 'SENDING', 'PAUSED', 'COMPLETED', 'CANCELLED'] as const).map(status => (
+            {['ALL', 'DRAFT', 'READY', 'RUNNING', 'PAUSED', 'COMPLETED', 'FAILED', 'CANCELED'].map(status => (
                <button 
                 key={status}
                 onClick={() => setFilterStatus(status)}
                 className={`px-5 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border ${filterStatus === status ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-100 scale-105' : 'bg-white text-slate-400 border-slate-200 hover:border-slate-300'}`}
                >
-                 {status === 'ALL' ? 'Todos' : STATUS_CONFIG[status as CampaignStatus]?.label}
+                 {status === 'ALL' ? 'Todos' : (STATUS_CONFIG[status]?.label || status)}
                </button>
             ))}
          </div>
       </div>
 
-      {/* Campaign List (Table Version) */}
+      {/* Campaign List */}
       <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden">
          <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
@@ -382,7 +364,7 @@ export default function CampaignsPage() {
                   {filteredCampaigns.map(campaign => {
                     const status = STATUS_CONFIG[campaign.status] || STATUS_CONFIG['DRAFT'];
                     const progress = campaign.recipients_count > 0 
-                      ? Math.round(((campaign.sent_count + campaign.failed_count) / campaign.recipients_count) * 100) 
+                      ? Math.round(((campaign.sent_count + campaign.failed_count + campaign.skipped_count) / campaign.recipients_count) * 100) 
                       : 0;
 
                     return (
@@ -404,7 +386,7 @@ export default function CampaignsPage() {
                         </td>
                         <td className="px-8 py-6 text-center">
                            <span className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest inline-flex items-center gap-2 ${status.bg} ${status.color}`}>
-                              <span className={`w-1.5 h-1.5 rounded-full ${status.bg.replace('bg-', 'bg-').replace('-50', '-500')} animate-pulse`} />
+                              <span className={`w-1.5 h-1.5 rounded-full ${status.bg.replace('bg-', 'bg-').replace('-50', '-500')} ${campaign.status === 'RUNNING' ? 'animate-pulse' : ''}`} />
                               {status.label}
                            </span>
                         </td>
@@ -443,13 +425,13 @@ export default function CampaignsPage() {
                         <td className="px-8 py-6">
                            <div className="flex items-center justify-center gap-2">
                               <button 
-                                onClick={() => openViewModal(campaign)}
+                                onClick={() => openDetails(campaign.id)}
                                 className="p-3 bg-white border border-slate-200 rounded-xl text-slate-400 hover:text-indigo-600 hover:border-indigo-200 transition-all shadow-sm"
                                 title="Visualizar"
                               >
                                  <Eye className="w-4 h-4" />
                               </button>
-                               {campaign.status === 'DRAFT' || campaign.status === 'PAUSED' ? (
+                               {campaign.status === 'READY' || campaign.status === 'PAUSED' ? (
                                   <button 
                                     onClick={() => handleStartSending(campaign)}
                                     className="p-3 bg-indigo-600 text-white rounded-xl hover:scale-105 active:scale-95 transition-all shadow-lg shadow-indigo-100"
@@ -457,7 +439,7 @@ export default function CampaignsPage() {
                                   >
                                     <Play className="w-4 h-4 fill-current" />
                                   </button>
-                               ) : campaign.status === 'SENDING' ? (
+                               ) : campaign.status === 'RUNNING' ? (
                                   <button 
                                     onClick={() => pauseCampaign(campaign.id)}
                                     className="p-3 bg-amber-500 text-white rounded-xl hover:scale-105 active:scale-95 transition-all shadow-lg shadow-amber-100"
@@ -466,7 +448,7 @@ export default function CampaignsPage() {
                                     <Pause className="w-4 h-4 fill-current" />
                                   </button>
                                ) : null}
-                               <div className="relative group/menu">
+                               <div className="relative">
                                   <button 
                                     onClick={() => setActiveMenuId(activeMenuId === campaign.id ? null : campaign.id)}
                                     className={`p-3 transition-all rounded-xl ${activeMenuId === campaign.id ? 'bg-indigo-50 text-indigo-600 border border-indigo-100' : 'bg-slate-50 text-slate-400 border border-slate-100 hover:border-slate-300'}`}
@@ -480,13 +462,15 @@ export default function CampaignsPage() {
                                         initial={{ opacity: 0, scale: 0.95, y: 10 }}
                                         animate={{ opacity: 1, scale: 1, y: 0 }}
                                         exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                                        className="absolute right-0 top-full mt-2 w-56 bg-white rounded-[1.5rem] shadow-2xl border border-slate-100 p-2 z-[100] overflow-hidden"
+                                        className="absolute right-0 top-full mt-2 w-64 bg-white rounded-[1.5rem] shadow-2xl border border-slate-100 p-2 z-[100] overflow-hidden"
                                        >
                                           {[
-                                            { label: 'Relatório Completo', icon: BarChart3, action: () => openViewModal(campaign) },
+                                            { label: 'Painel de Controle', icon: BarChart3, action: () => openDetails(campaign.id) },
+                                            { label: 'Diagnosticar', icon: Terminal, action: () => openDebug(campaign.id) },
+                                            { label: 'Reiniciar Falhas', icon: RotateCcw, action: () => retryFailedCampaign(campaign.id), hide: campaign.failed_count === 0 },
+                                            { label: 'Forçar Lote', icon: Zap, action: () => processCampaignBatch(campaign.id), hide: campaign.status !== 'RUNNING' },
                                             { label: 'Exportar CSV', icon: Download, action: () => handleExportCSV(campaign) },
-                                            { label: 'Duplicar Campanha', icon: Copy, action: () => toast.info('Funcionalidade em desenvolvimento') },
-                                            { label: 'Cancelar', icon: StopCircle, action: () => cancelCampaign(campaign.id), color: 'text-rose-600', hide: campaign.status === 'COMPLETED' || campaign.status === 'CANCELLED' },
+                                            { label: 'Cancelar', icon: StopCircle, action: () => cancelCampaign(campaign.id), color: 'text-rose-600', hide: campaign.status === 'COMPLETED' || campaign.status === 'CANCELED' },
                                             { label: 'Excluir', icon: Trash2, action: () => deleteCampaign(campaign.id), color: 'text-rose-600 hover:bg-rose-50' }
                                           ].map((item, idx) => !item.hide && (
                                             <button 
@@ -522,7 +506,7 @@ export default function CampaignsPage() {
          )}
       </div>
 
-      {/* Add Campaign Modal */}
+      {/* Modals */}
       <AnimatePresence>
         {showAddModal && (
           <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
@@ -592,7 +576,7 @@ export default function CampaignsPage() {
                             </div>
                          </div>
 
-                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                             <div className="space-y-2">
                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Canal de Envio (WhatsApp)</label>
                                <select 
@@ -619,7 +603,33 @@ export default function CampaignsPage() {
                                   ))}
                                </select>
                             </div>
+                            <div className="space-y-2">
+                               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tipo de Mensagem</label>
+                               <select 
+                                 className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-500/10 font-bold appearance-none cursor-pointer"
+                                 value={formData.messageType}
+                                 onChange={e => setFormData({ ...formData, messageType: e.target.value as any })}
+                               >
+                                  <option value="text">Apenas Texto</option>
+                                  <option value="image">Imagem</option>
+                                  <option value="video">Vídeo</option>
+                                  <option value="document">Documento/PDF</option>
+                               </select>
+                            </div>
                          </div>
+
+                         {formData.messageType !== 'text' && (
+                            <div className="space-y-2 animate-in fade-in duration-300">
+                               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">URL da Mídia (Link Direto)</label>
+                               <input 
+                                 type="text" 
+                                 placeholder="https://exemplo.com/imagem.png"
+                                 className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-500/10 font-bold"
+                                 value={formData.mediaUrl}
+                                 onChange={e => setFormData({ ...formData, mediaUrl: e.target.value })}
+                               />
+                            </div>
+                         )}
 
                          <div className="space-y-2">
                             <div className="flex items-center justify-between px-1">
@@ -627,11 +637,11 @@ export default function CampaignsPage() {
                                <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">Dica: Use {"{{nome}}"} para personalizar</span>
                             </div>
                             <textarea 
-                              placeholder="Olá {{nome}}, tudo bem? Temos uma oferta imperdível..."
-                              rows={5}
-                              className="w-full px-6 py-5 bg-slate-50 border border-slate-100 rounded-3xl outline-none focus:ring-4 focus:ring-indigo-500/10 font-medium leading-relaxed resize-none"
-                              value={formData.content}
-                              onChange={e => setFormData({ ...formData, content: e.target.value })}
+                               placeholder="Olá {{nome}}, tudo bem? Temos uma oferta imperdível..."
+                               rows={5}
+                               className="w-full px-6 py-5 bg-slate-50 border border-slate-100 rounded-3xl outline-none focus:ring-4 focus:ring-indigo-500/10 font-medium leading-relaxed resize-none"
+                               value={formData.content}
+                               onChange={e => setFormData({ ...formData, content: e.target.value })}
                             />
                             <div className="flex flex-wrap gap-2 mt-2">
                                {['nome', 'consultor', 'empresa'].map(v => (
@@ -781,7 +791,7 @@ export default function CampaignsPage() {
                                      <h3 className="text-2xl font-black tracking-tight leading-tight">{formData.name}</h3>
                                      <p className="text-white/60 text-xs font-black uppercase tracking-widest mt-1">Revisão Final da Campanha</p>
                                   </div>
-                               </div>
+                                </div>
 
                                <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
                                   <div className="space-y-1">
@@ -789,88 +799,33 @@ export default function CampaignsPage() {
                                      <p className="text-lg font-black">{formData.audienceType === 'crm' ? customers.filter(c => formData.selectedTags.length === 0 || formData.selectedTags.some(t => c.tags?.includes(t))).length : formData.validatedList.filter(v => v.valid).length}</p>
                                   </div>
                                   <div className="space-y-1">
-                                     <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Tipo</p>
-                                     <p className="text-lg font-black">{formData.type}</p>
+                                     <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Mensagem</p>
+                                     <p className="text-lg font-black">{formData.messageType.toUpperCase()}</p>
                                   </div>
                                   <div className="space-y-1">
                                      <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Intervalo</p>
-                                     <p className="text-lg font-black">{formData.minInterval}-{formData.maxInterval}s</p>
+                                     <p className="text-lg font-black">{formData.minInterval}s ~ {formData.maxInterval}s</p>
                                   </div>
                                   <div className="space-y-1">
                                      <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Lote</p>
-                                     <p className="text-lg font-black">{formData.batchSize}</p>
-                                  </div>
-                               </div>
-                            </div>
-                            {/* Decorative background shape */}
-                            <div className="absolute -right-20 -top-20 w-80 h-80 bg-white/10 rounded-full blur-3xl" />
-                         </div>
-
-                         <div className="space-y-6">
-                            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Configurações Avançadas</h4>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                               <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 flex flex-col items-center gap-3">
-                                  <Clock className="w-5 h-5 text-indigo-600" />
-                                  <div className="text-center">
-                                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-tight mb-1">Delay (Min-Max)</p>
-                                     <div className="flex items-center gap-1 justify-center">
-                                       <input 
-                                         type="number" 
-                                         className="w-12 bg-white border border-slate-200 rounded-lg text-center font-black py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
-                                         value={formData.minInterval}
-                                         onChange={e => setFormData({ ...formData, minInterval: Number(e.target.value) })}
-                                       />
-                                       <span className="text-slate-400 mx-0.5">-</span>
-                                       <input 
-                                         type="number" 
-                                         className="w-12 bg-white border border-slate-200 rounded-lg text-center font-black py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
-                                         value={formData.maxInterval}
-                                         onChange={e => setFormData({ ...formData, maxInterval: Number(e.target.value) })}
-                                       />
-                                     </div>
-                                     <span className="text-[10px] font-bold text-slate-400 ml-1">seg</span>
-                                  </div>
-                               </div>
-                               <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 flex flex-col items-center gap-3">
-                                  <Layers className="w-5 h-5 text-indigo-600" />
-                                  <div className="text-center">
-                                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-tight mb-1">Tamanho Lote</p>
-                                     <input 
-                                       type="number" 
-                                       className="w-16 bg-white border border-slate-200 rounded-lg text-center font-black py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
-                                       value={formData.batchSize}
-                                       onChange={e => setFormData({ ...formData, batchSize: Number(e.target.value) })}
-                                     />
-                                     <span className="text-[10px] font-bold text-slate-400 ml-1">msgs</span>
-                                  </div>
-                               </div>
-                               <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 flex flex-col items-center gap-3">
-                                  <Calendar className="w-5 h-5 text-indigo-600" />
-                                  <div className="text-center">
-                                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-tight mb-1">Delay Lote</p>
-                                     <input 
-                                       type="number" 
-                                       className="w-16 bg-white border border-slate-200 rounded-lg text-center font-black py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
-                                       value={formData.batchInterval}
-                                       onChange={e => setFormData({ ...formData, batchInterval: Number(e.target.value) })}
-                                     />
-                                     <span className="text-[10px] font-bold text-slate-400 ml-1">min</span>
+                                     <p className="text-lg font-black">{formData.batchSize} contatos</p>
                                   </div>
                                </div>
                             </div>
                          </div>
 
-                         <div className="p-6 bg-slate-900 rounded-3xl text-white flex items-center justify-between">
-                            <div className="flex items-center gap-4">
-                               <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center">
-                                  <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                         <div className="space-y-4">
+                            <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Regras de Disparo Inteligente:</h5>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                               <div className="p-6 bg-slate-50 rounded-3xl border border-slate-100">
+                                  <p className="text-xs font-black text-slate-800 uppercase tracking-tight mb-2">Simulação de Comportamento Humano</p>
+                                  <p className="text-[10px] text-slate-500 leading-relaxed">O sistema aguardará um tempo aleatório entre {formData.minInterval} e {formData.maxInterval} segundos após cada mensagem, reduzindo drasticamente as chances de bloqueio pela Z-API.</p>
                                </div>
-                               <div>
-                                  <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Segurança de Disparo</p>
-                                  <p className="text-xs font-medium">As mensagens respeitarão os limites para evitar bloqueios.</p>
+                               <div className="p-6 bg-slate-50 rounded-3xl border border-slate-100">
+                                  <p className="text-xs font-black text-slate-800 uppercase tracking-tight mb-2">Processamento Circular</p>
+                                  <p className="text-[10px] text-slate-500 leading-relaxed">As mensagens serão disparadas em lotes de {formData.batchSize}. Caso o servidor seja reiniciado, o worker retomará exatamente de onde parou.</p>
                                </div>
                             </div>
-                            <button className="text-xs font-black uppercase text-indigo-400 hover:text-indigo-300">Ajustar Regras</button>
                          </div>
                       </div>
                    )}
@@ -878,36 +833,35 @@ export default function CampaignsPage() {
 
                 {/* Modal Footer */}
                 <div className="p-8 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between shrink-0">
-                   <button 
-                    onClick={() => step > 1 && setStep(step - 1)}
-                    disabled={step === 1}
-                    className="px-8 py-4 rounded-2xl text-xs font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                   >
-                     Voltar
-                   </button>
-                   <div className="flex items-center gap-3">
+                   {step > 1 ? (
+                      <button 
+                        onClick={() => setStep(step - 1)}
+                        className="px-8 py-4 bg-white border border-slate-200 text-slate-400 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:text-slate-600 transition-all flex items-center gap-2"
+                      >
+                         Voltar
+                      </button>
+                   ) : (
+                      <div />
+                   )}
+
+                   <div className="flex items-center gap-4">
                       {step < 3 ? (
-                        <button 
-                          onClick={() => {
-                            if (step === 1 && (!formData.name || !formData.accountId || !formData.content)) {
-                               toast.error('Preencha os campos básicos');
-                               return;
-                            }
-                            setStep(step + 1);
-                          }}
-                          className="bg-indigo-600 text-white px-10 py-5 rounded-3xl font-black text-xs uppercase tracking-widest shadow-xl shadow-indigo-100 hover:scale-105 active:scale-95 transition-all flex items-center gap-3"
-                        >
-                          Continuar
-                          <ArrowRight className="w-4 h-4" />
-                        </button>
+                         <button 
+                           onClick={() => setStep(step + 1)}
+                           disabled={step === 1 && !formData.name}
+                           className="px-10 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100 hover:scale-105 active:scale-95 transition-all flex items-center gap-3 disabled:opacity-50 disabled:scale-100"
+                         >
+                            Próximo Passo
+                            <ArrowRight className="w-4 h-4" />
+                         </button>
                       ) : (
-                        <button 
-                          onClick={handleCreate}
-                          className="bg-emerald-600 text-white px-12 py-5 rounded-[2rem] font-black text-sm uppercase tracking-widest shadow-2xl shadow-emerald-100 hover:scale-105 active:scale-95 transition-all flex items-center gap-3"
-                        >
-                          <Send className="w-5 h-5" />
-                          Salvar e Iniciar
-                        </button>
+                         <button 
+                           onClick={handleCreate}
+                           className="px-10 py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-slate-200 hover:scale-105 active:scale-95 transition-all flex items-center gap-3"
+                         >
+                            Criar e Preparar Disparo
+                            <ShieldCheck className="w-4 h-4" />
+                         </button>
                       )}
                    </div>
                 </div>
@@ -916,181 +870,29 @@ export default function CampaignsPage() {
         )}
       </AnimatePresence>
 
-      {/* View Detailed Report Modal */}
       <AnimatePresence>
-        {showViewModal && selectedCampaign && (
-           <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setShowViewModal(false)}
-                className="absolute inset-0 bg-slate-900/60 backdrop-blur-md"
-              />
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.9, y: 20 }}
-                className="relative w-full max-w-6xl bg-white rounded-[3.5rem] shadow-2xl flex flex-col max-h-[95vh] overflow-hidden"
-              >
-                 <div className="p-8 border-b border-slate-100 flex items-center justify-between bg-slate-50/30">
-                    <div className="flex items-center gap-5">
-                       <div className="w-16 h-16 bg-slate-900 rounded-[1.5rem] flex items-center justify-center text-white shadow-xl">
-                          <BarChart3 className="w-8 h-8" />
-                       </div>
-                       <div>
-                          <h2 className="text-3xl font-black text-slate-800 tracking-tight leading-none mb-1">{selectedCampaign.name}</h2>
-                          <div className="flex items-center gap-3">
-                             <span className={`px-4 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest ${STATUS_CONFIG[selectedCampaign.status]?.bg} ${STATUS_CONFIG[selectedCampaign.status]?.color}`}>
-                                {STATUS_CONFIG[selectedCampaign.status]?.label}
-                             </span>
-                             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Iniciada em: {selectedCampaign.started_at ? new Date(selectedCampaign.started_at).toLocaleString() : 'Não iniciada'}</span>
-                          </div>
-                       </div>
-                    </div>
-                    <button 
-                      onClick={() => setShowViewModal(false)}
-                      className="p-4 hover:bg-slate-100 rounded-3xl transition-all text-slate-400"
-                    >
-                       <X className="w-7 h-7" />
-                    </button>
-                 </div>
+        {showDetailsModal && selectedCampaignId && (
+          <CampaignDetailsModal 
+            campaignId={selectedCampaignId}
+            onClose={() => setShowDetailsModal(false)}
+          />
+        )}
 
-                 <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
-                    {/* Left: Summary Metrics */}
-                    <div className="w-full md:w-80 bg-slate-50/50 p-8 border-r border-slate-100 space-y-8 overflow-y-auto">
-                       <div className="space-y-4">
-                          <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Conversão Geral</h4>
-                          <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col items-center text-center">
-                             <div className="relative w-24 h-24 flex items-center justify-center mb-4">
-                                <svg className="w-full h-full transform -rotate-90">
-                                   <circle cx="48" cy="48" r="40" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-slate-100" />
-                                   <circle 
-                                    cx="48" cy="48" r="40" stroke="currentColor" strokeWidth="8" fill="transparent" 
-                                    className="text-indigo-600"
-                                    strokeDasharray={251.2}
-                                    strokeDashoffset={251.2 - (251.2 * (selectedCampaign.sent_count / selectedCampaign.recipients_count))}
-                                   />
-                                </svg>
-                                <span className="absolute text-xl font-black text-slate-800">{Math.round((selectedCampaign.sent_count / selectedCampaign.recipients_count) * 100)}%</span>
-                             </div>
-                             <p className="text-[9px] font-black text-slate-400 uppercase tracking-tight">Taxa de Sucesso</p>
-                          </div>
-                       </div>
-
-                       <div className="space-y-3">
-                          {[
-                            { label: 'Total Alvos', value: selectedCampaign.recipients_count, color: 'slate' },
-                            { label: 'Enviados', value: selectedCampaign.sent_count, color: 'emerald' },
-                            { label: 'Falhas', value: selectedCampaign.failed_count, color: 'rose' },
-                            { label: 'Respostas', value: selectedCampaign.replied_count || 0, color: 'blue' },
-                            { label: 'Opt-out', value: selectedCampaign.opt_out_count || 0, color: 'amber' }
-                          ].map((m, i) => (
-                             <div key={i} className="flex items-center justify-between p-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
-                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{m.label}</span>
-                                <span className={`text-sm font-black text-${m.color}-600`}>{m.value}</span>
-                             </div>
-                          ))}
-                       </div>
-
-                       <button 
-                        onClick={() => handleExportCSV(selectedCampaign)}
-                        className="w-full py-4 bg-white border-2 border-indigo-100 text-indigo-600 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-50 transition-all flex items-center justify-center gap-3"
-                       >
-                          <Download className="w-4 h-4" />
-                          Baixar Planilha CSV
-                       </button>
-                    </div>
-
-                    {/* Right: Recipients List */}
-                    <div className="flex-1 p-8 overflow-hidden flex flex-col">
-                       <div className="flex items-center justify-between mb-6 shrink-0">
-                          <h4 className="text-xl font-black text-slate-800 tracking-tight">Status dos Destinatários</h4>
-                          <div className="flex items-center gap-2">
-                             <span className="text-[10px] font-bold text-slate-400">Filtrar:</span>
-                             <select className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-[10px] font-black uppercase tracking-widest outline-none">
-                                <option>Todos</option>
-                                <option>Sucesso</option>
-                                <option>Falhas</option>
-                                <option>Respostas</option>
-                             </select>
-                          </div>
-                       </div>
-
-                       <div className="flex-1 bg-slate-50 p-1 rounded-[2.5rem] border border-slate-100 overflow-hidden">
-                          <div className="h-full overflow-y-auto px-1 py-1 custom-scrollbar">
-                             {isLoadingRecipients ? (
-                               <div className="p-20 text-center space-y-4">
-                                  <div className="w-12 h-12 border-4 border-indigo-600/10 border-t-indigo-600 rounded-full animate-spin mx-auto" />
-                                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Carregando destinatários...</p>
-                               </div>
-                             ) : recipients.length === 0 ? (
-                               <div className="p-20 text-center">
-                                  <Users className="w-12 h-12 text-slate-200 mx-auto mb-4" />
-                                  <p className="text-xs font-bold text-slate-300 italic">Nenhum registro encontrado para esta campanha.</p>
-                               </div>
-                             ) : (
-                               <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 p-3">
-                                  {recipients.map(r => (
-                                    <div key={r.id} className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm flex items-center justify-between group hover:border-indigo-100 transition-all">
-                                       <div className="flex items-center gap-4">
-                                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${r.status === 'SENT' ? 'bg-emerald-50 text-emerald-600' : r.status === 'FAILED' ? 'bg-rose-50 text-rose-600' : 'bg-slate-50 text-slate-400'}`}>
-                                            <SmartphoneNfc className="w-6 h-6" />
-                                          </div>
-                                          <div>
-                                             <h5 className="text-xs font-black text-slate-800 tracking-tight leading-none mb-1.5">{r.name}</h5>
-                                             <div className="flex items-center gap-2">
-                                                <span className="text-[10px] font-mono font-bold text-slate-400 tracking-tighter">{r.phone}</span>
-                                                <span className="w-1 h-1 bg-slate-200 rounded-full" />
-                                                <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest">{r.source === 'crm' ? 'Base CRM' : 'Lista Manual'}</span>
-                                             </div>
-                                          </div>
-                                       </div>
-                                       <div className="text-right">
-                                          <div className="flex flex-col items-end">
-                                             <span className={`px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest ${r.status === 'SENT' ? 'bg-emerald-50 text-emerald-600' : r.status === 'REPLIED' ? 'bg-indigo-50 text-indigo-600' : r.status === 'FAILED' ? 'bg-rose-50 text-rose-600' : 'bg-slate-100 text-slate-400'}`}>
-                                                {r.status === 'SENT' ? 'Enviado' : r.status === 'FAILED' ? 'Falha' : r.status === 'PENDING' ? 'Pendente' : r.status}
-                                             </span>
-                                             {r.error_message && <p className="text-[7px] font-bold text-rose-400 italic mt-1 max-w-[120px] line-clamp-1">{r.error_message}</p>}
-                                             {r.sent_at && <p className="text-[8px] font-bold text-slate-300 uppercase tracking-tighter mt-1">{new Date(r.sent_at).toLocaleTimeString()}</p>}
-                                          </div>
-                                       </div>
-                                    </div>
-                                  ))}
-                               </div>
-                             )}
-                          </div>
-                       </div>
-                    </div>
-                 </div>
-
-                 {selectedCampaign.status === 'SENDING' && (
-                   <div className="p-8 border-t border-slate-100 bg-white flex items-center justify-between shrink-0">
-                      <div className="flex items-center gap-4">
-                         <div className="w-3 h-3 bg-indigo-600 rounded-full animate-ping" />
-                         <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Campanha em Progresso - Atualizando em tempo real</span>
-                      </div>
-                      <div className="flex gap-4">
-                         <button 
-                           onClick={() => pauseCampaign(selectedCampaign.id)}
-                           className="px-8 py-4 bg-amber-500 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-amber-100 hover:scale-105 active:scale-95 transition-all flex items-center gap-3"
-                         >
-                            <Pause className="w-4 h-4 fill-current" />
-                            Pausar Agora
-                         </button>
-                         <button 
-                           onClick={() => cancelCampaign(selectedCampaign.id)}
-                           className="px-8 py-4 bg-rose-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-rose-100 hover:scale-105 active:scale-95 transition-all"
-                         >
-                            Cancelar
-                         </button>
-                      </div>
-                   </div>
-                 )}
-              </motion.div>
-           </div>
+        {showDebugModal && selectedCampaignId && (
+          <CampaignDebugModal 
+            campaignId={selectedCampaignId} 
+            onClose={() => setShowDebugModal(false)} 
+          />
         )}
       </AnimatePresence>
+      
+      <style dangerouslySetInnerHTML={{ __html: `
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+      `}} />
     </div>
   );
 }

@@ -42,35 +42,15 @@ function clean(value?: any) {
 }
 
 /**
- * Obtém a configuração da Z-API e lista variáveis faltantes.
+ * Obtém a configuração da Z-API de forma segura.
  */
 function getZapiConfig() {
-  const config = {
-    baseUrl: clean(process.env.ZAPI_BASE_URL) || "https://api.z-api.io",
-    instanceId: clean(process.env.ZAPI_INSTANCE_ID),
-    instanceToken: clean(process.env.ZAPI_INSTANCE_TOKEN),
-    clientToken: clean(process.env.ZAPI_CLIENT_TOKEN),
+  return {
+    baseUrl: String(process.env.ZAPI_BASE_URL || "https://api.z-api.io").trim(),
+    instanceId: String(process.env.ZAPI_INSTANCE_ID || "").trim(),
+    instanceToken: String(process.env.ZAPI_INSTANCE_TOKEN || "").trim(),
+    clientToken: String(process.env.ZAPI_CLIENT_TOKEN || "").trim()
   };
-
-  const missing: string[] = [];
-  if (!config.baseUrl) missing.push("ZAPI_BASE_URL");
-  if (!config.instanceId) missing.push("ZAPI_INSTANCE_ID");
-  if (!config.instanceToken) missing.push("ZAPI_INSTANCE_TOKEN");
-  if (!config.clientToken) missing.push("ZAPI_CLIENT_TOKEN");
-
-  return { config, missing };
-}
-
-function getZapiHeaders() {
-  const { config } = getZapiConfig();
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json"
-  };
-  const clientToken = config.clientToken?.trim();
-  if (clientToken && clientToken !== "undefined" && clientToken !== "null") {
-    headers["Client-Token"] = clientToken;
-  }
-  return headers;
 }
 
 function getPublicAppUrl() {
@@ -81,36 +61,63 @@ function getPublicAppUrl() {
   ).replace(/\/$/, "");
 }
 
-function zapiUrl(pathname: string) {
-  const { config } = getZapiConfig();
-  const base = config.baseUrl.replace(/\/$/, "");
-  const cleanPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
-  return `${base}/instances/${config.instanceId}/token/${config.instanceToken}${cleanPath}`;
-}
+async function callZapi(path: string, body?: any) {
+  const { baseUrl, instanceId, instanceToken, clientToken } = getZapiConfig();
 
-async function callZapi(pathname: string, options: RequestInit = {}) {
-  const { missing } = getZapiConfig();
-  if (missing.length > 0) {
-    return {
-      ok: false,
-      status: 400,
-      data: { error: "Z-API não configurada.", missing },
-    };
+  if (!instanceId || !instanceToken) {
+    throw new Error("Z-API não configurada: verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN no servidor.");
   }
 
-  const url = zapiUrl(pathname);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
+  };
+
+  if (clientToken && clientToken !== "undefined" && clientToken !== "null") {
+    headers["Client-Token"] = clientToken;
+  }
+
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  const url = `${baseUrl}/instances/${instanceId}/token/${instanceToken}${cleanPath}`;
+
+  console.log("[ZAPI REQUEST]", {
+    path: cleanPath,
+    phone: body?.phone,
+    hasMessage: Boolean(body?.message),
+    hasAudio: Boolean(body?.audio),
+    hasImage: Boolean(body?.image),
+    hasVideo: Boolean(body?.video),
+    hasDocument: Boolean(body?.document)
+  });
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body)
+  });
+
+  const responseText = await response.text();
+  let data = null;
+
   try {
-    const response = await fetch(url, {
-      ...options,
-      headers: { ...getZapiHeaders(), ...(options.headers as any || {}) },
-    });
-    const text = await response.text();
-    let data: any;
-    try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
-    return { ok: response.ok, status: response.status, data };
-  } catch (error: any) {
-    return { ok: false, status: 500, data: { error: error.message } };
+    data = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    data = { raw: responseText };
   }
+
+  if (!response.ok) {
+    const error: any = new Error(
+      data?.message ||
+      data?.error ||
+      responseText ||
+      `Erro na Z-API. HTTP ${response.status}`
+    );
+
+    error.status = response.status;
+    error.zapiResponse = data;
+    throw error;
+  }
+
+  return data;
 }
 
 function flattenObject(obj: any, prefix = "", result: Record<string, any> = {}) {
@@ -140,33 +147,29 @@ function isFilled(value: any): boolean {
   return true;
 }
 
-function normalizeDirectIndividualPhone(input: any): string {
-  const raw = String(input || "").trim();
-  const lower = raw.toLowerCase();
+function normalizeBrazilPhone(input: any) {
+  const raw = String(input || "").trim().toLowerCase();
 
   if (!raw) return "";
+  if (raw.includes("@g.us")) return "";
+  if (raw.includes("-group")) return "";
+  if (raw.includes("@newsletter")) return "";
+  if (raw.includes("@broadcast")) return "";
+  if (raw.includes("status@broadcast")) return "";
 
-  if (lower.includes("-group")) return "";
-  if (lower.includes("@g.us")) return "";
-  if (lower.includes("@newsletter")) return "";
-  if (lower.includes("@broadcast")) return "";
-  if (lower.includes("status@broadcast")) return "";
-
-  const digits = raw.replace(/\D/g, "");
+  let digits = raw.replace(/\D/g, "");
 
   if (!digits) return "";
   if (digits.startsWith("120363")) return "";
 
-  let phone = digits;
-
-  if ((phone.length === 10 || phone.length === 11) && !phone.startsWith("55")) {
-    phone = `55${phone}`;
+  if ((digits.length === 10 || digits.length === 11) && !digits.startsWith("55")) {
+    digits = `55${digits}`;
   }
 
-  if (!phone.startsWith("55")) return "";
-  if (phone.length < 12 || phone.length > 13) return "";
+  if (!digits.startsWith("55")) return "";
+  if (digits.length < 12 || digits.length > 13) return "";
 
-  return phone;
+  return digits;
 }
 
 function diagnoseZapiPayloadOrigin(payload: any) {
@@ -249,7 +252,7 @@ function diagnoseZapiPayloadOrigin(payload: any) {
     addSignal("group", "key.participant", payload.key.participant, "key.participant preenchido indica mensagem de grupo.");
   }
 
-  const phoneNormalized = normalizeDirectIndividualPhone(rawPhone);
+  const phoneNormalized = normalizeBrazilPhone(rawPhone);
 
   const hasBlockingSignal = signals.some(s =>
     ["group", "group_or_channel", "newsletter", "broadcast", "status", "from_me"].includes(s.type)
@@ -445,7 +448,7 @@ function extractDirectCustomerPhone(payload: any) {
     };
   }
 
-  const normalized = normalizeDirectIndividualPhone(payload?.phone);
+  const normalized = normalizeBrazilPhone(payload?.phone);
 
   if (!normalized) {
     return {
@@ -608,7 +611,7 @@ function getOutgoingMediaLabel(type: string, caption: string, fileName: string):
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT || 3000);
+  const PORT = 3000;
   app.use(express.json({ limit: "10mb" }));
 
   // Middleware de Log para Diagnóstico
@@ -869,16 +872,16 @@ const DEFAULT_TEAM = {
     }
 
     const phone = diagnosis.phoneNormalized;
-    const normalized = normalizeIncomingDirectMessage(payload, phone);
+  const normalized = normalizeIncomingDirectMessage(payload, phone);
 
-    const customer = await findOrCreateCustomerByPhone(phone, normalized.name);
-    const conversation = await findOrCreateConversationByPhone(phone, customer, {
-      forceDirect: true,
-      status: "NEW",
-      origin: "direct"
-    });
+  const customer = await findOrCreateCustomerByPhone(phone, normalized.name);
+  const conversation = await findOrCreateConversationByPhone(phone, customer, {
+    forceDirect: true,
+    status: "NEW",
+    origin: "direct"
+  });
 
-    const message = await createIncomingDirectMessage(conversation, customer, normalized);
+  const message = await createIncomingDirectMessage(conversation, customer, normalized);
     await updateConversationAfterIncomingDirectMessage(conversation, normalized, message);
 
     if (logId) {
@@ -907,180 +910,279 @@ const DEFAULT_TEAM = {
   }
 
   // --- Campaign Helpers ---
-  function normalizeBrazilianPhone(rawPhone: string): string {
-    const digits = rawPhone.replace(/\D/g, "");
-    if (!digits) return "";
-    
-    let normalized = digits;
-    
-    // Se tem 10 ou 11 dígitos e não começa com 55, adiciona 55
-    if ((normalized.length === 10 || normalized.length === 11) && !normalized.startsWith("55")) {
-      normalized = "55" + normalized;
-    }
-    
-    // Se tem 12 dígitos, começa com 55 e o DDD (pos 2,3) é <= 27, pode faltar o 9.
-    // Mas a Z-API costuma lidar bem se enviarmos o número que o WhatsApp espera.
-    // Regra geral: Garantir 55 + DDD + [9] + Número.
-    
-    return normalized;
+  function renderCampaignMessage(template: string, recipient: any) {
+    return String(template || "")
+      .replaceAll("{{nome}}", recipient.name || "cliente")
+      .replaceAll("{name}", recipient.name || "cliente")
+      .replaceAll("{{telefone}}", recipient.phone_normalized || recipient.phone || "");
+  }
+
+  async function refreshCampaignStats(campaignId: string) {
+    const { data: recipients } = await supabaseAdmin
+      .from(TABLES.campaign_recipients)
+      .select("status")
+      .eq("campaign_id", campaignId);
+
+    const counts = {
+      recipients_count: recipients?.length || 0,
+      pending_count: recipients?.filter(r => r.status === "PENDING").length || 0,
+      sending_count: recipients?.filter(r => r.status === "SENDING").length || 0,
+      sent_count: recipients?.filter(r => r.status === "SENT").length || 0,
+      failed_count: recipients?.filter(r => r.status === "FAILED").length || 0,
+      skipped_count: recipients?.filter(r => r.status === "SKIPPED").length || 0
+    };
+
+    await supabaseAdmin
+      .from(TABLES.campaigns)
+      .update({
+        ...counts,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", campaignId);
+
+    return counts;
   }
 
   const campaignProcessingLocks = new Set<string>();
 
   async function processCampaignBatch(campaignId: string) {
-    if (campaignProcessingLocks.has(campaignId)) return;
+    if (campaignProcessingLocks.has(campaignId)) return { processed: 0, reason: "Lock ativo." };
     campaignProcessingLocks.add(campaignId);
 
     try {
-      // 1. Buscar campanha
-      const { data: campaign, error: cErr } = await supabaseAdmin.from(TABLES.campaigns).select('*').eq('id', campaignId).single();
-      if (cErr || !campaign || campaign.status !== 'RUNNING') {
-        campaignProcessingLocks.delete(campaignId);
-        return;
-      }
-
-      // 2. Buscar destinatários pendentes
-      const { data: recipients, error: rErr } = await supabaseAdmin.from(TABLES.campaign_recipients)
-        .select('*')
-        .eq('campaign_id', campaignId)
-        .eq('status', 'PENDING')
-        .limit(campaign.batch_size || 5);
-
-      if (rErr || !recipients || recipients.length === 0) {
-        // Se não tem mais nenhum PENDING, marca como COMPLETED
-        const { count } = await supabaseAdmin.from(TABLES.campaign_recipients)
-          .select('*', { count: 'exact', head: true })
-          .eq('campaign_id', campaignId)
-          .eq('status', 'PENDING');
-          
-        if (count === 0) {
-          await supabaseAdmin.from(TABLES.campaigns).update({ 
-            status: 'COMPLETED',
-            completed_at: new Date().toISOString()
-          }).eq('id', campaignId);
-          broadcastEvent("campaign.updated", { id: campaignId, status: 'COMPLETED' });
-        }
-        
-        campaignProcessingLocks.delete(campaignId);
-        return;
-      }
-
-      // 3. Buscar instância Z-API
-      const { data: whatsappAccount } = await supabaseAdmin.from(TABLES.whatsapp_accounts)
-        .select('*')
-        .eq('id', campaign.whatsapp_account_id)
+      const { data: campaign, error: campaignError } = await supabaseAdmin
+        .from(TABLES.campaigns)
+        .select("*")
+        .eq("id", campaignId)
         .single();
 
-      if (!whatsappAccount || !whatsappAccount.zapi_instance_id || !whatsappAccount.zapi_token) {
-        await supabaseAdmin.from(TABLES.campaigns).update({ 
-          status: 'FAILED',
-          error_log: 'Instância WhatsApp não configurada ou inválida.'
-        }).eq('id', campaignId);
-        campaignProcessingLocks.delete(campaignId);
-        return;
+      if (campaignError || !campaign) {
+        throw new Error("Campanha não encontrada.");
       }
 
-      const zapiId = whatsappAccount.zapi_instance_id;
-      const zapiToken = whatsappAccount.zapi_token;
-      const zapiSecurity = whatsappAccount.zapi_client_token;
+      if (campaign.status !== "RUNNING") {
+        return { processed: 0, reason: `Campanha status=${campaign.status}` };
+      }
 
-      // 4. Disparar mensagens
+      const { instanceId, instanceToken } = getZapiConfig();
+      if (!instanceId || !instanceToken) {
+        await supabaseAdmin
+          .from(TABLES.campaigns)
+          .update({
+            last_error: "Z-API não configurada.",
+            updated_at: new Date().toISOString()
+          })
+          .eq("id", campaignId);
+
+        throw new Error("Z-API não configurada.");
+      }
+
+      const batchSize = campaign.batch_size || 5;
+
+      const { data: recipients, error: recipientsError } = await supabaseAdmin
+        .from(TABLES.campaign_recipients)
+        .select("*")
+        .eq("campaign_id", campaignId)
+        .eq("status", "PENDING")
+        .order("created_at", { ascending: true })
+        .limit(batchSize);
+
+      if (recipientsError) throw recipientsError;
+
+      if (!recipients || recipients.length === 0) {
+        const stats = await refreshCampaignStats(campaignId);
+
+        if (stats.pending_count === 0 && stats.sending_count === 0) {
+          await supabaseAdmin
+            .from(TABLES.campaigns)
+            .update({
+              status: "COMPLETED",
+              completed_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", campaignId);
+
+          await supabaseAdmin.from(TABLES.campaign_events).insert({
+            campaign_id: campaignId,
+            event_type: "campaign.completed",
+            message: "Campanha concluída."
+          });
+          
+          broadcastEvent("campaign.updated", { id: campaignId, status: "COMPLETED" });
+        }
+
+        return { processed: 0, completed: true };
+      }
+
+      let processedCount = 0;
+
       for (const recipient of recipients) {
-        // Check if campaign was paused/cancelled mid-batch
-        const { data: latestCampaign } = await supabaseAdmin.from(TABLES.campaigns).select('status').eq('id', campaignId).single();
-        if (latestCampaign?.status !== 'RUNNING') break;
+        const now = new Date().toISOString();
+
+        const { data: locked, error: lockError } = await supabaseAdmin
+          .from(TABLES.campaign_recipients)
+          .update({
+            status: "SENDING",
+            attempts: (recipient.attempts || 0) + 1,
+            last_attempt_at: now,
+            updated_at: now
+          })
+          .eq("id", recipient.id)
+          .eq("status", "PENDING")
+          .select("*")
+          .single();
+
+        if (lockError || !locked) {
+          continue;
+        }
 
         try {
-          await supabaseAdmin.from(TABLES.campaign_recipients).update({ status: 'SENDING' }).eq('id', recipient.id);
-          
-          let content = campaign.content;
-          // Replace variables
-          if (recipient.name) content = content.replace(/{{nome}}/g, recipient.name).replace(/{name}/g, recipient.name);
-          content = content.replace(/{{telefone}}/g, recipient.phone);
+          const renderedMessage = renderCampaignMessage(campaign.content || campaign.message_text, recipient);
 
-          const payload: any = {
-            phone: recipient.phone_normalized,
-            message: content
-          };
-
-          // TODO: Check if it's an image/media campaign
-          const endpoint = campaign.media_url ? "/send-image" : "/send-text";
-          if (campaign.media_url) {
-            payload.image = campaign.media_url;
-            payload.caption = content;
+          if (!renderedMessage.trim()) {
+            throw new Error("Mensagem da campanha vazia.");
           }
 
-          const { config: zapiGlobalConfig } = getZapiConfig();
-          const response = await fetch(`${zapiGlobalConfig.baseUrl}/instances/${zapiId}/token/${zapiToken}${endpoint}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(zapiSecurity ? { 'Client-Token': zapiSecurity } : {})
-            },
-            body: JSON.stringify(payload)
+          let zapiResponse;
+          const phone = recipient.phone_normalized;
+
+          if ((campaign.message_type || "text") === "text") {
+            zapiResponse = await callZapi("/send-text", {
+              phone: phone,
+              message: renderedMessage
+            });
+          } else if (campaign.message_type === "image") {
+            if (!campaign.media_url) throw new Error("Imagem da campanha não configurada.");
+
+            zapiResponse = await callZapi("/send-image", {
+              phone: phone,
+              image: campaign.media_url,
+              caption: renderedMessage
+            });
+          } else if (campaign.message_type === "video") {
+            if (!campaign.media_url) throw new Error("Vídeo da campanha não configurado.");
+
+            zapiResponse = await callZapi("/send-video", {
+              phone: phone,
+              video: campaign.media_url,
+              caption: renderedMessage
+            });
+          } else if (campaign.message_type === "audio") {
+             if (!campaign.media_url) throw new Error("Áudio da campanha não configurado.");
+             zapiResponse = await callZapi("/send-audio", {
+                phone: phone,
+                audio: campaign.media_url
+             });
+          } else if (campaign.message_type === "document") {
+             if (!campaign.media_url) throw new Error("Documento da campanha não configurado.");
+             const ext = getExtensionFromMimeOrFileName(campaign.media_mime_type || "", campaign.media_file_name || "arquivo");
+             zapiResponse = await callZapi(`/send-document/${ext}`, {
+                phone: phone,
+                document: campaign.media_url,
+                fileName: campaign.media_file_name || "arquivo"
+             });
+          } else {
+            throw new Error(`Tipo de campanha não suportado: ${campaign.message_type}`);
+          }
+
+          await supabaseAdmin
+            .from(TABLES.campaign_recipients)
+            .update({
+              status: "SENT",
+              sent_at: new Date().toISOString(),
+              zapi_message_id: zapiResponse?.messageId || zapiResponse?.id || null,
+              raw_response: zapiResponse,
+              error_message: null,
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", recipient.id);
+
+          await supabaseAdmin.from(TABLES.campaign_events).insert({
+            campaign_id: campaignId,
+            recipient_id: recipient.id,
+            event_type: "recipient.sent",
+            message: `Mensagem enviada para ${recipient.phone_normalized}`,
+            payload: zapiResponse
           });
 
-          const result = await response.json();
+          processedCount++;
 
-          if (response.ok && (result.zaapId || result.messageId)) {
-            await supabaseAdmin.from(TABLES.campaign_recipients).update({ 
-              status: 'SENT',
-              sent_at: new Date().toISOString(),
-              error_message: null
-            }).eq('id', recipient.id);
-          } else {
-            throw new Error(result.error || result.message || "Erro desconhecido na Z-API");
-          }
+          const delaySeconds = campaign.delay_seconds || campaign.min_interval || 8;
+          await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
         } catch (error: any) {
-          console.error(`Error sending campaign message to ${recipient.phone}:`, error);
-          await supabaseAdmin.from(TABLES.campaign_recipients).update({ 
-            status: 'FAILED',
-            error_message: error.message || 'Erro no envio'
-          }).eq('id', recipient.id);
-        }
+          const attempts = (recipient.attempts || 0) + 1;
+          const maxAttempts = campaign.max_attempts || 2;
+          const shouldRetry = attempts < maxAttempts;
 
-        // Intervalo entre mensagens
-        const interval = Math.floor(Math.random() * ((campaign.max_interval || 10) - (campaign.min_interval || 5) + 1)) + (campaign.min_interval || 5);
-        await new Promise(resolve => setTimeout(resolve, interval * 1000));
-      }
+          await supabaseAdmin
+            .from(TABLES.campaign_recipients)
+            .update({
+              status: shouldRetry ? "PENDING" : "FAILED",
+              failed_at: shouldRetry ? null : new Date().toISOString(),
+              error_message: error instanceof Error ? error.message : String(error),
+              raw_response: error?.zapiResponse || null,
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", recipient.id);
 
-      // Update campaign stats after batch
-      const { data: stats } = await supabaseAdmin.from(TABLES.campaign_recipients)
-        .select('status')
-        .eq('campaign_id', campaignId);
-
-      const sentCount = stats?.filter(r => r.status === 'SENT').length || 0;
-      const failedCount = stats?.filter(r => r.status === 'FAILED').length || 0;
-      const pendingCount = stats?.filter(r => r.status === 'PENDING').length || 0;
-
-      if (pendingCount === 0) {
-        await supabaseAdmin.from(TABLES.campaigns).update({ 
-          status: 'COMPLETED',
-          completed_at: new Date().toISOString(),
-          sent_count: sentCount,
-          failed_count: failedCount,
-          pending_count: 0
-        }).eq('id', campaignId);
-        broadcastEvent("campaign.updated", { id: campaignId, status: 'COMPLETED' });
-      } else {
-        await supabaseAdmin.from(TABLES.campaigns).update({ 
-          sent_count: sentCount,
-          failed_count: failedCount,
-          pending_count: pendingCount
-        }).eq('id', campaignId);
-        
-        // Schedule next batch if still running
-        const { data: finalCheck } = await supabaseAdmin.from(TABLES.campaigns).select('status').eq('id', campaignId).single();
-        if (finalCheck?.status === 'RUNNING') {
-          setTimeout(() => processCampaignBatch(campaignId), 2000); // 2s gap between batches
+          await supabaseAdmin.from(TABLES.campaign_events).insert({
+            campaign_id: campaignId,
+            recipient_id: recipient.id,
+            event_type: "recipient.failed",
+            message: error instanceof Error ? error.message : String(error),
+            payload: error?.zapiResponse || null
+          });
         }
       }
 
-    } catch (err) {
-      console.error("Critical error in processCampaignBatch", err);
+      await supabaseAdmin
+        .from(TABLES.campaigns)
+        .update({
+          last_processed_at: new Date().toISOString(),
+          last_error: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", campaignId);
+
+      const stats = await refreshCampaignStats(campaignId);
+      broadcastEvent("campaign.updated", { id: campaignId, stats });
+
+      return { processed: processedCount, stats };
+    } catch (error: any) {
+       console.error(`[CAMPAIGN ERR ${campaignId}]`, error);
+       return { processed: 0, error: error.message };
     } finally {
       campaignProcessingLocks.delete(campaignId);
     }
+  }
+
+  async function processRunningCampaigns() {
+    const { data: runningCampaigns } = await supabaseAdmin
+      .from(TABLES.campaigns)
+      .select('id')
+      .eq('status', 'RUNNING');
+
+    if (!runningCampaigns) return;
+
+    for (const camp of runningCampaigns) {
+      // We don't await here to process campaigns in parallel
+      processCampaignBatch(camp.id).catch(err => console.error(`Error in processor for ${camp.id}:`, err));
+    }
+  }
+
+  let campaignWorkerStarted = false;
+  function startCampaignWorker() {
+    if (campaignWorkerStarted) return;
+    campaignWorkerStarted = true;
+    console.log("[CAMPAIGN WORKER] Started");
+
+    setInterval(async () => {
+      try {
+        await processRunningCampaigns();
+      } catch (error) {
+        console.error("[CAMPAIGN WORKER LOOP ERROR]", error);
+      }
+    }, 15000); // Check every 15 seconds
   }
 
   async function saveWebhookLog(data: any) {
@@ -1115,6 +1217,53 @@ const DEFAULT_TEAM = {
   }
 
   // --- Routes ---
+  app.get("/api/debug/zapi-config", async (req, res) => {
+    const { baseUrl, instanceId, instanceToken, clientToken } = getZapiConfig();
+    return res.json({
+      success: true,
+      zapi: {
+        hasInstanceId: !!instanceId,
+        hasInstanceToken: !!instanceToken,
+        hasClientToken: !!clientToken,
+        baseUrl: baseUrl
+      },
+      supabase: {
+        hasUrl: !!process.env.VITE_SUPABASE_URL,
+        hasServiceRole: !!process.env.SUPABASE_SERVICE_ROLE_KEY
+      }
+    });
+  });
+
+  app.post("/api/debug/zapi/test-send", async (req, res) => {
+    try {
+      const currentUser = await getAuthenticatedUser(req);
+      if (currentUser.role !== 'admin' && currentUser.role !== 'supervisor') {
+        return res.status(403).json({ success: false, error: "Acesso negado." });
+      }
+
+      const { phone, message } = req.body;
+      const normalizedPhone = normalizeBrazilPhone(phone);
+      
+      if (!normalizedPhone) {
+        return res.status(400).json({ success: false, error: "Telefone inválido." });
+      }
+
+      const zapiResponse = await callZapi("/send-text", {
+        phone: normalizedPhone,
+        message: message || "Teste Viva CRM"
+      });
+
+      return res.json({ success: true, zapiResponse });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+        zapiStatus: error.status,
+        zapiResponse: error.zapiResponse
+      });
+    }
+  });
+
   app.get("/api/health", (req, res) => {
     console.log("[HEALTH] Checked at", new Date().toISOString());
     return res.json({
@@ -1497,16 +1646,21 @@ const DEFAULT_TEAM = {
 
   app.get("/api/zapi/diagnostic", async (req, res) => {
     try {
-      const { config, missing } = getZapiConfig();
-      const { data: zapiStatus } = await callZapi("/status");
+      const { instanceId, instanceToken } = getZapiConfig();
+      const zapiStatus = await callZapi("/status");
       
-      const { count: custsCount } = await supabase.from(TABLES.customers).select('*', { count: 'exact', head: true });
-      const { count: convsCount } = await supabase.from(TABLES.conversations).select('*', { count: 'exact', head: true });
-      const { count: msgsCount } = await supabase.from(TABLES.messages).select('*', { count: 'exact', head: true });
-      const { count: logsCount } = await supabase.from(TABLES.logs).select('*', { count: 'exact', head: true });
+      const configured = !!instanceId && !!instanceToken;
+      const missing = [];
+      if (!instanceId) missing.push("ZAPI_INSTANCE_ID");
+      if (!instanceToken) missing.push("ZAPI_INSTANCE_TOKEN");
+
+      const { count: custsCount } = await supabaseAdmin.from(TABLES.customers).select('*', { count: 'exact', head: true });
+      const { count: convsCount } = await supabaseAdmin.from(TABLES.conversations).select('*', { count: 'exact', head: true });
+      const { count: msgsCount } = await supabaseAdmin.from(TABLES.messages).select('*', { count: 'exact', head: true });
+      const { count: logsCount } = await supabaseAdmin.from("crm_webhook_logs").select('*', { count: 'exact', head: true });
       
-      const { data: logs } = await supabase.from(TABLES.logs).select('*').order('created_at', { ascending: false }).limit(5);
-      const { data: convs } = await supabase.from(TABLES.conversations).select('*, customer:customer_id(*)').order('last_message_at', { ascending: false }).limit(5);
+      const { data: logs } = await supabaseAdmin.from("crm_webhook_logs").select('*').order('created_at', { ascending: false }).limit(5);
+      const { data: convs } = await supabaseAdmin.from(TABLES.conversations).select('*').order('last_message_at', { ascending: false }).limit(5);
       
       return res.json({
         success: true,
@@ -1567,7 +1721,7 @@ const DEFAULT_TEAM = {
 
   app.get("/api/omnichannel/conversations", async (req, res) => {
     try {
-      const { team_id, tag_id } = req.query;
+      const { team_id, tag_id, tag_ids } = req.query;
       
       // 1. Iniciar query
       let query = supabase.from(TABLES.conversations).select(`
@@ -1580,19 +1734,23 @@ const DEFAULT_TEAM = {
         query = query.eq('team_id', team_id);
       }
 
-      // 3. Aplicar filtro de tag se informado e não for 'all'
-      if (tag_id && tag_id !== 'all') {
-        const { data: tagLinks } = await supabaseAdmin
-          .from(TABLES.conversation_tags)
-          .select('conversation_id')
-          .eq('tag_id', tag_id);
-        
-        const convIds = (tagLinks || []).map(tl => tl.conversation_id);
-        if (convIds.length > 0) {
-          query = query.in('id', convIds);
-        } else {
-          // No conversations with this tag
-          return res.json({ success: true, conversations: [] });
+      // 3. Aplicar filtro de tag se informado
+      const tagsToFilter = (tag_ids as string || tag_id as string);
+      if (tagsToFilter && tagsToFilter !== 'all') {
+        const tagList = tagsToFilter.split(',').filter(id => id.trim());
+        if (tagList.length > 0) {
+          const { data: tagLinks } = await supabaseAdmin
+            .from(TABLES.conversation_tags)
+            .select('conversation_id')
+            .in('tag_id', tagList);
+          
+          const convIds = (tagLinks || []).map(tl => tl.conversation_id);
+          if (convIds.length > 0) {
+            query = query.in('id', convIds);
+          } else {
+            // No conversations with these tags
+            return res.json({ success: true, conversations: [] });
+          }
         }
       }
 
@@ -1863,97 +2021,111 @@ const DEFAULT_TEAM = {
   });
 
   app.post("/api/omnichannel/conversations/:id/send-message", async (req, res) => {
-    const { id } = req.params;
-    const { message } = req.body;
-
     try {
-      // Autenticação Real
       const currentUser = await getAuthenticatedUser(req);
-
-      // 0. Check Z-API config
-      const { missing } = getZapiConfig();
-      if (missing.includes("ZAPI_INSTANCE_ID") || missing.includes("ZAPI_INSTANCE_TOKEN")) {
-        return res.status(400).json({ 
-          success: false, 
-          error: "Z-API não configurada no servidor. Verifique o arquivo .env" 
+  
+      const conversationId = req.params.id;
+      const message = String(req.body?.message || "").trim();
+  
+      if (!message) {
+        return res.status(400).json({
+          success: false,
+          error: "Mensagem vazia."
         });
       }
-
-      // 1. Get conversation and customer
-      const { data: conversation, error: convErr } = await supabaseAdmin.from(TABLES.conversations).select('*, customer:customer_id(*)').eq('id', id).single();
-      if (convErr || !conversation) throw new Error("Conversa não encontrada.");
-
-      const phone = conversation.customer_phone_normalized || (conversation.customer as any)?.phone_normalized || (conversation.customer as any)?.phone;
-      if (!phone) throw new Error("Telefone do cliente não encontrado.");
-
-      // 1.5 Format Message with Agent Name
+  
+      const { data: conversation, error: conversationError } = await supabaseAdmin
+        .from("crm_conversations")
+        .select("*")
+        .eq("id", conversationId)
+        .single();
+  
+      if (conversationError || !conversation) {
+        return res.status(404).json({
+          success: false,
+          error: "Conversa não encontrada."
+        });
+      }
+  
+      const phone = String(conversation.customer_phone_normalized || "").replace(/\D/g, "");
+  
+      if (!phone || !phone.startsWith("55") || phone.length < 12 || phone.length > 13) {
+        return res.status(400).json({
+          success: false,
+          error: "Telefone do cliente inválido."
+        });
+      }
+  
       const finalMessage = formatAgentMessageForWhatsApp(message, currentUser.name);
-
-      // 2. Send via Z-API
-      const zapiResult = await callZapi("/send-text", {
-        method: "POST",
-        body: JSON.stringify({ phone, message: finalMessage })
+  
+      const zapiResponse = await callZapi("/send-text", {
+        phone,
+        message: finalMessage
       });
-
-      if (!zapiResult.ok) {
-        throw new Error(zapiResult.data?.error || "Erro ao enviar mensagem via Z-API");
-      }
-
-      // 3. Save to database
-      const { data: newMsg, error: msgErr } = await supabaseAdmin.from(TABLES.messages).insert({
-        conversation_id: id,
-        customer_phone_normalized: phone,
-        sender_type: 'agent',
-        sender_user_id: currentUser.id,
-        sender_name: currentUser.name,
-        content: finalMessage,
-        message_type: 'text',
-        status: 'sent',
-        external_message_id: zapiResult.data?.messageId || `msg-${Date.now()}`,
-        created_at: new Date().toISOString()
-      }).select().single();
-
-      if (msgErr) throw msgErr;
-
-      // 4. Update conversation & Auto-assign if needed
-      const convUpdates: any = {
-        last_message: finalMessage,
-        last_message_at: new Date().toISOString(),
-        status: 'OPEN',
-        updated_at: new Date().toISOString()
-      };
-
-      if (!conversation.assigned_user_id) {
-        convUpdates.assigned_user_id = currentUser.id;
-        convUpdates.assigned_user_name = currentUser.name;
-        if (!conversation.started_at) {
-          convUpdates.started_at = new Date().toISOString();
-        }
-      }
-
-      const { data: updatedConv, error: updateErr } = await supabaseAdmin.from(TABLES.conversations)
-        .update(convUpdates)
-        .eq('id', id)
+  
+      const now = new Date().toISOString();
+  
+      const { data: savedMessage, error: messageError } = await supabaseAdmin
+        .from("crm_messages")
+        .insert({
+          conversation_id: conversationId,
+          customer_phone_normalized: phone,
+          external_message_id: zapiResponse?.messageId || zapiResponse?.id || `sent-${Date.now()}`,
+          sender_type: "agent",
+          sender_user_id: currentUser.id,
+          sender_name: currentUser.name,
+          from_phone: "",
+          to_phone: phone,
+          message_type: "text",
+          content: finalMessage,
+          status: "sent",
+          is_internal: false,
+          raw_payload: zapiResponse,
+          created_at: now
+        })
+        .select("*")
+        .single();
+  
+      if (messageError) throw messageError;
+  
+      const { data: updatedConv } = await supabaseAdmin
+        .from("crm_conversations")
+        .update({
+          assigned_user_id: conversation.assigned_user_id || currentUser.id,
+          assigned_user_name: conversation.assigned_user_name || currentUser.name,
+          status: "OPEN",
+          last_message: finalMessage,
+          last_message_at: now,
+          updated_at: now
+        })
+        .eq("id", conversationId)
         .select()
         .single();
-
-      if (updateErr) console.error("Error auto-assigning/updating conv:", updateErr);
-
+  
       broadcastEvent("message.received", {
         conversation: updatedConv || conversation,
         message: {
-          ...newMsg,
+          ...savedMessage,
           normalized_message_type: 'text',
-          display_content: newMsg.content
+          display_content: savedMessage.content
         }
       });
 
       broadcastEvent("conversation.updated", { conversation: updatedConv || conversation });
 
-      return res.json({ success: true, message: newMsg, conversation: updatedConv || conversation });
-    } catch (err: any) {
-      console.error("[SEND MESSAGE ERR]", err);
-      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+      return res.json({
+        success: true,
+        message: savedMessage,
+        zapiResponse
+      });
+    } catch (error: any) {
+      console.error("[SEND MESSAGE ERROR]", error);
+  
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Erro ao enviar mensagem.",
+        zapiResponse: error?.zapiResponse || null
+      });
     }
   });
 
@@ -2115,8 +2287,8 @@ const DEFAULT_TEAM = {
         const currentUser = await getAuthenticatedUser(req);
         if (!file) throw new Error("Arquivo não recebido.");
 
-        const { missing } = getZapiConfig();
-        if (missing.includes("ZAPI_INSTANCE_ID") || missing.includes("ZAPI_INSTANCE_TOKEN")) {
+        const { instanceId, instanceToken } = getZapiConfig();
+        if (!instanceId || !instanceToken) {
           return res.status(400).json({ 
             success: false, 
             error: "Z-API não configurada no servidor. Verifique o arquivo .env" 
@@ -2153,19 +2325,19 @@ const DEFAULT_TEAM = {
           const typeLabel = type === 'audio' ? 'um áudio' : 'um arquivo';
           const introMsg = formatAgentMessageForWhatsApp(`Estou enviando ${typeLabel}.`, currentUser.name);
           await callZapi("/send-text", {
-            method: "POST",
-            body: JSON.stringify({ phone, message: introMsg })
+             phone, 
+             message: introMsg
           });
         }
-
+  
         // 3. Send via Z-API
         const finalCaption = (type === 'image' || type === 'video') 
           ? formatAgentMessageForWhatsApp(caption || '', currentUser.name)
           : null;
-
+  
         let zapiPath = "";
         let zapiBody: any = { phone };
-
+  
         if (type === 'image') {
           zapiPath = "/send-image";
           zapiBody.image = publicUrl;
@@ -2184,11 +2356,8 @@ const DEFAULT_TEAM = {
         } else {
           throw new Error("Tipo de mídia inválido.");
         }
-
-        const zapiResult = await callZapi(zapiPath, {
-          method: "POST",
-          body: JSON.stringify(zapiBody)
-        });
+  
+        const zapiResult = await callZapi(zapiPath, zapiBody);
 
         if (!zapiResult.ok) {
           throw new Error(zapiResult.data?.error || "Erro ao enviar mídia via Z-API");
@@ -2702,7 +2871,10 @@ const DEFAULT_TEAM = {
   // --- Campaign Routes ---
   app.get("/api/campaigns", async (req, res) => {
     try {
-      const { data, error } = await supabaseAdmin.from(TABLES.campaigns).select('*').order('created_at', { ascending: false });
+      const { data, error } = await supabaseAdmin
+        .from(TABLES.campaigns)
+        .select('*')
+        .order('created_at', { ascending: false });
       if (error) throw error;
       return res.json({ success: true, campaigns: data });
     } catch (error: any) {
@@ -2712,34 +2884,61 @@ const DEFAULT_TEAM = {
 
   app.post("/api/campaigns/optimize", async (req, res) => {
     try {
-      const { contacts } = req.body;
-      if (!contacts || !Array.isArray(contacts)) {
-        return res.status(400).json({ success: false, error: "Lista de contatos inválida" });
+      const { raw_contacts } = req.body;
+      if (!raw_contacts || typeof raw_contacts !== 'string') {
+        return res.status(400).json({ success: false, error: "Texto de contatos inválido" });
       }
 
-      const optimized = contacts.reduce((acc: any[], current: any) => {
-        const phone = String(current.phone || "").replace(/\D/g, "");
-        if (!phone || phone.length < 10) return acc;
+      const lines = raw_contacts.split('\n').filter(l => l.trim());
+      const valid: any[] = [];
+      const invalid: any[] = [];
+      const duplicates: any[] = [];
+      const seen = new Set();
 
-        const normalized = normalizeBrazilianPhone(phone);
-        const isDuplicate = acc.some(item => item.phone_normalized === normalized);
+      for (const line of lines) {
+        let name = "";
+        let phone = "";
 
-        if (!isDuplicate) {
-          acc.push({
-            name: current.name || "",
-            phone: phone,
-            phone_normalized: normalized,
-            variables: current.variables || {}
-          });
+        if (line.includes(';')) {
+          const parts = line.split(';');
+          name = parts[0]?.trim();
+          phone = parts[1]?.trim();
+        } else if (line.includes(',')) {
+          const parts = line.split(',');
+          name = parts[0]?.trim();
+          phone = parts[1]?.trim();
+        } else {
+          phone = line.trim();
         }
-        return acc;
-      }, []);
+
+        const normalized = normalizeBrazilPhone(phone);
+        if (!normalized) {
+          invalid.push({ line, reason: "Telefone inválido ou formato não suportado." });
+          continue;
+        }
+
+        if (seen.has(normalized)) {
+          duplicates.push({ line, phone_normalized: normalized });
+          continue;
+        }
+
+        seen.add(normalized);
+        valid.push({
+          name: name || "Cliente",
+          phone: phone,
+          phone_normalized: normalized
+        });
+      }
 
       return res.json({ 
         success: true, 
-        originalCount: contacts.length,
-        optimizedCount: optimized.length,
-        contacts: optimized 
+        total_input: lines.length,
+        total_valid: valid.length,
+        total_invalid: invalid.length,
+        total_duplicates: duplicates.length,
+        valid,
+        invalid,
+        duplicates
       });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
@@ -2749,7 +2948,7 @@ const DEFAULT_TEAM = {
   app.post("/api/campaigns", async (req, res) => {
     try {
       const user = await getAuthenticatedUser(req);
-      const { name, whatsapp_account_id, content, media_url, contacts, batch_size, min_interval, max_interval } = req.body;
+      const { name, whatsapp_account_id, content, message_type, media_url, media_file_name, media_mime_type, contacts, batch_size, min_interval, max_interval } = req.body;
 
       if (!name || !whatsapp_account_id || !content || !contacts || !Array.isArray(contacts)) {
         return res.status(400).json({ success: false, error: "Dados incompletos para criação da campanha" });
@@ -2759,8 +2958,11 @@ const DEFAULT_TEAM = {
         name,
         whatsapp_account_id,
         content,
+        message_type: message_type || 'text',
         media_url,
-        status: 'DRAFT',
+        media_file_name,
+        media_mime_type,
+        status: 'READY',
         recipients_count: contacts.length,
         pending_count: contacts.length,
         batch_size: batch_size || 5,
@@ -2780,12 +2982,17 @@ const DEFAULT_TEAM = {
         status: 'PENDING'
       }));
 
-      // Inserir destinatários em lotes para evitar timeout do Supabase
       const chunkSize = 500;
       for (let i = 0; i < recipients.length; i += chunkSize) {
         const chunk = recipients.slice(i, i + chunkSize);
         await supabaseAdmin.from(TABLES.campaign_recipients).insert(chunk);
       }
+
+      await supabaseAdmin.from(TABLES.campaign_events).insert({
+        campaign_id: campaign.id,
+        event_type: 'campaign.created',
+        data: { message: `Campanha criada por ${user.name}` }
+      });
 
       return res.json({ success: true, campaign });
     } catch (error: any) {
@@ -2815,24 +3022,78 @@ const DEFAULT_TEAM = {
 
   app.post("/api/campaigns/:id/start", async (req, res) => {
     try {
-      const { data: campaign } = await supabaseAdmin.from(TABLES.campaigns).update({
-        status: 'RUNNING',
-        started_at: new Date().toISOString()
-      }).eq('id', req.params.id).select().single();
+      const { id } = req.params;
+      
+      const { data: campaign, error } = await supabaseAdmin
+        .from(TABLES.campaigns)
+        .select("*")
+        .eq("id", id)
+        .single();
+      
+      if (error || !campaign) throw new Error("Campanha não encontrada.");
 
-      processCampaignBatch(req.params.id);
+      // Validar Z-API
+      const { instanceId, instanceToken } = getZapiConfig();
+      if (!instanceId || !instanceToken) throw new Error("Z-API não configurada.");
 
-      return res.json({ success: true, campaign });
+      // Validar se tem contatos PENDING
+      const { count } = await supabaseAdmin
+        .from(TABLES.campaign_recipients)
+        .select("*", { count: "exact", head: true })
+        .eq("campaign_id", id)
+        .eq("status", "PENDING");
+      
+      if (!count || count === 0) throw new Error("Não há destinatários pendentes nesta campanha.");
+
+      const { data: updatedCampaign } = await supabaseAdmin
+        .from(TABLES.campaigns)
+        .update({
+          status: "RUNNING",
+          started_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", id)
+        .select()
+        .single();
+
+      await supabaseAdmin.from(TABLES.campaign_events).insert({
+        campaign_id: id,
+        event_type: "campaign.started",
+        message: "Campanha iniciada."
+      });
+
+      // Processar primeiro lote imediatamente
+      const batchResult = await processCampaignBatch(id);
+
+      return res.json({
+        success: true,
+        campaign: updatedCampaign,
+        batchResult
+      });
     } catch (error: any) {
+      console.error("[CAMPAIGN START ERR]", error);
       return res.status(500).json({ success: false, error: error.message });
     }
   });
 
   app.post("/api/campaigns/:id/pause", async (req, res) => {
     try {
-      const { data: campaign } = await supabaseAdmin.from(TABLES.campaigns).update({
-        status: 'PAUSED'
-      }).eq('id', req.params.id).select().single();
+      const { id } = req.params;
+      const { data: campaign } = await supabaseAdmin
+        .from(TABLES.campaigns)
+        .update({
+          status: "PAUSED",
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", id)
+        .select()
+        .single();
+
+      await supabaseAdmin.from(TABLES.campaign_events).insert({
+        campaign_id: id,
+        event_type: "campaign.paused",
+        message: "Campanha pausada manualmente."
+      });
 
       return res.json({ success: true, campaign });
     } catch (error: any) {
@@ -2842,11 +3103,25 @@ const DEFAULT_TEAM = {
 
   app.post("/api/campaigns/:id/resume", async (req, res) => {
     try {
-      const { data: campaign } = await supabaseAdmin.from(TABLES.campaigns).update({
-        status: 'RUNNING'
-      }).eq('id', req.params.id).select().single();
+      const { id } = req.params;
+      const { data: campaign } = await supabaseAdmin
+        .from(TABLES.campaigns)
+        .update({
+          status: "RUNNING",
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", id)
+        .select()
+        .single();
 
-      processCampaignBatch(req.params.id);
+      await supabaseAdmin.from(TABLES.campaign_events).insert({
+        campaign_id: id,
+        event_type: "campaign.resumed",
+        message: "Campanha retomada."
+      });
+
+      // Processar imediatamente
+      processCampaignBatch(id);
 
       return res.json({ success: true, campaign });
     } catch (error: any) {
@@ -2856,9 +3131,33 @@ const DEFAULT_TEAM = {
 
   app.post("/api/campaigns/:id/cancel", async (req, res) => {
     try {
-      const { data: campaign } = await supabaseAdmin.from(TABLES.campaigns).update({
-        status: 'CANCELED'
-      }).eq('id', req.params.id).select().single();
+      const { id } = req.params;
+      
+      const { data: campaign } = await supabaseAdmin
+        .from(TABLES.campaigns)
+        .update({
+          status: "CANCELED",
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", id)
+        .select()
+        .single();
+
+      // Marcar destinatários pendentes como SKIPPED
+      await supabaseAdmin
+        .from(TABLES.campaign_recipients)
+        .update({
+          status: "SKIPPED",
+          updated_at: new Date().toISOString()
+        })
+        .eq("campaign_id", id)
+        .in("status", ["PENDING", "SENDING"]);
+
+      await supabaseAdmin.from(TABLES.campaign_events).insert({
+        campaign_id: id,
+        event_type: "campaign.canceled",
+        message: "Campanha cancelada manualmente."
+      });
 
       return res.json({ success: true, campaign });
     } catch (error: any) {
@@ -2866,32 +3165,146 @@ const DEFAULT_TEAM = {
     }
   });
 
-  app.delete("/api/campaigns/:id", async (req, res) => {
+  app.post("/api/campaigns/:id/process", async (req, res) => {
     try {
-      await supabaseAdmin.from(TABLES.campaigns).delete().eq('id', req.params.id);
-      return res.json({ success: true });
+      const { id } = req.params;
+      const { data: campaign } = await supabaseAdmin
+        .from(TABLES.campaigns)
+        .select("status")
+        .eq("id", id)
+        .single();
+      
+      if (campaign?.status === "READY" || campaign?.status === "PAUSED") {
+        await supabaseAdmin.from(TABLES.campaigns).update({ status: "RUNNING" }).eq("id", id);
+      }
+      
+      const batchResult = await processCampaignBatch(id);
+      
+      return res.json({ success: true, ...batchResult });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
     }
   });
 
-  app.post("/api/campaigns/:id/retry-failed", async (req, res) => {
+  app.get("/api/debug/campaigns", async (req, res) => {
     try {
-      await supabaseAdmin.from(TABLES.campaign_recipients)
-        .update({ status: 'PENDING' })
-        .eq('campaign_id', req.params.id)
-        .eq('status', 'FAILED');
+      const { instanceId, instanceToken, clientToken } = getZapiConfig();
+      
+      const { data: campaigns } = await supabaseAdmin.from(TABLES.campaigns).select("*");
+      const { data: recipients } = await supabaseAdmin.from(TABLES.campaign_recipients).select("status");
 
-      const { data: campaign } = await supabaseAdmin.from(TABLES.campaigns).update({
-        status: 'RUNNING',
-        failed_count: 0
-      }).eq('id', req.params.id).select().single();
+      const stats = {
+        total: campaigns?.length || 0,
+        draft: campaigns?.filter(c => c.status === "DRAFT").length || 0,
+        ready: campaigns?.filter(c => c.status === "READY").length || 0,
+        running: campaigns?.filter(c => c.status === "RUNNING").length || 0,
+        paused: campaigns?.filter(c => c.status === "PAUSED").length || 0,
+        completed: campaigns?.filter(c => c.status === "COMPLETED").length || 0,
+        failed: campaigns?.filter(c => c.status === "FAILED").length || 0,
+        canceled: campaigns?.filter(c => c.status === "CANCELED").length || 0
+      };
 
-      processCampaignBatch(req.params.id);
+      const recipStats = {
+        pending: recipients?.filter(r => r.status === "PENDING").length || 0,
+        sending: recipients?.filter(r => r.status === "SENDING").length || 0,
+        sent: recipients?.filter(r => r.status === "SENT").length || 0,
+        failed: recipients?.filter(r => r.status === "FAILED").length || 0,
+        skipped: recipients?.filter(r => r.status === "SKIPPED").length || 0
+      };
 
-      return res.json({ success: true, campaign });
-    } catch (error: any) {
-      return res.status(500).json({ success: false, error: error.message });
+      return res.json({
+        success: true,
+        config: {
+          hasZapiInstanceId: !!instanceId,
+          hasZapiInstanceToken: !!instanceToken,
+          hasZapiClientToken: !!clientToken,
+          campaignWorkerStarted,
+          defaultBatchSize: 5,
+          defaultDelaySeconds: 8
+        },
+        totals: stats,
+        recipients: recipStats,
+        runningCampaigns: campaigns?.filter(c => c.status === "RUNNING").map(c => ({
+           id: c.id,
+           name: c.name,
+           last_processed_at: c.last_processed_at,
+           locked: campaignProcessingLocks.has(c.id)
+        })) || []
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.get("/api/campaigns/:id/debug", async (req, res) => {
+    const { id } = req.params;
+    try {
+      const { data: campaign } = await supabaseAdmin.from(TABLES.campaigns).select("*").eq("id", id).single();
+      const stats = await refreshCampaignStats(id);
+
+      const { data: nextRecipients } = await supabaseAdmin
+        .from(TABLES.campaign_recipients)
+        .select("*")
+        .eq("campaign_id", id)
+        .eq("status", "PENDING")
+        .order("created_at", { ascending: true })
+        .limit(5);
+
+      const { data: lastFailed } = await supabaseAdmin
+        .from(TABLES.campaign_recipients)
+        .select("*")
+        .eq("campaign_id", id)
+        .eq("status", "FAILED")
+        .order("updated_at", { ascending: false })
+        .limit(5);
+
+      const { data: events } = await supabaseAdmin
+        .from(TABLES.campaign_events)
+        .select("*")
+        .eq("campaign_id", id)
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      const reasons = [];
+      const { instanceId, instanceToken } = getZapiConfig();
+      if (campaign?.status !== "RUNNING") reasons.push(`Status é ${campaign?.status}, não RUNNING`);
+      if (stats.pending_count === 0) reasons.push("Sem destinatários PENDING");
+      if (!instanceId || !instanceToken) reasons.push("Z-API não configurada");
+      if (!campaign?.content && !campaign?.message_text) reasons.push("Mensagem vazia");
+      if (campaign?.message_type !== "text" && !campaign?.media_url) reasons.push(`Mídia ausente para tipo ${campaign?.message_type}`);
+
+      return res.json({
+        success: true,
+        campaign,
+        stats,
+        nextPendingRecipients: nextRecipients || [],
+        lastFailedRecipients: lastFailed || [],
+        lastEvents: events || [],
+        canProcess: reasons.length === 0,
+        reasonsIfCannotProcess: reasons
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.post("/api/debug/zapi/test-send", async (req, res) => {
+    try {
+      const { phone, message } = req.body;
+      const normalized = normalizeBrazilPhone(phone);
+      if (!normalized) throw new Error("Telefone inválido.");
+
+      const zapiResponse = await callZapi("/send-text", {
+        body: { phone: normalized, message }
+      });
+
+      return res.json({ success: true, zapiResponse });
+    } catch (err: any) {
+      return res.status(500).json({ 
+        success: false, 
+        error: getErrorMessage(err),
+        zapiRawResponse: err.zapiResponse || null
+      });
     }
   });
 
@@ -3067,10 +3480,13 @@ const DEFAULT_TEAM = {
         .select('*', { count: 'exact', head: true })
         .eq('conversation_id', id);
 
-      // 4. Get tags
+      // 4. Get tags with metadata
       const { data: tagLinks } = await supabaseAdmin
         .from(TABLES.conversation_tags)
         .select(`
+          created_at,
+          created_by,
+          created_by_name,
           tags:tag_id (*)
         `)
         .eq('conversation_id', id);
@@ -3081,7 +3497,12 @@ const DEFAULT_TEAM = {
         first_interaction_at: firstMsg?.created_at || null,
         last_interaction_at: lastMsg?.created_at || conversation.last_message_at || conversation.updated_at,
         total_messages: totalMessages || 0,
-        tags: tagLinks?.map((tl: any) => tl.tags) || []
+        tags: tagLinks?.map((tl: any) => ({
+          ...tl.tags,
+          linked_at: tl.created_at,
+          linked_by: tl.created_by,
+          linked_by_name: tl.created_by_name
+        })) || []
       };
 
       return res.json({ success: true, details });
@@ -3124,15 +3545,19 @@ const DEFAULT_TEAM = {
   });
 
   app.get("/api/zapi/config-status", async (req, res) => {
-    const { config, missing } = getZapiConfig();
+    const config = getZapiConfig();
     const appUrl = getPublicAppUrl();
     
+    const missing = [];
+    if (!config.instanceId) missing.push("ZAPI_INSTANCE_ID");
+    if (!config.instanceToken) missing.push("ZAPI_INSTANCE_TOKEN");
+
     const checks = {
       appUrl: !!appUrl && !appUrl.includes("localhost"),
       instanceId: !!config.instanceId,
       instanceToken: !!config.instanceToken,
-      healthRoute: true, // We are here
-      receivedWebhookRoute: true  // Express handles this
+      healthRoute: true,
+      receivedWebhookRoute: true
     };
 
     return res.json({
@@ -3151,17 +3576,15 @@ const DEFAULT_TEAM = {
       console.log(`[ZAPI] Registering webhook-received: ${webhookUrl}`);
       
       const result = await callZapi("/update-webhook-received", {
-        method: "PUT",
-        body: JSON.stringify({ value: webhookUrl })
+        value: webhookUrl
       });
       
       return res.status(200).json({
-        success: result.ok,
+        success: true,
         webhookUrl,
-        status: result.status,
-        zapiResponse: result.data
+        zapiResponse: result
       });
-    } catch (err) {
+    } catch (err: any) {
       return res.status(500).json({ success: false, error: "Falha ao registrar webhook", details: getErrorMessage(err) });
     }
   });
@@ -3180,18 +3603,16 @@ const DEFAULT_TEAM = {
     const results = [];
     for (const webhook of webhooks) {
       try {
-        const result = await callZapi(webhook.path, {
-          method: "PUT",
-          body: JSON.stringify({ value: webhook.url })
+        const response = await callZapi(webhook.path, {
+           value: webhook.url
         });
         results.push({
           name: webhook.name,
           url: webhook.url,
-          success: result.ok,
-          status: result.status,
-          response: result.data
+          success: true,
+          response
         });
-      } catch (err) {
+      } catch (err: any) {
         results.push({
           name: webhook.name,
           url: webhook.url,
@@ -3600,37 +4021,61 @@ const DEFAULT_TEAM = {
 
   // Proxy Z-API send routes
   app.post("/api/zapi/send-text", async (req, res) => {
-    const result = await callZapi("/send-text", { method: "POST", body: JSON.stringify(req.body) });
-    res.status(result.status).json(result.data);
+    try {
+      const result = await callZapi("/send-text", req.body);
+      return res.json({ success: true, data: result });
+    } catch (err: any) {
+      return res.status(err.status || 500).json({ success: false, error: err.message, data: err.zapiResponse });
+    }
   });
+
   app.post("/api/zapi/send-image", async (req, res) => {
-    const result = await callZapi("/send-image", { method: "POST", body: JSON.stringify(req.body) });
-    res.status(result.status).json(result.data);
+    try {
+      const result = await callZapi("/send-image", req.body);
+      return res.json({ success: true, data: result });
+    } catch (err: any) {
+      return res.status(err.status || 500).json({ success: false, error: err.message, data: err.zapiResponse });
+    }
   });
+
   app.post("/api/zapi/send-video", async (req, res) => {
-    const result = await callZapi("/send-video", { method: "POST", body: JSON.stringify(req.body) });
-    res.status(result.status).json(result.data);
+    try {
+      const result = await callZapi("/send-video", req.body);
+      return res.json({ success: true, data: result });
+    } catch (err: any) {
+      return res.status(err.status || 500).json({ success: false, error: err.message, data: err.zapiResponse });
+    }
   });
+
   app.post("/api/zapi/send-audio", async (req, res) => {
-    const result = await callZapi("/send-audio", { method: "POST", body: JSON.stringify(req.body) });
-    res.status(result.status).json(result.data);
+    try {
+      const result = await callZapi("/send-audio", req.body);
+      return res.json({ success: true, data: result });
+    } catch (err: any) {
+      return res.status(err.status || 500).json({ success: false, error: err.message, data: err.zapiResponse });
+    }
   });
+
   app.post("/api/zapi/send-document", async (req, res) => {
-    const result = await callZapi(`/send-document/${req.body.extension}`, { method: "POST", body: JSON.stringify(req.body) });
-    res.status(result.status).json(result.data);
+    try {
+      const result = await callZapi(`/send-document/${req.body.extension}`, req.body);
+      return res.json({ success: true, data: result });
+    } catch (err: any) {
+      return res.status(err.status || 500).json({ success: false, error: err.message, data: err.zapiResponse });
+    }
   });
 
   app.get("/api/zapi/status", async (req, res) => {
     try {
-      const result = await callZapi("/status");
-      const connected = result.ok && (result.data?.connected === true || result.data?.status === 'CONNECTED');
+      const result = await callZapi("/status", undefined);
+      const connected = result && (result.connected === true || result.status === 'CONNECTED');
       
       return res.status(200).json({
-        success: result.ok,
+        success: true,
         connected: connected,
-        smartphoneConnected: result.data?.smartphoneConnected === true,
-        status: connected ? "CONNECTED" : (result.data?.status || "DISCONNECTED"),
-        raw: result.data
+        smartphoneConnected: result?.smartphoneConnected === true,
+        status: connected ? "CONNECTED" : (result?.status || "DISCONNECTED"),
+        raw: result
       });
     } catch (err: any) {
       return res.status(200).json({
@@ -3638,7 +4083,7 @@ const DEFAULT_TEAM = {
         connected: false,
         smartphoneConnected: false,
         status: "ERROR",
-        error: getErrorMessage(err)
+        error: err.message
       });
     }
   });
@@ -3646,19 +4091,25 @@ const DEFAULT_TEAM = {
   app.get("/api/zapi/qrcode", async (req, res) => {
     try {
       // 1. Tentar imagem direta primeiro
-      const imgResult = await callZapi("/qr-code/image");
-      if (imgResult.ok && imgResult.data?.value) {
+      let imgResult;
+      try {
+        imgResult = await callZapi("/qr-code/image", undefined);
+      } catch {
+        imgResult = null;
+      }
+
+      if (imgResult && imgResult.value) {
         return res.json({
           success: true,
-          value: imgResult.data.value,
+          value: imgResult.value,
           source: "qr-code-image"
         });
       }
 
       // 2. Fallback para JSON normal
-      const result = await callZapi("/qr-code");
-      if (result.ok && result.data?.value) {
-        let value = result.data.value;
+      const result = await callZapi("/qr-code", undefined);
+      if (result && result.value) {
+        let value = result.value;
         // Se não tiver o prefixo de data:image, e parecer base64, adicionamos
         if (!value.startsWith("data:") && value.length > 100) {
           value = `data:image/png;base64,${value}`;
@@ -3672,35 +4123,35 @@ const DEFAULT_TEAM = {
 
       return res.status(200).json({
         success: false,
-        error: "QR Code não disponível no momento. Verifique se a instância já está conectada.",
-        details: result.data
+        error: "QR Code não disponível no momento.",
+        details: result
       });
     } catch (err: any) {
       return res.status(200).json({
         success: false,
         error: "Falha ao buscar QR Code",
-        details: getErrorMessage(err)
+        details: err.message
       });
     }
   });
 
   app.get("/api/debug/send-message-config", async (req, res) => {
     try {
-      const { config } = getZapiConfig();
+      const { instanceId, instanceToken, clientToken } = getZapiConfig();
       return res.json({
         success: true,
-        hasZapiInstanceId: Boolean(config.instanceId),
-        hasZapiInstanceToken: Boolean(config.instanceToken),
-        hasZapiClientToken: Boolean(config.clientToken),
+        hasZapiInstanceId: Boolean(instanceId),
+        hasZapiInstanceToken: Boolean(instanceToken),
+        hasZapiClientToken: Boolean(clientToken),
         hasSupabaseUrl: Boolean(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL),
         hasServiceRole: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY)
       });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+      return res.status(500).json({ success: false, error: err.message });
     }
   });
 
-  // Ensure /api routes always return JSON 404 instead of HTML
+  // Catch-all for API routes to always return JSON
   app.use("/api", (req, res) => {
     return res.status(404).json({
       success: false,
@@ -3717,6 +4168,8 @@ const DEFAULT_TEAM = {
     app.use(express.static(distPath));
     app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
+
+  startCampaignWorker();
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);

@@ -1,5 +1,5 @@
 import { supabase } from '../integrations/supabase/client';
-import { authorizedFetch } from './api';
+import { authorizedFetch, safeReadJson } from './api';
 
 // Generic error handler
 const handleError = (error: any, context: string) => {
@@ -11,7 +11,7 @@ export const profilesService = {
   async list() {
     try {
       const res = await authorizedFetch('/api/admin/users');
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar usuários');
       return data.users || [];
     } catch (err) {
@@ -32,7 +32,7 @@ export const profilesService = {
         method: 'POST',
         body: JSON.stringify(user)
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao criar usuário');
       return data.user;
     } catch (err: any) {
@@ -45,7 +45,7 @@ export const profilesService = {
         method: 'PATCH',
         body: JSON.stringify(updates)
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao atualizar usuário');
       return data.user;
     } catch (err: any) {
@@ -58,7 +58,7 @@ export const profilesService = {
       method: 'POST',
       body: JSON.stringify(passwordData)
     });
-    const data = await res.json();
+    const data = await safeReadJson(res);
     if (!res.ok) throw new Error(data.error || 'Erro ao resetar senha');
     return data;
   },
@@ -72,7 +72,7 @@ export const teamService = {
   async list() {
     try {
       const res = await authorizedFetch('/api/teams');
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar equipes');
       return data.teams || [];
     } catch (err) {
@@ -88,7 +88,7 @@ export const teamService = {
         method: 'POST',
         body: JSON.stringify(team)
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao criar equipe');
       return data.team;
     } catch (err: any) {
@@ -101,7 +101,7 @@ export const teamService = {
         method: 'PATCH',
         body: JSON.stringify(updates)
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao atualizar equipe');
       return data.team;
     } catch (err: any) {
@@ -111,7 +111,7 @@ export const teamService = {
   async remove(id: string) {
     try {
       const res = await authorizedFetch(`/api/teams/${id}`, { method: 'DELETE' });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao excluir equipe');
       return data;
     } catch (err: any) {
@@ -190,7 +190,7 @@ export const conversationService = {
   async list() {
     try {
       const res = await authorizedFetch('/api/omnichannel/conversations');
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar conversas');
       return data.conversations || [];
     } catch (err) {
@@ -219,7 +219,7 @@ export const messageService = {
   async listByConversation(conversationId: string) {
     try {
       const res = await authorizedFetch(`/api/omnichannel/conversations/${conversationId}/messages`);
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar mensagens');
       return data.messages || [];
     } catch (err) {
@@ -247,7 +247,7 @@ export const conversationTagService = {
   async list(conversationId: string) {
     try {
       const res = await authorizedFetch(`/api/omnichannel/conversations/${conversationId}/tags`);
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar etiquetas da conversa');
       return data.tags || [];
     } catch (err: any) {
@@ -260,7 +260,7 @@ export const conversationTagService = {
         method: 'POST',
         body: JSON.stringify({ tag_id: tagId, created_by: userId, created_by_name: userName })
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao vincular etiqueta');
       return data.tag;
     } catch (err: any) {
@@ -272,7 +272,7 @@ export const conversationTagService = {
       const res = await authorizedFetch(`/api/omnichannel/conversations/${conversationId}/tags/${tagId}`, {
         method: 'DELETE'
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao desvincular etiqueta');
       return data;
     } catch (err: any) {
@@ -333,7 +333,7 @@ export const tagService = {
   async list() {
     try {
       const res = await authorizedFetch('/api/tags');
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar etiquetas');
       return data.tags || [];
     } catch (err) {
@@ -348,7 +348,7 @@ export const tagService = {
         method: 'POST',
         body: JSON.stringify(tag)
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao criar etiqueta');
       return data.tag;
     } catch (err: any) {
@@ -361,7 +361,7 @@ export const tagService = {
         method: 'PATCH',
         body: JSON.stringify(updates)
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao atualizar etiqueta');
       return data.tag;
     } catch (err: any) {
@@ -371,7 +371,7 @@ export const tagService = {
   async remove(id: string) {
     try {
       const res = await authorizedFetch(`/api/tags/${id}`, { method: 'DELETE' });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao excluir etiqueta');
       return data;
     } catch (err: any) {
@@ -384,7 +384,7 @@ export const campaignService = {
   async list() {
     try {
       const res = await authorizedFetch('/api/campaigns');
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar campanhas');
       return data.campaigns || [];
     } catch (err: any) {
@@ -398,7 +398,7 @@ export const campaignService = {
         method: 'POST',
         body: JSON.stringify(campaign)
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao criar campanha');
       return data.campaign;
     } catch (err: any) {
@@ -421,7 +421,7 @@ export const campaignService = {
       const res = await authorizedFetch(`/api/campaigns/${id}`, {
         method: 'DELETE'
       });
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao excluir campanha');
       return data;
     } catch (err: any) {
@@ -431,30 +431,42 @@ export const campaignService = {
   },
   async start(id: string) {
     const res = await authorizedFetch(`/api/campaigns/${id}/start`, { method: 'POST' });
-    return res.json();
+    return safeReadJson(res);
   },
   async pause(id: string) {
     const res = await authorizedFetch(`/api/campaigns/${id}/pause`, { method: 'POST' });
-    return res.json();
+    return safeReadJson(res);
   },
   async resume(id: string) {
     const res = await authorizedFetch(`/api/campaigns/${id}/resume`, { method: 'POST' });
-    return res.json();
+    return safeReadJson(res);
   },
   async cancel(id: string) {
     const res = await authorizedFetch(`/api/campaigns/${id}/cancel`, { method: 'POST' });
-    return res.json();
+    return safeReadJson(res);
   },
   async retryFailed(id: string) {
     const res = await authorizedFetch(`/api/campaigns/${id}/retry-failed`, { method: 'POST' });
-    return res.json();
+    return safeReadJson(res);
   },
-  async optimize(list: string) {
+  async processBatch(id: string) {
+    const res = await authorizedFetch(`/api/campaigns/${id}/process`, { method: 'POST' });
+    return safeReadJson(res);
+  },
+  async getDebug(id: string) {
+    const res = await authorizedFetch(`/api/campaigns/${id}/debug`);
+    return safeReadJson(res);
+  },
+  async getSystemDebug() {
+    const res = await authorizedFetch('/api/debug/campaigns');
+    return safeReadJson(res);
+  },
+  async optimize(raw_contacts: string) {
     const res = await authorizedFetch('/api/campaigns/optimize', {
       method: 'POST',
-      body: JSON.stringify({ list })
+      body: JSON.stringify({ raw_contacts })
     });
-    return res.json();
+    return safeReadJson(res);
   }
 };
 
@@ -462,7 +474,7 @@ export const campaignRecipientService = {
   async listByCampaign(campaignId: string) {
     try {
       const res = await authorizedFetch(`/api/campaigns/${campaignId}/recipients`);
-      const data = await res.json();
+      const data = await safeReadJson(res);
       if (!res.ok) throw new Error(data.error || 'Erro ao carregar destinatários');
       return data.recipients || [];
     } catch (err: any) {

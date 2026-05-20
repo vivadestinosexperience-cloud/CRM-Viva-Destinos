@@ -3,7 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { 
+  tagService,
+  conversationTagService,
+  conversationService
+} from '../services/dataService';
 import { 
   MessageSquare, 
   Search, 
@@ -35,7 +40,21 @@ import {
   Shield,
   CheckCircle2,
   Database,
-  ChevronRight
+  ChevronRight,
+  ListFilter,
+  SlidersHorizontal,
+  Settings2,
+  Trash2,
+  Pencil,
+  Check,
+  ChevronDown,
+  User,
+  LayoutGrid,
+  Filter,
+  Clock,
+  History,
+  Calendar,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
@@ -48,6 +67,10 @@ import { getErrorMessage, renderSafeText } from '../utils/renderSafeText';
 import { safeAction } from '../utils/safeAction';
 
 import { getAgentDisplayName, formatOutgoingWhatsAppMessage } from '../utils/userUtils';
+import { getContrastTextColor } from '../utils/colorUtils';
+import { TagManagementModal } from '../components/TagManagementModal';
+import { LeadDetailsModal } from '../components/LeadDetailsModal';
+import { FilterPanel } from '../components/FilterPanel';
 
 export default function OmnichannelPage() {
   const { 
@@ -101,38 +124,125 @@ export default function OmnichannelPage() {
   const [closeReason, setCloseReason] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTeamId, setSelectedTeamId] = useState('all');
-  const [selectedTagId, setSelectedTagId] = useState('all');
-  const { tags } = useAppStore();
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [tagSearch, setTagSearch] = useState('');
+  const [showTagManagement, setShowTagManagement] = useState(false);
+  const [showLeadDetails, setShowLeadDetails] = useState(false);
+  const [leadDetails, setLeadDetails] = useState<any>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+  const [showTagSelector, setShowTagSelector] = useState(false);
+  const { tags, addTag, updateTag, deleteTag } = useAppStore();
   
   const chatEndRef = useRef<HTMLDivElement>(null);
+  
+  const handleLoadDetails = async (conversationId: string) => {
+    setLoadingDetails(true);
+    setShowLeadDetails(true);
+    try {
+      const baseUrl = getApiBaseUrl();
+      const response = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${conversationId}/details`);
+      const result = await safeReadJson(response);
+      if (result.success) {
+        setLeadDetails(result.details);
+      } else {
+        toast.error("Erro ao carregar detalhes: " + result.error);
+      }
+    } catch (err) {
+      toast.error("Erro ao carregar detalhes");
+    } finally {
+      setLoadingDetails(false);
+    }
+  };
 
-  function getApiBaseUrl() {
-    const envUrl = import.meta.env.VITE_API_BASE_URL;
-    if (envUrl) return envUrl.replace(/\/$/, "");
-    return "";
-  }
+  const handleLinkTag = async (conversationId: string, tagId: string) => {
+    try {
+      const tag = tags.find(t => t.id === tagId);
+      if (!tag) return;
+
+      const response = await conversationTagService.link(conversationId, tagId, currentUser?.id, currentUser?.name);
+
+      if (response && response.success) {
+        // Optimistic update
+        const updatedConvs = conversations.map(c => {
+          if (c.id === conversationId) {
+            const currentTags = c.tags || [];
+            if (!currentTags.some(t => t.id === tagId)) {
+              return { ...c, tags: [...currentTags, tag] };
+            }
+          }
+          return c;
+        });
+        useAppStore.setState({ conversations: updatedConvs });
+        toast.success("Etiqueta vinculada");
+      }
+    } catch (err) {
+      toast.error("Erro ao vincular etiqueta");
+    }
+  };
+
+  const handleUnlinkTag = async (conversationId: string, tagId: string) => {
+    try {
+      const response = await conversationTagService.unlink(conversationId, tagId);
+      if (response && response.success) {
+        // Optimistic update
+        const updatedConvs = conversations.map(c => {
+          if (c.id === conversationId) {
+            const currentTags = c.tags || [];
+            return { ...c, tags: currentTags.filter(t => t.id !== tagId) };
+          }
+          return c;
+        });
+        useAppStore.setState({ conversations: updatedConvs });
+        
+        // Also update leadDetails if open
+        if (leadDetails?.id === conversationId) {
+          setLeadDetails({
+            ...leadDetails,
+            tags: leadDetails.tags.filter((t: any) => t.id !== tagId)
+          });
+        }
+        
+        toast.success("Etiqueta removida");
+      }
+    } catch (err) {
+      toast.error("Erro ao remover etiqueta");
+    }
+  };
 
   const isIgnoredConversation = (conversation: any) => {
+    if (!conversation) return false;
     const status = String(conversation.status || "").toUpperCase();
     return ["IGNORED", "IGNORADO"].includes(status);
   };
 
   const isClosedConversation = (conversation: any) => {
+    if (!conversation) return false;
     const status = String(conversation.status || "").toUpperCase();
     return ["CLOSED", "RESOLVED", "CONCLUIDO", "CONCLUÍDO", "FINALIZADO"].includes(status);
   };
 
+  const safeConversations = Array.isArray(conversations) ? conversations : [];
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const safeTags = Array.isArray(tags) ? tags : [];
+  const safeTeams = Array.isArray(teams) ? teams : [];
+  const safeUsers = Array.isArray(users) ? users : [];
+  const safeAccounts = Array.isArray(whatsAppAccounts) ? whatsAppAccounts : [];
+  const safeCustomers = Array.isArray(customers) ? customers : [];
+
   // Sync state if active conversation becomes ignored
   useEffect(() => {
     if (!activeConversationId) return;
-    const active = conversations.find(c => c.id === activeConversationId);
+    const active = safeConversations.find(c => c.id === activeConversationId);
     if (active && isIgnoredConversation(active)) {
       setActiveConversationId(null);
       setMessages([]);
     }
-  }, [conversations, activeConversationId]);
+  }, [safeConversations, activeConversationId]);
 
-  const visibleConversations = conversations.filter(c => !isIgnoredConversation(c));
+  const visibleConversations = safeConversations.filter(c => !isIgnoredConversation(c));
   
   async function loadConversations(silent = false) {
     if (!silent) setLoadingConversations(true);
@@ -140,7 +250,7 @@ export default function OmnichannelPage() {
       const baseUrl = getApiBaseUrl();
       const teamParam = selectedTeamId !== 'all' ? `?team_id=${selectedTeamId}` : '';
       const response = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations${teamParam}`);
-      const data = await response.json();
+      const data = await safeReadJson(response);
 
       if (data.success) {
         const ordered = [...(data.conversations || [])].sort((a, b) => {
@@ -169,7 +279,7 @@ export default function OmnichannelPage() {
     try {
       const baseUrl = getApiBaseUrl();
       const response = await authorizedFetch(`${baseUrl}/api/omnichannel/conversations/${conversationId}/messages`);
-      const data = await response.json();
+      const data = await safeReadJson(response);
 
       if (data.success) {
         setMessages(data.messages || []);
@@ -267,10 +377,10 @@ export default function OmnichannelPage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
 
-  const activeConversation = conversations.find(c => c.id === activeConversationId);
-  const activeCustomer = activeConversation?.customer || customers.find(c => c.id === activeConversation?.customer_id);
-  const activeChatMessages = messages; 
-  const currentAccount = whatsAppAccounts.find(a => a.id === activeConversation?.whatsapp_account_id);
+  const activeConversation = safeConversations.find(c => c.id === activeConversationId);
+  const activeCustomer = activeConversation?.customer || safeCustomers.find(c => c.id === activeConversation?.customer_id);
+  const activeChatMessages = safeMessages; 
+  const currentAccount = safeAccounts.find(a => a.id === activeConversation?.whatsapp_account_id);
 
   function renderMessageContent(message: Message) {
     if (!message) return null;
@@ -515,10 +625,21 @@ export default function OmnichannelPage() {
         if (conversation.team_id !== selectedTeamId) return false;
       }
 
-      // Filter by Tag
-      if (selectedTagId !== 'all') {
+      // Filter by Tags (Multiple)
+      if (selectedTagIds.length > 0) {
         const convTags = conversation.tags || [];
-        if (!convTags.some((t: any) => t.id === selectedTagId)) return false;
+        const hasMatch = selectedTagIds.every(id => convTags.some((t: any) => t.id === id));
+        if (!hasMatch) return false;
+      }
+
+      // Filter by Accounts
+      if (selectedAccountIds.length > 0) {
+        if (!selectedAccountIds.includes(conversation.whatsapp_account_id || '')) return false;
+      }
+
+      // Filter by Users
+      if (selectedUserIds.length > 0) {
+        if (!selectedUserIds.includes(conversation.assigned_user_id || '')) return false;
       }
 
       // Filter by Search
@@ -573,10 +694,10 @@ export default function OmnichannelPage() {
     try {
       const baseUrl = getApiBaseUrl();
       const res = await authorizedFetch(`${baseUrl}/api/teams/${teamId}/members`);
-      const data = await res.json();
-      if (data.success) {
+      const data = await safeReadJson(res);
+      if (data && data.success) {
         // Apenas membros ativos
-        setTransferMembers(data.members.filter((m: any) => m.is_active) || []);
+        setTransferMembers(Array.isArray(data.members) ? data.members.filter((m: any) => m.is_active) : []);
       }
     } catch (err) {
       console.error("Erro ao carregar membros para transferência", err);
@@ -644,7 +765,8 @@ export default function OmnichannelPage() {
         })
       });
 
-      if (!res.ok) throw await res.json();
+      const data = await safeReadJson(res);
+      if (!res.ok) throw data;
       
       await loadConversations(true);
       setShowTransferModal(false);
@@ -680,7 +802,7 @@ export default function OmnichannelPage() {
             source: 'Manual'
           })
         });
-        const custData = await custRes.json();
+        const custData = await safeReadJson(custRes);
         if (!custRes.ok) throw custData;
         finalCustomerId = custData.customer.id;
       }
@@ -704,7 +826,7 @@ export default function OmnichannelPage() {
         })
       });
 
-      const convData = await convRes.json();
+      const convData = await safeReadJson(convRes);
       if (!convRes.ok) throw convData;
 
       await loadConversations(true);
@@ -732,7 +854,8 @@ export default function OmnichannelPage() {
         })
       });
 
-      if (!res.ok) throw await res.json();
+      const data = await safeReadJson(res);
+      if (!res.ok) throw data;
 
       await loadConversations(true);
       setShowCloseModal(false);
@@ -752,7 +875,7 @@ export default function OmnichannelPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: history })
       }).then(async res => {
-        const data = await res.json();
+        const data = await safeReadJson(res);
         if (!res.ok) throw data;
         return data;
       }).then(data => {
@@ -781,7 +904,7 @@ export default function OmnichannelPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: history })
       }).then(async res => {
-        const data = await res.json();
+        const data = await safeReadJson(res);
         if (!res.ok) throw data;
         return data;
       }).then(data => {
@@ -856,7 +979,8 @@ export default function OmnichannelPage() {
         body: JSON.stringify({ status: 'OPEN' })
       });
 
-      if (!res.ok) throw await res.json();
+      const data = await safeReadJson(res);
+      if (!res.ok) throw data;
       
       await loadConversations(true);
       toast.success('Atendimento reaberto');
@@ -968,7 +1092,8 @@ export default function OmnichannelPage() {
         body: JSON.stringify(body)
       });
 
-      if (!res.ok) throw await res.json();
+      const data = await safeReadJson(res);
+      if (!res.ok) throw data;
       
       await loadMessages(activeConversationId!, true);
       toast.success('Mensagem reenviada com sucesso');
@@ -1006,7 +1131,7 @@ export default function OmnichannelPage() {
     }, { label: 'Erro ao salvar nota interna' });
   };
 
-  const activeTeam = teams.find(t => t.id === (activeConversation?.team_id || activeConversation?.queue_id));
+  const activeTeam = safeTeams.find(t => t.id === (activeConversation?.team_id || activeConversation?.queue_id));
 
   return (
     <div className="flex h-full w-full bg-white overflow-hidden">
@@ -1016,7 +1141,7 @@ export default function OmnichannelPage() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
               Conversas 
-              <span className="bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full text-xs">{conversations.length}</span>
+              <span className="bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full text-xs">{safeConversations.length}</span>
             </h2>
             <div className="flex items-center gap-1">
               <button 
@@ -1067,15 +1192,36 @@ export default function OmnichannelPage() {
             </button>
           </div>
 
-          <div className="relative mb-4">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-            <input 
-              type="text" 
-              placeholder="Buscar cliente ou mensagem..." 
-              className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm transition-all shadow-sm font-medium"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
+          <div className="flex gap-2 mb-4">
+            <div className="relative flex-1">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input 
+                type="text" 
+                placeholder="Buscar cliente ou mensagem..." 
+                className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm transition-all shadow-sm font-medium"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            <button 
+              onClick={() => setShowFilterPanel(true)}
+              className={`p-2.5 rounded-xl border border-slate-200 flex items-center justify-center transition-all ${selectedTagIds.length > 0 || selectedAccountIds.length > 0 || selectedUserIds.length > 0 ? 'bg-blue-50 border-blue-200 text-blue-600' : 'bg-white text-slate-400 hover:bg-slate-50'}`}
+              title="Filtros avançados"
+            >
+              <div className="relative">
+                <SlidersHorizontal className="w-5 h-5" />
+                {(selectedTagIds.length > 0 || selectedAccountIds.length > 0 || selectedUserIds.length > 0) && (
+                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-blue-600 rounded-full border-2 border-white"></span>
+                )}
+              </div>
+            </button>
+            <button 
+              onClick={() => setShowTagManagement(true)}
+              className="p-2.5 rounded-xl border border-slate-200 bg-white text-slate-400 hover:bg-slate-50 flex items-center justify-center transition-all"
+              title="Gerenciar Etiquetas"
+            >
+              <Settings2 className="w-5 h-5 text-slate-500" />
+            </button>
           </div>
 
           <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
@@ -1083,7 +1229,7 @@ export default function OmnichannelPage() {
               onClick={() => setSelectedTeamId('all')}
               className={`shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${selectedTeamId === 'all' ? 'bg-slate-800 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
             >
-              Todas
+              Minhas Equipes
             </button>
             {teams.filter(t => t.is_active).map(team => (
               <button 
@@ -1092,25 +1238,6 @@ export default function OmnichannelPage() {
                 className={`shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${selectedTeamId === team.id ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
               >
                 {team.name}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-2">
-            <button 
-              onClick={() => setSelectedTagId('all')}
-              className={`shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${selectedTagId === 'all' ? 'bg-slate-800 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-            >
-              Qualquer Tag
-            </button>
-            {tags.map(tag => (
-              <button 
-                key={tag.id}
-                onClick={() => setSelectedTagId(tag.id)}
-                className={`shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${selectedTagId === tag.id ? 'text-white border-2' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-                style={selectedTagId === tag.id ? { backgroundColor: tag.color, borderColor: 'white' } : {}}
-              >
-                {tag.name}
               </button>
             ))}
           </div>
@@ -1175,9 +1302,26 @@ export default function OmnichannelPage() {
                     <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">{account?.name || '---'}</span>
                   </div>
 
-                  <p className="text-xs text-slate-500 truncate leading-relaxed">
+                  <p className="text-xs text-slate-500 truncate leading-relaxed mb-2">
                     {lastMessage}
                   </p>
+
+                  <div className="flex flex-wrap gap-1">
+                    {conv.tags?.slice(0, 2).map((tag: any) => (
+                      <span 
+                        key={tag.id}
+                        className="px-1.5 py-0.5 rounded-md text-[8px] font-bold uppercase tracking-wider shadow-sm"
+                        style={{ backgroundColor: tag.color || '#e2e8f0', color: getContrastTextColor(tag.color) }}
+                      >
+                        {tag.name}
+                      </span>
+                    ))}
+                    {(conv.tags?.length || 0) > 2 && (
+                      <span className="px-1.5 py-0.5 rounded-md text-[8px] font-bold uppercase tracking-wider bg-slate-100 text-slate-500 border border-slate-200">
+                        +{(conv.tags?.length || 0) - 2}
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {(conv.unread_count || 0) > 0 && (
@@ -1212,8 +1356,14 @@ export default function OmnichannelPage() {
                   {activeCustomer?.name.charAt(0)}
                 </div>
                 <div className="min-w-0">
-                  <h3 className="font-bold text-slate-800 truncate">{activeCustomer?.name}</h3>
-                  <div className="flex items-center gap-2">
+                  <h3 
+                    className="font-bold text-slate-800 truncate cursor-pointer hover:text-blue-600 transition-colors flex items-center gap-2"
+                    onClick={() => handleLoadDetails(activeConversation.id)}
+                  >
+                    {activeCustomer?.name}
+                    <Info className="w-3.5 h-3.5 opacity-40" />
+                  </h3>
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs text-slate-400">{activeCustomer?.phone}</span>
                     <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
                     {activeTeam && (
@@ -1225,9 +1375,74 @@ export default function OmnichannelPage() {
                       </span>
                     )}
                     <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
-                    <span className={`text-xs font-bold uppercase tracking-wider ${activeConversation.status === 'RESOLVED' ? 'text-blue-500' : 'text-emerald-500'}`}>
-                      {activeConversation.status === 'RESOLVED' ? 'Concluído' : 'Em Aberto'}
-                    </span>
+                    
+                    {/* Exibição de Etiquetas no Header */}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {activeConversation.tags?.map((tag: any) => (
+                        <div 
+                          key={tag.id}
+                          className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider"
+                          style={{ backgroundColor: tag.color || '#eee', color: getContrastTextColor(tag.color) }}
+                        >
+                          {tag.name}
+                          <button 
+                            onClick={() => handleUnlinkTag(activeConversation.id, tag.id)}
+                            className="hover:bg-black/10 rounded"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      ))}
+                      
+                      <div className="relative">
+                        <button 
+                          onClick={() => setShowTagSelector(!showTagSelector)}
+                          className="px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-500 hover:bg-slate-200 transition-all flex items-center gap-1"
+                        >
+                          <Plus className="w-2.5 h-2.5" />
+                          Etiqueta
+                        </button>
+                        
+                        <AnimatePresence>
+                          {showTagSelector && (
+                            <motion.div 
+                              initial={{ opacity: 0, scale: 0.95, y: 5 }}
+                              animate={{ opacity: 1, scale: 1, y: 0 }}
+                              exit={{ opacity: 0, scale: 0.95, y: 5 }}
+                              className="absolute left-0 top-full mt-2 w-48 bg-white rounded-xl shadow-2xl border border-slate-100 p-2 z-[60]"
+                            >
+                              <div className="p-2 border-b border-slate-50 mb-1">
+                                <input 
+                                  autoFocus
+                                  type="text" 
+                                  placeholder="Filtrar..."
+                                  className="w-full text-[10px] px-2 py-1 bg-slate-50 rounded-md outline-none"
+                                  value={tagSearch}
+                                  onChange={(e) => setTagSearch(e.target.value)}
+                                />
+                              </div>
+                              <div className="max-h-40 overflow-y-auto space-y-0.5">
+                                {tags.filter(t => t.name.toLowerCase().includes(tagSearch.toLowerCase())).map(tag => (
+                                  <button 
+                                    key={tag.id}
+                                    onClick={() => {
+                                      handleLinkTag(activeConversation.id, tag.id);
+                                      setShowTagSelector(false);
+                                      setTagSearch('');
+                                    }}
+                                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
+                                  >
+                                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: tag.color }} />
+                                    <span className="text-[10px] font-bold text-slate-600">{tag.name}</span>
+                                  </button>
+                                ))}
+                                {tags.length === 0 && <p className="text-[9px] text-slate-400 text-center py-2">Nenhuma etiqueta</p>}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2186,6 +2401,40 @@ export default function OmnichannelPage() {
           </div>
         )}
       </AnimatePresence>
+
+      <TagManagementModal 
+        isOpen={showTagManagement}
+        onClose={() => setShowTagManagement(false)}
+        tags={tags}
+        onAdd={addTag}
+        onUpdate={updateTag}
+        onDelete={deleteTag}
+      />
+
+      <LeadDetailsModal 
+        isOpen={showLeadDetails}
+        onClose={() => setShowLeadDetails(false)}
+        details={leadDetails}
+        loading={loadingDetails}
+        onUnlinkTag={(tagId) => handleUnlinkTag(leadDetails.id, tagId)}
+      />
+
+      <FilterPanel 
+        isOpen={showFilterPanel}
+        onClose={() => setShowFilterPanel(false)}
+        teams={teams}
+        tags={tags}
+        accounts={whatsAppAccounts}
+        users={users}
+        selectedTagIds={selectedTagIds}
+        setSelectedTagIds={setSelectedTagIds}
+        selectedAccountIds={selectedAccountIds}
+        setSelectedAccountIds={setSelectedAccountIds}
+        selectedUserIds={selectedUserIds}
+        setSelectedUserIds={setSelectedUserIds}
+        tagSearch={tagSearch}
+        setTagSearch={setTagSearch}
+      />
     </div>
   );
 }

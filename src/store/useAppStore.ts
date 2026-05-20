@@ -34,6 +34,7 @@ import {
 } from '../services/dataService';
 import { toast } from 'sonner';
 import { renderSafeText } from '../utils/renderSafeText';
+import { getApiBaseUrl } from '../services/api';
 
 interface AppearanceSettings {
   logoUrl: string;
@@ -117,6 +118,11 @@ interface AppState {
   pauseCampaign: (id: string) => Promise<void>;
   resumeCampaign: (id: string) => Promise<void>;
   cancelCampaign: (id: string) => Promise<void>;
+
+  retryFailedCampaign: (id: string) => Promise<void>;
+  processCampaignBatch: (id: string) => Promise<void>;
+  getCampaignDebugInfo: (id: string) => Promise<any>;
+  getSystemDebugInfo: () => Promise<any>;
 
   // Campaign Recipients
   getCampaignRecipients: (campaignId: string) => Promise<CampaignRecipient[]>;
@@ -242,7 +248,7 @@ export const useAppStore = create<AppState>()(
           // Setup realtime listeners after initial load
           get().setupRealtimeListeners();
         } catch (err) {
-          console.error('Failed to initialize app data from Supabase', err);
+          console.error('Failed to initialize app data', err);
           set({ isLoading: false, error: 'Falha ao sincronizar com servidor.' });
         }
       },
@@ -332,8 +338,33 @@ export const useAppStore = create<AppState>()(
           })
           .subscribe();
 
-        // 4. SSE Fallback (for environments where Supabase Realtime might be restricted or as backup)
-        const eventSource = new EventSource('/api/events');
+        // 4. Listen to Campaigns
+        const campaignChannel = supabase
+          .channel('campaigns-realtime')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_campaigns' }, (payload) => {
+            const { eventType, new: newRecord, old: oldRecord } = payload;
+            if (eventType === 'INSERT' || eventType === 'UPDATE') {
+              set(state => {
+                const camp = newRecord as Campaign;
+                const matchIndex = state.campaigns.findIndex(c => c.id === camp.id);
+                if (matchIndex > -1) {
+                  const updated = [...state.campaigns];
+                  updated[matchIndex] = { ...updated[matchIndex], ...camp };
+                  return { campaigns: updated };
+                }
+                return { campaigns: [camp, ...state.campaigns] };
+              });
+            } else if (eventType === 'DELETE') {
+              set(state => ({
+                campaigns: state.campaigns.filter(c => c.id !== oldRecord.id)
+              }));
+            }
+          })
+          .subscribe();
+
+        // 5. SSE Fallback
+        const baseUrl = getApiBaseUrl();
+        const eventSource = new EventSource(`${baseUrl}/api/events`);
         eventSource.onmessage = (event) => {
           try {
             const { event: eventName, data } = JSON.parse(event.data);
@@ -736,11 +767,51 @@ export const useAppStore = create<AppState>()(
         try {
           await campaignService.cancel(id);
           set((state) => ({
-            campaigns: state.campaigns.map(c => c.id === id ? { ...c, status: 'CANCELLED' } : c)
+            campaigns: state.campaigns.map(c => c.id === id ? { ...c, status: 'CANCELED' } : c)
           }));
           toast.info('Campanha cancelada');
         } catch (err) {
           toast.error('Erro ao cancelar campanha');
+        }
+      },
+      retryFailedCampaign: async (id) => {
+        try {
+          const res = await campaignService.retryFailed(id);
+          if (res.success) {
+            toast.success('Retentativa iniciada');
+          } else {
+            throw new Error(res.error);
+          }
+        } catch (err: any) {
+          toast.error('Erro ao reiniciar falhas: ' + err.message);
+        }
+      },
+      processCampaignBatch: async (id) => {
+        try {
+          const res = await campaignService.processBatch(id);
+          if (res.success) {
+            toast.info('Lote processado!');
+          } else {
+            throw new Error(res.error);
+          }
+        } catch (err: any) {
+          toast.error('Erro ao processar lote: ' + err.message);
+        }
+      },
+      getCampaignDebugInfo: async (id) => {
+        try {
+          return await campaignService.getDebug(id);
+        } catch (err: any) {
+          toast.error('Erro ao buscar diagnóstico');
+          return null;
+        }
+      },
+      getSystemDebugInfo: async () => {
+        try {
+          return await campaignService.getSystemDebug();
+        } catch (err: any) {
+          toast.error('Erro ao buscar status do sistema');
+          return null;
         }
       },
 

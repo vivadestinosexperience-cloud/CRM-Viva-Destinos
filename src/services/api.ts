@@ -2,9 +2,11 @@ import { supabase } from '../integrations/supabase/client';
 
 export function getApiBaseUrl() {
   const envUrl = import.meta.env.VITE_API_BASE_URL;
-  if (envUrl && envUrl.trim()) {
-    return envUrl.replace(/\/$/, "");
+
+  if (envUrl && String(envUrl).trim()) {
+    return String(envUrl).replace(/\/$/, "");
   }
+
   return "";
 }
 
@@ -21,9 +23,7 @@ export async function safeReadJson(response: Response) {
       text: text.slice(0, 500)
     });
 
-    throw new Error(
-      `A API retornou uma resposta inválida (${response.status}). Verifique se a rota está correta.`
-    );
+    throw new Error("A API retornou uma resposta inválida. Verifique a URL da API.");
   }
 
   try {
@@ -35,8 +35,13 @@ export async function safeReadJson(response: Response) {
 }
 
 export async function authorizedFetch(url: string, options: RequestInit = {}) {
-  const { data: { session } } = await supabase.auth.getSession();
-  const token = session?.access_token;
+  let token = null;
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    token = session?.access_token;
+  } catch (e) {
+    console.warn("[authorizedFetch] Supabase session check failed:", e);
+  }
 
   const headers = new Headers(options.headers || {});
   if (token) {
@@ -56,6 +61,10 @@ export async function authorizedFetch(url: string, options: RequestInit = {}) {
   } else if (url.startsWith('/api')) {
     const baseUrl = getApiBaseUrl();
     finalUrl = `${baseUrl}${url}`;
+  }
+
+  if (import.meta.env.DEV) {
+    console.log(`[authorizedFetch] ${options.method || 'GET'} ${finalUrl}`);
   }
 
   const response = await fetch(finalUrl, {
