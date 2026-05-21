@@ -762,10 +762,51 @@ function isValidUUID(id: string): boolean {
   return uuidRegex.test(id || "");
 }
 
+function getZapiMessageDirection(payload: any) {
+  if (payload?.fromMe === true) {
+    return "outgoing";
+  }
+  return "incoming";
+}
+
+function getCustomerPhoneFromZapiPayload(payload: any) {
+  const candidates: any[] = [];
+
+  if (payload?.phone) candidates.push(payload.phone);
+  if (payload?.chatId) candidates.push(payload.chatId);
+  if (payload?.remoteJid) candidates.push(payload.remoteJid);
+  if (payload?.key?.remoteJid) candidates.push(payload.key.remoteJid);
+
+  const connectedPh = normalizeBrazilPhone(payload?.connectedPhone);
+
+  const valid = candidates.find((value) => {
+    const raw = String(value || "").toLowerCase();
+
+    if (!raw) return false;
+    if (raw.includes("@g.us")) return false;
+    if (raw.includes("@newsletter")) return false;
+    if (raw.includes("status@broadcast")) return false;
+    if (raw.includes("-group")) return false;
+
+    const digits = raw.replace(/\D/g, "");
+
+    if (!digits) return false;
+    if (digits.startsWith("120363")) return false;
+
+    // connectedPhone nunca deve virar customer_phone_normalized.
+    const norm = normalizeBrazilPhone(value);
+    if (connectedPh && norm === connectedPh) return false;
+
+    return true;
+  });
+
+  return normalizeBrazilPhone(valid);
+}
+
 function diagnoseZapiPayloadOrigin(payload: any) {
   const signals: any[] = [];
 
-  const rawPhone = String(payload?.phone || "").trim();
+  const rawPhone = getCustomerPhoneFromZapiPayload(payload) || String(payload?.phone || "").trim();
   const lowerPhone = rawPhone.toLowerCase();
   const digitsPhone = rawPhone.replace(/\D/g, "");
 
@@ -845,7 +886,7 @@ function diagnoseZapiPayloadOrigin(payload: any) {
   const phoneNormalized = normalizeBrazilPhone(rawPhone);
 
   const hasBlockingSignal = signals.some(s =>
-    ["group", "group_or_channel", "newsletter", "broadcast", "status", "from_me"].includes(s.type)
+    ["group", "group_or_channel", "newsletter", "broadcast", "status"].includes(s.type)
   );
 
   const allowed =
@@ -1067,56 +1108,74 @@ function getLastMessageText(msg: any) {
   return msg.text || "Mensagem recebida";
 }
 
+function extractZapiMessageContent(payload: any) {
+  if (payload?.text?.message) {
+    return {
+      message_type: "text",
+      content: String(payload.text.message),
+      media_url: null,
+      caption: null,
+      media_mime_type: null,
+      file_name: null
+    };
+  }
+
+  if (payload?.image) {
+    return {
+      message_type: "image",
+      content: payload.image.caption || "Imagem",
+      media_url: payload.image.imageUrl || payload.image.thumbnailUrl || null,
+      caption: payload.image.caption || null,
+      media_mime_type: payload.image.mimeType || "image/jpeg",
+      file_name: null
+    };
+  }
+
+  if (payload?.audio) {
+    return {
+      message_type: "audio",
+      content: "Áudio",
+      media_url: payload.audio.audioUrl || null,
+      caption: null,
+      media_mime_type: payload.audio.mimeType || "audio/ogg",
+      file_name: null
+    };
+  }
+
+  if (payload?.video) {
+    return {
+      message_type: "video",
+      content: payload.video.caption || "Vídeo",
+      media_url: payload.video.videoUrl || null,
+      caption: payload.video.caption || null,
+      media_mime_type: payload.video.mimeType || "video/mp4",
+      file_name: null
+    };
+  }
+
+  if (payload?.document) {
+    return {
+      message_type: "document",
+      content: payload.document.fileName || "Documento",
+      media_url: payload.document.documentUrl || null,
+      caption: payload.document.caption || null,
+      media_mime_type: payload.document.mimeType || null,
+      file_name: payload.document.fileName || "Documento"
+    };
+  }
+
+  return {
+    message_type: "text",
+    content: payload?.message || payload?.body || "Mensagem recebida",
+    media_url: null,
+    caption: null,
+    media_mime_type: null,
+    file_name: null
+  };
+}
+
 function normalizeIncomingDirectMessage(payload: any, phone: string) {
-  const text =
-    payload?.text?.message ||
-    payload?.text ||
-    payload?.message?.text ||
-    payload?.message?.body ||
-    payload?.body ||
-    payload?.content ||
-    "";
-
-  let messageType = "text";
-  let content = typeof text === "string" && text.trim()
-    ? text
-    : "Mensagem recebida";
-
-  let caption = "";
-  let mediaUrl = "";
-  let mimeType = "";
-  let fileName = "";
-
-  if (payload?.image?.imageUrl) {
-    messageType = "image";
-    mediaUrl = payload.image.imageUrl;
-    caption = payload.image.caption || "";
-    content = caption || "Imagem recebida";
-    mimeType = payload.image.mimeType || "image/jpeg";
-  }
-
-  if (payload?.audio?.audioUrl) {
-    messageType = "audio";
-    mediaUrl = payload.audio.audioUrl;
-    content = "Áudio recebido";
-    mimeType = payload.audio.mimeType || "audio/ogg";
-  }
-
-  if (payload?.video?.videoUrl) {
-    messageType = "video";
-    mediaUrl = payload.video.videoUrl;
-    caption = payload.video.caption || "";
-    content = caption || "Vídeo recebido";
-    mimeType = payload.video.mimeType || "video/mp4";
-  }
-
-  if (payload?.document?.documentUrl) {
-    messageType = "document";
-    mediaUrl = payload.document.documentUrl;
-    fileName = payload.document.fileName || payload.document.title || "documento";
-    content = fileName;
-    mimeType = payload.document.mimeType || "application/octet-stream";
-  }
+  const extracted = extractZapiMessageContent(payload);
 
   return {
     phone,
@@ -1131,12 +1190,12 @@ function normalizeIncomingDirectMessage(payload: any, phone: string) {
       payload?.id ||
       payload?.key?.id ||
       `zapi-${Date.now()}`,
-    messageType,
-    content,
-    caption,
-    mediaUrl,
-    mimeType,
-    fileName,
+    messageType: extracted.message_type,
+    content: extracted.content,
+    caption: extracted.caption || "",
+    mediaUrl: extracted.media_url || "",
+    mimeType: extracted.media_mime_type || "",
+    fileName: extracted.file_name || "",
     raw: payload
   };
 }
@@ -1394,6 +1453,8 @@ const DEFAULT_TEAM = {
     let { data: conversation, error: convFetchErr } = await supabaseAdmin.from(TABLES.conversations).select('*').eq('customer_phone_normalized', phone).maybeSingle();
     if (convFetchErr) throw convFetchErr;
 
+    const unreadCount = options.unread_count !== undefined ? options.unread_count : 1;
+
     if (!conversation) {
       const { data: newConv, error: convErr } = await supabaseAdmin.from(TABLES.conversations).insert({
         customer_id: customer.id,
@@ -1401,8 +1462,8 @@ const DEFAULT_TEAM = {
         status: options.status || 'NEW',
         assigned_user_id: null,
         assigned_user_name: null,
-        unread_count: 1,
-        last_message: 'Mensagem recebida',
+        unread_count: unreadCount,
+        last_message: options.last_message || 'Mensagem recebida',
         last_message_at: new Date().toISOString(),
         source: 'WhatsApp Z-API',
         origin: options.origin || 'direct',
@@ -1422,16 +1483,19 @@ const DEFAULT_TEAM = {
       const isClosedOrIgnored = ["RESOLVED", "CLOSED", "CONCLUIDO", "CONCLUÍDO", "IGNORED", "IGNORADO"].includes(currentStatus);
 
       if (!conversation.assigned_user_id || isClosedOrIgnored) {
+        let targetStatus = options.status || 'NEW';
+        if (conversation.assigned_user_id) {
+          targetStatus = 'OPEN';
+        }
+
         const { data: updatedConv, error: updateErr } = await supabaseAdmin.from(TABLES.conversations).update({
-          status: options.status || 'NEW',
-          assigned_user_id: null,
-          assigned_user_name: null,
+          status: targetStatus,
           closed_at: null,
-          origin: options.origin || 'direct',
-          team_id: DEFAULT_TEAM.id,
-          team_name: DEFAULT_TEAM.name,
-          queue_id: DEFAULT_TEAM.id,
-          queue_name: DEFAULT_TEAM.name,
+          origin: options.origin || conversation.origin || 'direct',
+          team_id: conversation.team_id || DEFAULT_TEAM.id,
+          team_name: conversation.team_name || DEFAULT_TEAM.name,
+          queue_id: conversation.queue_id || DEFAULT_TEAM.id,
+          queue_name: conversation.queue_name || DEFAULT_TEAM.name,
           updated_at: new Date().toISOString()
         }).eq('id', conversation.id).select().single();
         if (updateErr) throw updateErr;
@@ -1465,20 +1529,26 @@ const DEFAULT_TEAM = {
       }
     }
 
+    const isOutgoing = normalized.raw?.fromMe === true;
+
     // Verificar duplicidade
-    const { data: existingMsg } = await supabaseAdmin.from(TABLES.messages).select('id').eq('external_message_id', normalized.messageId).maybeSingle();
+    const { data: existingMsg } = await supabaseAdmin.from(TABLES.messages).select('*').eq('external_message_id', normalized.messageId).maybeSingle();
     if (existingMsg) {
-      const { data: fullMsg } = await supabaseAdmin.from(TABLES.messages).select('*').eq('id', existingMsg.id).single();
-      return fullMsg;
+      if (existingMsg.status !== 'sent' && isOutgoing) {
+        await supabaseAdmin.from(TABLES.messages).update({ status: 'sent' }).eq('id', existingMsg.id);
+        existingMsg.status = 'sent';
+      }
+      return existingMsg;
     }
 
     const { data: message, error } = await supabaseAdmin.from(TABLES.messages).insert({
       conversation_id: conversation.id,
       customer_phone_normalized: normalized.phone,
       external_message_id: normalized.messageId,
-      sender_type: 'customer',
-      sender_name: normalized.name,
-      from_phone: normalized.phone,
+      sender_type: isOutgoing ? 'agent_external' : 'customer',
+      sender_name: isOutgoing ? 'WhatsApp Celular' : (normalized.name || customer.name || 'Cliente'),
+      from_phone: isOutgoing ? (normalized.raw?.connectedPhone || "") : normalized.phone,
+      to_phone: isOutgoing ? normalized.phone : (normalized.raw?.connectedPhone || ""),
       message_type: normalized.messageType,
       content: normalized.content,
       caption: normalized.caption,
@@ -1487,11 +1557,12 @@ const DEFAULT_TEAM = {
       storage_path: storagePath,
       media_mime_type: normalized.mimeType,
       media_file_name: normalized.fileName,
-      status: 'received',
+      status: isOutgoing ? 'sent' : 'received',
       raw_payload: normalized.raw,
       ignored: false,
-      origin: 'direct',
-      created_at: new Date().toISOString()
+      origin: isOutgoing ? 'WHATSAPP_CELULAR' : 'direct',
+      is_internal: false,
+      created_at: normalized.raw?.timestamp ? new Date(normalized.raw.timestamp * 1000).toISOString() : new Date().toISOString()
     }).select().single();
 
     if (error) throw error;
@@ -1499,12 +1570,33 @@ const DEFAULT_TEAM = {
   }
 
   async function updateConversationAfterIncomingDirectMessage(conversation: any, normalized: any, message: any) {
-    await supabaseAdmin.from(TABLES.conversations).update({
+    const isOutgoing = normalized.raw?.fromMe === true;
+    const now = new Date().toISOString();
+
+    const updates: any = {
       last_message: normalized.content,
-      last_message_at: message.created_at || new Date().toISOString(),
-      unread_count: (conversation.unread_count || 0) + 1,
-      updated_at: new Date().toISOString()
-    }).eq('id', conversation.id);
+      last_message_at: message.created_at || now,
+      updated_at: now
+    };
+
+    if (!isOutgoing) {
+      updates.unread_count = (conversation.unread_count || 0) + 1;
+      const currentStatus = String(conversation.status || "").toUpperCase();
+      if (!conversation.assigned_user_id || ["RESOLVED", "CLOSED", "CONCLUIDO", "CONCLUÍDO"].includes(currentStatus)) {
+        updates.status = "NEW";
+      }
+    } else {
+      const currentStatus = String(conversation.status || "").toUpperCase();
+      if (["RESOLVED", "CLOSED", "CONCLUIDO", "CONCLUÍDO"].includes(currentStatus)) {
+        if (conversation.assigned_user_id) {
+          updates.status = "OPEN";
+        } else {
+          updates.status = "NEW";
+        }
+      }
+    }
+
+    await supabaseAdmin.from(TABLES.conversations).update(updates).eq('id', conversation.id);
   }
 
   async function processIncomingDirectZapiMessage(payload: any, logId: string | null, diagnosis: any) {
@@ -1513,34 +1605,40 @@ const DEFAULT_TEAM = {
     }
 
     const phone = diagnosis.phoneNormalized;
-  const normalized = normalizeIncomingDirectMessage(payload, phone);
+    const normalized = normalizeIncomingDirectMessage(payload, phone);
+    const isOutgoing = payload?.fromMe === true;
 
-  const customer = await findOrCreateCustomerByPhone(phone, normalized.name);
-  const conversation = await findOrCreateConversationByPhone(phone, customer, {
-    forceDirect: true,
-    status: "NEW",
-    origin: "direct"
-  });
+    const customer = await findOrCreateCustomerByPhone(phone, normalized.name);
+    const conversation = await findOrCreateConversationByPhone(phone, customer, {
+      forceDirect: true,
+      status: "NEW",
+      origin: isOutgoing ? "WHATSAPP_CELULAR" : "WHATSAPP_RECEBIDO",
+      unread_count: isOutgoing ? 0 : 1
+    });
 
-  const message = await createIncomingDirectMessage(conversation, customer, normalized);
+    const message = await createIncomingDirectMessage(conversation, customer, normalized);
     await updateConversationAfterIncomingDirectMessage(conversation, normalized, message);
 
     if (logId) {
       await supabaseAdmin.from("zapi_webhook_logs").update({
         processed: true,
         ignored: false,
-        origin: "direct",
+        origin: isOutgoing ? "WHATSAPP_CELULAR" : "direct",
         raw_phone: payload?.phone || null,
         phone_normalized: phone,
         customer_id: customer.id,
         conversation_id: conversation.id,
         message_db_id: message.id,
+        direction: isOutgoing ? "outgoing" : "incoming",
+        from_me: isOutgoing,
+        customer_phone_normalized: phone,
+        message_id: message.id,
         error: null,
         diagnostic: diagnosis
       }).eq("id", logId);
     }
 
-    broadcastEvent("message.received", { customer, conversation, message });
+    broadcastEvent("message.received", { customer, conversation, message, direction: isOutgoing ? "outgoing" : "incoming" });
 
     return {
       phone_normalized: phone,
@@ -2156,6 +2254,9 @@ const DEFAULT_TEAM = {
   app.post("/api/webhooks/zapi/received", async (req, res) => {
     const payload = req.body || {};
     let logId: string | null = null;
+    const direction = getZapiMessageDirection(payload);
+    const fromMe = payload?.fromMe === true;
+    const customerPhoneNormalized = getCustomerPhoneFromZapiPayload(payload);
 
     try {
       // 1. Criar log bruto (processed = false)
@@ -2165,11 +2266,14 @@ const DEFAULT_TEAM = {
           event_type: "received",
           payload,
           raw_phone: payload?.phone || null,
-          phone_normalized: null,
+          phone_normalized: customerPhoneNormalized || null,
           processed: false,
           ignored: false,
           origin: null,
           error: null,
+          direction,
+          from_me: fromMe,
+          customer_phone_normalized: customerPhoneNormalized || null,
           created_at: new Date().toISOString()
         })
         .select("id")
@@ -2193,11 +2297,13 @@ const DEFAULT_TEAM = {
               ignored: true,
               origin: (diagnosis as any).suggestedOrigin || diagnosis.origin || "blocked",
               raw_phone: diagnosis.rawPhone || payload?.phone || null,
-              phone_normalized: null,
+              phone_normalized: customerPhoneNormalized || null,
+              customer_phone_normalized: customerPhoneNormalized || null,
               customer_id: null,
               conversation_id: null,
               message_db_id: null,
               error: (diagnosis as any).suggestedReason || diagnosis.reason || "Payload bloqueado: não é conversa individual.",
+              ignored_reason: (diagnosis as any).suggestedReason || diagnosis.reason || "Payload bloqueado: não é conversa individual.",
               diagnostic: diagnosis
             })
             .eq("id", logId);
@@ -2230,7 +2336,8 @@ const DEFAULT_TEAM = {
           .update({
             processed: false,
             ignored: false,
-            error: errorMsg
+            error: errorMsg,
+            ignored_reason: errorMsg
           })
           .eq("id", logId);
       }
@@ -2256,6 +2363,170 @@ const DEFAULT_TEAM = {
     req.on('close', () => {
       sseClients = sseClients.filter(c => c.id !== clientId);
     });
+  });
+
+  app.get("/api/debug/zapi/sync-sent", async (req, res) => {
+    try {
+      const results: any[] = [];
+
+      const scenarios = [
+        {
+          name: "1. Mensagem recebida individual válida",
+          payload: {
+            phone: "5511999998888",
+            connectedPhone: "5511988887777",
+            senderName: "Cliente Teste",
+            text: { message: "Olá, gostaria de saber mais informacoes." },
+            messageId: `test-inc-${Date.now()}`,
+            fromMe: false
+          }
+        },
+        {
+          name: "2. Mensagem enviada pelo celular (fromMe: true)",
+          payload: {
+            phone: "5511999998888",
+            connectedPhone: "5511988887777",
+            senderName: "WhatsApp Celular",
+            text: { message: "Claro! Como posso te ajudar?" },
+            messageId: `test-out-${Date.now()}`,
+            fromMe: true
+          }
+        },
+        {
+          name: "3. Mensagem de grupo (Bloqueada)",
+          payload: {
+            phone: "120363222333@g.us",
+            isGroup: true,
+            text: { message: "Mensagem no grupo de teste." },
+            messageId: `test-group-${Date.now()}`,
+            fromMe: false
+          }
+        },
+        {
+          name: "4. Mensagem de Newsletter (Bloqueada)",
+          payload: {
+            phone: "120363999999@newsletter",
+            isNewsletter: true,
+            text: { message: "Novidades do canal." },
+            messageId: `test-news-${Date.now()}`,
+            fromMe: false
+          }
+        },
+        {
+          name: "5. Mensagem duplicada (fromMe: true)",
+          payload: null as any
+        }
+      ];
+
+      const scenario2Id = scenarios[1].payload.messageId;
+      scenarios[4].payload = {
+        ...scenarios[1].payload,
+        messageId: scenario2Id
+      };
+
+      for (const sc of scenarios) {
+        const payload = sc.payload;
+        const diagnosis = diagnoseZapiPayloadOrigin(payload);
+        const direction = getZapiMessageDirection(payload);
+        const fromMe = payload?.fromMe === true;
+        const customerPhoneNormalized = getCustomerPhoneFromZapiPayload(payload);
+
+        let status = "ignored";
+        let messageDbId = null;
+        let logDbId = null;
+        let errorMsg = null;
+
+        try {
+          const { data: logData, error: logError } = await supabaseAdmin
+            .from("zapi_webhook_logs")
+            .insert({
+              event_type: "received_debug",
+              payload,
+              raw_phone: payload?.phone || null,
+              phone_normalized: customerPhoneNormalized || null,
+              processed: false,
+              ignored: false,
+              origin: null,
+              error: null,
+              direction,
+              from_me: fromMe,
+              customer_phone_normalized: customerPhoneNormalized || null,
+              created_at: new Date().toISOString()
+            })
+            .select("id")
+            .single();
+
+          if (logError) throw logError;
+          logDbId = logData?.id || null;
+
+          if (!diagnosis.allowed) {
+            status = "ignored";
+            if (logDbId) {
+              await supabaseAdmin
+                .from("zapi_webhook_logs")
+                .update({
+                  processed: false,
+                  ignored: true,
+                  origin: (diagnosis as any).suggestedOrigin || diagnosis.origin || "blocked",
+                  raw_phone: diagnosis.rawPhone || payload?.phone || null,
+                  phone_normalized: customerPhoneNormalized || null,
+                  customer_phone_normalized: customerPhoneNormalized || null,
+                  error: diagnosis.reason || "Payload bloqueado: não é conversa individual.",
+                  ignored_reason: diagnosis.reason || "Payload bloqueado: não é conversa individual.",
+                  diagnostic: diagnosis
+                })
+                .eq("id", logDbId);
+            }
+          } else {
+            const result = await processIncomingDirectZapiMessage(payload, logDbId, diagnosis);
+            status = "processed";
+            messageDbId = result.message_db_id;
+          }
+        } catch (err: any) {
+          status = "error";
+          errorMsg = getErrorMessage(err);
+          if (logDbId) {
+            await supabaseAdmin
+              .from("zapi_webhook_logs")
+              .update({
+                processed: false,
+                ignored: false,
+                error: errorMsg,
+                ignored_reason: errorMsg
+              })
+              .eq("id", logDbId);
+          }
+        }
+
+        results.push({
+          scenario: sc.name,
+          payload,
+          diagnosis,
+          status,
+          direction,
+          customerPhoneNormalized,
+          logDbId,
+          messageDbId,
+          error: errorMsg
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        summary: {
+          total: scenarios.length,
+          processed: results.filter(r => r.status === "processed").length,
+          ignored: results.filter(r => r.status === "ignored").length,
+          error: results.filter(r => r.status === "error").length
+        },
+        results
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: getErrorMessage(err)
+      });
+    }
   });
 
   app.get("/api/debug/conversations", async (req, res) => {

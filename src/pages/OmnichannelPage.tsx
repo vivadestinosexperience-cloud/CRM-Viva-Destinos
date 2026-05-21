@@ -204,6 +204,7 @@ export default function OmnichannelPage() {
           }
           return c;
         });
+        setConversations(updatedConvs);
         useAppStore.setState({ conversations: updatedConvs });
         toast.success("Etiqueta vinculada");
       }
@@ -227,6 +228,7 @@ export default function OmnichannelPage() {
           }
           return c;
         });
+        setConversations(updatedConvs);
         useAppStore.setState({ conversations: updatedConvs });
 
         // Also update leadDetails if open
@@ -495,13 +497,14 @@ export default function OmnichannelPage() {
 
       case "image": {
         const imageSrc = getMessageImageSrc(message);
+        const safeCaption = renderSafeText(message.caption);
         return (
           <div className="space-y-2">
             {imageSrc ? (
               <img
                 referrerPolicy="no-referrer"
                 src={imageSrc}
-                alt={message.caption || content || "Imagem"}
+                alt={safeCaption || content || "Imagem"}
                 className="max-w-xs rounded-xl border object-cover cursor-pointer hover:opacity-90 transition-opacity shadow-sm border-slate-100"
                 onClick={() => window.open(imageSrc, "_blank")}
                 onError={(e) => {
@@ -513,11 +516,11 @@ export default function OmnichannelPage() {
                 Imagem enviada anteriormente sem arquivo salvo.
               </div>
             )}
-            {(message.caption ||
+            {(safeCaption ||
               (content &&
                 content !== "Imagem enviada" &&
                 content !== "Imagem recebida")) && (
-              <p className="text-sm">{message.caption || content}</p>
+              <p className="text-sm">{safeCaption || content}</p>
             )}
           </div>
         );
@@ -537,7 +540,8 @@ export default function OmnichannelPage() {
         return <p className="text-xs text-slate-400 italic">Áudio registrado, mas sem arquivo disponível.</p>;
       }
 
-      case "video":
+      case "video": {
+        const safeCaption = renderSafeText(message.caption);
         return (
           <div className="space-y-2">
             {mediaUrl ? (
@@ -551,14 +555,15 @@ export default function OmnichannelPage() {
                 Vídeo indisponível
               </div>
             )}
-            {(message.caption ||
+            {(safeCaption ||
               (content &&
                 content !== "Vídeo enviado" &&
                 content !== "Vídeo recebido")) && (
-              <p className="text-sm">{message.caption || content}</p>
+              <p className="text-sm">{safeCaption || content}</p>
             )}
           </div>
         );
+      }
 
       case "document":
       case "file":
@@ -1906,11 +1911,11 @@ export default function OmnichannelPage() {
             filteredConversations.map((conv) => {
               const customer =
                 conv.customer ||
-                customers.find((c) => c.id === conv.customer_id);
+                safeCustomers.find((c) => c.id === conv.customer_id);
               const isActive = activeConversationId === conv.id;
               const teamId = conv.team_id || conv.queue_id;
-              const team = teams.find((t) => t.id === teamId);
-              const account = whatsAppAccounts.find(
+              const team = safeTeams.find((t) => t.id === teamId);
+              const account = safeAccounts.find(
                 (a) => a.id === conv.whatsapp_account_id,
               );
               const lastMsgAt =
@@ -2033,19 +2038,19 @@ export default function OmnichannelPage() {
             <header className="h-20 bg-white border-b border-slate-100 px-6 flex items-center justify-between shrink-0 z-20">
               <div className="flex items-center gap-4 min-w-0">
                 <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center shrink-0 font-bold text-slate-600">
-                  {activeCustomer?.name.charAt(0)}
+                  {activeCustomer?.name?.charAt(0) || activeCustomer?.phone?.charAt(0) || "C"}
                 </div>
                 <div className="min-w-0">
                   <h3
                     className="font-bold text-slate-800 truncate cursor-pointer hover:text-blue-600 transition-colors flex items-center gap-2"
                     onClick={() => handleLoadDetails(activeConversation.id)}
                   >
-                    {activeCustomer?.name}
+                    {activeCustomer?.name || activeCustomer?.phone || "Cliente"}
                     <Info className="w-3.5 h-3.5 opacity-40" />
                   </h3>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs text-slate-400">
-                      {activeCustomer?.phone}
+                      {activeCustomer?.phone || "Sem telefone"}
                     </span>
                     <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
                     {activeTeam && (
@@ -2111,20 +2116,22 @@ export default function OmnichannelPage() {
                                 />
                               </div>
                               <div className="max-h-40 overflow-y-auto space-y-0.5">
-                                {tags
+                                {safeTags
                                   .filter((t) =>
-                                    t.name
+                                    (t?.name || "")
                                       .toLowerCase()
-                                      .includes(tagSearch.toLowerCase()),
+                                      .includes((tagSearch || "").toLowerCase()),
                                   )
                                   .map((tag) => (
                                     <button
                                       key={tag.id}
                                       onClick={() => {
-                                        handleLinkTag(
-                                          activeConversation.id,
-                                          tag.id,
-                                        );
+                                        if (activeConversation) {
+                                          handleLinkTag(
+                                            activeConversation.id,
+                                            tag.id,
+                                          );
+                                        }
                                         setShowTagSelector(false);
                                         setTagSearch("");
                                       }}
@@ -2132,14 +2139,14 @@ export default function OmnichannelPage() {
                                     >
                                       <div
                                         className="w-2 h-2 rounded-full"
-                                        style={{ backgroundColor: tag.color }}
+                                        style={{ backgroundColor: tag.color || "#cbd5e1" }}
                                       />
                                       <span className="text-[10px] font-bold text-slate-600">
-                                        {tag.name}
+                                        {tag.name || "Sem Nome"}
                                       </span>
                                     </button>
                                   ))}
-                                {tags.length === 0 && (
+                                {safeTags.length === 0 && (
                                   <p className="text-[9px] text-slate-400 text-center py-2">
                                     Nenhuma etiqueta
                                   </p>
@@ -2318,6 +2325,7 @@ export default function OmnichannelPage() {
               {messages.map((msg: Message) => {
                 const isMine =
                   msg.sender_type === "agent" ||
+                  (msg.sender_type as any) === "agent_external" ||
                   msg.sender_type === "system" ||
                   (msg.sender_type as string) === "internal";
                 const isInternal =
@@ -2782,13 +2790,13 @@ export default function OmnichannelPage() {
           <div className="p-6 h-full flex flex-col">
             <div className="text-center mb-6">
               <div className="w-24 h-24 rounded-3xl bg-slate-100 flex items-center justify-center text-3xl font-bold text-slate-600 mx-auto mb-4 border-2 border-white shadow-lg ring-1 ring-slate-100 relative">
-                {activeCustomer.name.charAt(0)}
+                {activeCustomer?.name?.charAt(0) || activeCustomer?.phone?.charAt(0) || "?"}
                 <div className="absolute -bottom-2 -right-2 bg-emerald-500 text-white px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase border-2 border-white shadow-sm">
                   Online
                 </div>
               </div>
               <h3 className="text-xl font-bold text-slate-800 truncate">
-                {activeCustomer.name}
+                {activeCustomer?.name || activeCustomer?.phone || "Cliente"}
               </h3>
               <p className="text-sm text-slate-500 mt-1">
                 {activeCustomer.city || "Localização não informada"}
@@ -3313,7 +3321,7 @@ export default function OmnichannelPage() {
                         }
                       >
                         <option value="">Selecione um canal</option>
-                        {whatsAppAccounts.map((acc) => (
+                        {safeAccounts.map((acc) => (
                           <option key={acc.id} value={acc.id}>
                             {acc.name} (
                             {acc.status === "CONNECTED" ? "Ativo" : "Off"})
@@ -3336,7 +3344,7 @@ export default function OmnichannelPage() {
                         }
                       >
                         <option value="">Selecione uma equipe</option>
-                        {teams.map((t) => (
+                        {safeTeams.map((t) => (
                           <option key={t.id} value={t.id}>
                             {t.name}
                           </option>
@@ -3360,7 +3368,7 @@ export default function OmnichannelPage() {
                       }
                     >
                       <option value="">Novo Cliente...</option>
-                      {customers.map((c) => (
+                      {safeCustomers.map((c) => (
                         <option key={c.id} value={c.id}>
                           {c.name} - {c.phone}
                         </option>

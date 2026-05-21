@@ -75,14 +75,31 @@ export class ErrorBoundary extends React.Component<Props, State> {
               </button>
             </div>
 
-            {process.env.NODE_ENV === 'development' && this.state.error && (
+            {this.state.error && (
               <div className="pt-6 border-t border-slate-50 text-left">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 px-1">Detalhes Técnicos</p>
-                <pre className="bg-slate-50 p-4 rounded-xl text-[10px] text-slate-500 overflow-auto max-h-40 font-mono">
-                  {this.state.error.toString()}
-                  {"\n"}
-                  {this.state.errorInfo?.componentStack}
-                </pre>
+                <details className="group">
+                  <summary className="text-[10px] font-black text-slate-400 hover:text-slate-600 uppercase tracking-widest mb-2 px-1 cursor-pointer select-none list-none flex items-center justify-between">
+                    <span>Detalhes Técnicos</span>
+                    <span className="transition-transform group-open:rotate-180">▼</span>
+                  </summary>
+                  <div className="space-y-3 mt-2">
+                    <pre className="bg-slate-50 p-4 rounded-xl text-[10px] text-slate-500 overflow-auto max-h-40 font-mono whitespace-pre-wrap breakdown-all">
+                      {this.state.error.toString()}
+                      {"\n\n"}
+                      {this.state.errorInfo?.componentStack}
+                    </pre>
+                    <button
+                      onClick={() => {
+                        const errText = `${this.state.error?.toString()}\n\n${this.state.errorInfo?.componentStack}`;
+                        navigator.clipboard.writeText(errText);
+                        alert("Erro copiado para a área de transferência!");
+                      }}
+                      className="text-[9px] font-bold text-blue-600 hover:text-blue-700 underline"
+                    >
+                      Copiar detalhes do erro
+                    </button>
+                  </div>
+                </details>
               </div>
             )}
           </div>
