@@ -6,6 +6,16 @@ import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 import multer from "multer";
 import fs from "fs";
+import os from "os";
+import { promisify } from "util";
+import ffmpeg from "fluent-ffmpeg";
+import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
+
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+const writeFile = promisify(fs.writeFile);
+const readFile = promisify(fs.readFile);
+const unlink = promisify(fs.unlink);
 
 dotenv.config();
 
@@ -158,6 +168,52 @@ function getExtensionFromMimeOrFileName(mimeType: string, fileName: string): str
 
 function sanitizeFileName(name: string): string {
   return name.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
+}
+
+async function convertAudioBufferToMp3(inputBuffer: Buffer, inputMimeType: string) {
+  const tempDir = os.tmpdir();
+
+  const inputExt =
+    inputMimeType.includes("ogg") ? "ogg" :
+    inputMimeType.includes("mp4") ? "m4a" :
+    inputMimeType.includes("mpeg") ? "mp3" :
+    inputMimeType.includes("wav") ? "wav" :
+    "webm";
+
+  const inputPath = path.join(tempDir, `input-${Date.now()}-${Math.random().toString(16).slice(2)}.${inputExt}`);
+  const outputPath = path.join(tempDir, `output-${Date.now()}-${Math.random().toString(16).slice(2)}.mp3`);
+
+  await writeFile(inputPath, inputBuffer);
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(inputPath)
+        .noVideo()
+        .audioCodec("libmp3lame")
+        .audioBitrate("64k")
+        .audioChannels(1)
+        .audioFrequency(44100)
+        .format("mp3")
+        .on("error", (err) => reject(err))
+        .on("end", () => resolve())
+        .save(outputPath);
+    });
+
+    const outputBuffer = await readFile(outputPath);
+
+    if (!outputBuffer || outputBuffer.length < 1000) {
+      throw new Error("Falha na conversão: MP3 gerado vazio.");
+    }
+
+    return {
+      buffer: outputBuffer,
+      mimeType: "audio/mpeg",
+      fileName: `audio-${Date.now()}.mp3`
+    };
+  } finally {
+    try { await unlink(inputPath); } catch {}
+    try { await unlink(outputPath); } catch {}
+  }
 }
 
 function clean(value?: any) {
@@ -1881,6 +1937,30 @@ const DEFAULT_TEAM = {
     }
   });
 
+  app.get("/api/debug/audio", async (req, res) => {
+    try {
+      const ffmpegExists = typeof ffmpegInstaller.path === "string" && fs.existsSync(ffmpegInstaller.path);
+      return res.json({
+        success: true,
+        ffmpegAvailable: ffmpegExists,
+        maxUploadMb: 25,
+        acceptedInputs: [
+          "audio/webm",
+          "audio/ogg",
+          "audio/mpeg",
+          "audio/mp3",
+          "audio/mp4",
+          "audio/wav",
+          "audio/x-m4a",
+          "application/octet-stream"
+        ],
+        outputFormat: "audio/mpeg"
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   app.post("/api/debug/zapi/test-send", async (req, res) => {
     try {
       const currentUser = await getAuthenticatedUser(req);
@@ -3325,33 +3405,40 @@ const DEFAULT_TEAM = {
         });
       }
 
-      if (!req.file) {
+      if (!req.file || !req.file.buffer || req.file.size < 1000) {
         return res.status(400).json({
           success: false,
-          error: "Arquivo de áudio não recebido."
+          error: "Áudio não recebido ou arquivo vazio."
         });
       }
 
-      const fileMime = req.file.mimetype || "audio/webm";
+      const originalMimeType = req.file.mimetype || req.body?.originalMimeType || "audio/webm";
 
-      const allowedMimes = [
+      const allowedInputMimes = [
         "audio/webm",
         "audio/ogg",
         "audio/mpeg",
         "audio/mp3",
         "audio/mp4",
         "audio/wav",
-        "audio/x-m4a"
+        "audio/x-m4a",
+        "application/octet-stream"
       ];
 
-      const isAllowed = allowedMimes.some((mime) => fileMime.startsWith(mime));
+      const isAllowed = allowedInputMimes.some((mime) => originalMimeType.toLowerCase().startsWith(mime.toLowerCase()));
 
       if (!isAllowed) {
         return res.status(400).json({
           success: false,
-          error: `Formato de áudio não permitido: ${fileMime}`
+          error: `Formato de áudio não permitido: ${originalMimeType}`
         });
       }
+
+      // Convert audio buffer to MP3
+      const converted = await convertAudioBufferToMp3(req.file.buffer, originalMimeType);
+
+      const audioBase64 = converted.buffer.toString("base64");
+      const audioDataUri = `data:${converted.mimeType};base64,${audioBase64}`;
 
       const introMessage = formatAgentMessageForWhatsApp(
         "Estou enviando um áudio.",
@@ -3370,32 +3457,36 @@ const DEFAULT_TEAM = {
         }
       );
 
-      // 1. Upload to Supabase Storage
-      const extension = getExtensionFromMimeOrFileName(fileMime, req.file.originalname || "audio.webm");
-      const safeName = sanitizeFileName(req.file.originalname || `audio-${Date.now()}.${extension}`);
-      const datePath = new Date().toISOString().slice(0, 10);
-      const storagePath = `sent/${datePath}/${Date.now()}-${safeName}`;
+      // Upload converted MP3 to Supabase Storage
+      let publicUrl = "";
+      try {
+        const safeName = sanitizeFileName(converted.fileName);
+        const datePath = new Date().toISOString().slice(0, 10);
+        const storagePath = `sent/${datePath}/${Date.now()}-${safeName}`;
 
-      const { error: uploadErr } = await supabaseAdmin.storage
-        .from("chat-media")
-        .upload(storagePath, req.file.buffer, {
-          contentType: fileMime,
-          upsert: true
-        });
+        const { error: uploadErr } = await supabaseAdmin.storage
+          .from("chat-media")
+          .upload(storagePath, converted.buffer, {
+            contentType: converted.mimeType,
+            upsert: true
+          });
 
-      if (uploadErr) throw uploadErr;
+        if (!uploadErr) {
+          const { data: storageData } = supabaseAdmin.storage.from("chat-media").getPublicUrl(storagePath);
+          publicUrl = storageData?.publicUrl || "";
+        } else {
+          console.error("[STORAGE UPLOAD WARNING]", uploadErr);
+        }
+      } catch (storageErr) {
+        console.error("[STORAGE ERROR]", storageErr);
+      }
 
-      const { data: storageData } = supabaseAdmin.storage.from("chat-media").getPublicUrl(storagePath);
-      const publicUrl = storageData.publicUrl;
-
-      // 2. Send via Z-API using public URL
+      // Send as base64 data URI to Z-API
       const zapiResponse = await callZapi(
         "/send-audio",
         {
           phone,
-          audio: publicUrl,
-          viewOnce: false,
-          waveform: true
+          audio: audioDataUri
         },
         {
           source: "conversation-audio",
@@ -3405,7 +3496,6 @@ const DEFAULT_TEAM = {
 
       const now = new Date().toISOString();
 
-      // 3. Save message with media_url and media_storage_url filled
       const { data: savedMessage, error: messageError } = await supabaseAdmin
         .from("crm_messages")
         .insert({
@@ -3419,14 +3509,20 @@ const DEFAULT_TEAM = {
           to_phone: phone,
           message_type: "audio",
           content: "Áudio enviado",
-          media_mime_type: fileMime,
-          media_file_name: req.file.originalname || `audio-${Date.now()}.webm`,
-          media_size: req.file.size,
-          media_url: publicUrl,
-          media_storage_url: publicUrl,
+          media_mime_type: converted.mimeType,
+          media_file_name: converted.fileName,
+          media_size: converted.buffer.length,
+          media_url: publicUrl || audioDataUri,
+          media_storage_url: publicUrl || audioDataUri,
           status: "sent",
           is_internal: false,
-          raw_payload: zapiResponse,
+          raw_payload: {
+            zapiResponse,
+            originalMimeType,
+            originalSize: req.file.size,
+            convertedMimeType: converted.mimeType,
+            convertedSize: converted.buffer.length
+          },
           created_at: now
         })
         .select("*")
@@ -3456,7 +3552,7 @@ const DEFAULT_TEAM = {
           ...savedMessage,
           normalized_message_type: "audio",
           display_content: savedMessage.content,
-          display_media_url: publicUrl
+          display_media_url: publicUrl || audioDataUri
         }
       });
 
@@ -3465,7 +3561,13 @@ const DEFAULT_TEAM = {
       return res.json({
         success: true,
         message: savedMessage,
-        zapiResponse
+        zapiResponse,
+        audio: {
+          originalMimeType,
+          originalSize: req.file.size,
+          convertedMimeType: converted.mimeType,
+          convertedSize: converted.buffer.length
+        }
       });
     } catch (error: any) {
       console.error("[SEND AUDIO ERROR]", error);

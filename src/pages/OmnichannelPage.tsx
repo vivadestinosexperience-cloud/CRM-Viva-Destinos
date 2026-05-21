@@ -426,6 +426,10 @@ export default function OmnichannelPage() {
   const emojiPickerRef = useRef<HTMLDivElement>(null);
   const messageInputRef = useRef<HTMLTextAreaElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recordingTimerRef = useRef<any>(null);
+  const [recordedAudioFile, setRecordedAudioFile] = useState<File | null>(null);
   const timerRef = useRef<number | null>(null);
 
   const activeConversation = safeConversations.find(
@@ -491,23 +495,18 @@ export default function OmnichannelPage() {
         );
 
       case "audio":
-      case "ptt":
-        return (
-          <div className="space-y-2 min-w-[200px]">
-            {mediaUrl ? (
-              <audio controls src={mediaUrl} className="w-full h-10" />
-            ) : (
-              <div className="text-[10px] text-red-500 italic">
-                Áudio indisponível
-              </div>
-            )}
-            {content &&
-              content !== "Áudio enviado" &&
-              content !== "Áudio recebido" && (
-                <p className="text-sm">{content}</p>
-              )}
-          </div>
-        );
+      case "ptt": {
+        const audioSrc =
+          (message as any).media_storage_url ||
+          (message as any).media_url ||
+          (message as any).display_media_url;
+
+        if (audioSrc) {
+          return <audio controls src={audioSrc} className="w-full h-10 min-w-[200px]" />;
+        }
+
+        return <p className="text-xs text-slate-400 italic">Áudio registrado, mas sem arquivo disponível.</p>;
+      }
 
       case "video":
         return (
@@ -638,56 +637,199 @@ export default function OmnichannelPage() {
 
   const getSupportedAudioMimeType = () => {
     const types = [
-      "audio/ogg;codecs=opus",
       "audio/webm;codecs=opus",
       "audio/webm",
+      "audio/ogg;codecs=opus",
+      "audio/ogg",
       "audio/mp4",
     ];
-    return types.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+
+    if (!window.MediaRecorder) return "";
+
+    for (const type of types) {
+      if (MediaRecorder.isTypeSupported(type)) {
+        return type;
+      }
+    }
+
+    return "";
   };
 
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = getSupportedAudioMimeType();
-      const recorder = new MediaRecorder(stream, { mimeType });
+      if (!navigator.mediaDevices?.getUserMedia) {
+        toast.error("Seu navegador não permite acessar o microfone.");
+        return;
+      }
 
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = (e) => chunks.push(e.data);
-      recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: mimeType });
-        setAudioBlob(blob);
-        setAudioUrl(URL.createObjectURL(blob));
-      };
+      if (!window.MediaRecorder) {
+        toast.error("Seu navegador não suporta gravação de áudio.");
+        return;
+      }
+
+      cancelRecordedAudio();
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      const mimeType = getSupportedAudioMimeType();
+
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
 
       mediaRecorderRef.current = recorder;
-      recorder.start();
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = (event) => {
+        console.error("[MEDIA RECORDER ERROR]", event);
+        toast.error("Erro durante a gravação do áudio.");
+      };
+
+      recorder.onstop = async () => {
+        try {
+          const finalMimeType = recorder.mimeType || mimeType || "audio/webm";
+
+          const blob = new Blob(audioChunksRef.current, {
+            type: finalMimeType,
+          });
+
+          console.log("[AUDIO BLOB]", {
+            size: blob.size,
+            type: blob.type,
+            chunks: audioChunksRef.current.length,
+          });
+
+          if (!blob || blob.size < 1000) {
+            toast.error(
+              "O áudio gravado ficou vazio. Verifique o microfone e grave novamente.",
+            );
+            cancelRecordedAudio();
+            return;
+          }
+
+          const extension = finalMimeType.includes("ogg")
+            ? "ogg"
+            : finalMimeType.includes("mp4")
+              ? "m4a"
+              : "webm";
+
+          const file = new File([blob], `audio-${Date.now()}.${extension}`, {
+            type: finalMimeType,
+          });
+
+          const previewUrl = URL.createObjectURL(blob);
+
+          setAudioBlob(blob);
+          setRecordedAudioFile(file);
+          setAudioUrl(previewUrl);
+        } catch (error) {
+          console.error("[AUDIO ONSTOP ERROR]", error);
+          toast.error("Erro ao preparar a prévia do áudio.");
+        } finally {
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+            mediaStreamRef.current = null;
+          }
+        }
+      };
+
+      recorder.start(250);
+
       setIsRecording(true);
       setRecordingTime(0);
-      setAudioUrl(null);
-      setAudioBlob(null);
-    } catch (err) {
-      console.error("Error accessing microphone:", err);
-      toast.error("Permissão de microfone negada ou não suportada.");
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime((prev) => prev + 1);
+      }, 1000);
+    } catch (error: any) {
+      console.error("[START AUDIO RECORDING ERROR]", error);
+
+      if (error?.name === "NotAllowedError") {
+        toast.error(
+          "Permissão de microfone negada. Libere o microfone no navegador.",
+        );
+      } else if (error?.name === "NotFoundError") {
+        toast.error("Nenhum microfone foi encontrado.");
+      } else {
+        toast.error("Não foi possível iniciar a gravação de áudio.");
+      }
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream
-        .getTracks()
-        .forEach((track) => track.stop());
+    try {
+      const recorder = mediaRecorderRef.current;
+
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+
       setIsRecording(false);
+    } catch (error) {
+      console.error("[STOP AUDIO RECORDING ERROR]", error);
+      toast.error("Erro ao finalizar gravação.");
     }
   };
 
-  const handleSendAudio = async () => {
-    if (!audioBlob || !activeConversationId) return;
+  const cancelRecordedAudio = () => {
+    try {
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+      }
 
-    // Max 16MB
-    if (audioBlob.size > 16 * 1024 * 1024) {
-      toast.error("Áudio muito grande (máximo 16MB)");
+      const recorder = mediaRecorderRef.current;
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+      }
+
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+    } catch (error) {
+      console.warn("[CANCEL AUDIO WARNING]", error);
+    }
+
+    setIsRecording(false);
+    setRecordingTime(0);
+    setAudioUrl(null);
+    setAudioBlob(null);
+    setRecordedAudioFile(null);
+    audioChunksRef.current = [];
+  };
+
+  const handleSendAudio = async () => {
+    if (!activeConversationId) {
+      toast.error("Nenhuma conversa selecionada.");
+      return;
+    }
+
+    if (!recordedAudioFile || recordedAudioFile.size < 1000) {
+      toast.error("Áudio inválido ou vazio. Grave novamente.");
       return;
     }
 
@@ -696,12 +838,12 @@ export default function OmnichannelPage() {
     await safeAction(
       async () => {
         const baseUrl = getApiBaseUrl();
-        const audioFile = new File([audioBlob], `audio-${Date.now()}.webm`, {
-          type: audioBlob.type || "audio/webm",
-        });
-
         const formData = new FormData();
-        formData.append("file", audioFile);
+        formData.append("file", recordedAudioFile);
+        formData.append(
+          "originalMimeType",
+          recordedAudioFile.type || "audio/webm",
+        );
 
         const res = await authorizedFetch(
           `${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-audio`,
@@ -712,16 +854,15 @@ export default function OmnichannelPage() {
         );
 
         const data = await safeReadJson(res);
-        if (!res.ok) {
-          throw data;
+        if (!res.ok || !data?.success) {
+          throw new Error(data?.error || "Erro ao enviar áudio.");
         }
 
         await loadMessages(activeConversationId, true);
         await loadConversations(true);
 
         setShowAudioRecorder(false);
-        setAudioUrl(null);
-        setAudioBlob(null);
+        cancelRecordedAudio();
         toast.success("Áudio enviado com sucesso!");
       },
       { label: "Erro ao enviar áudio" },
@@ -2546,8 +2687,14 @@ export default function OmnichannelPage() {
                 </div>
 
                 {audioUrl && !isRecording && (
-                  <div className="w-full bg-slate-50 p-4 rounded-3xl border border-slate-100">
+                  <div className="w-full bg-slate-50 p-4 rounded-3xl border border-slate-100 flex flex-col gap-3">
                     <audio src={audioUrl} controls className="w-full" />
+                    {recordedAudioFile && (
+                      <div className="flex justify-between items-center text-xs text-slate-500 font-mono bg-white p-2.5 rounded-xl border border-slate-100">
+                        <span>MIME: <strong className="text-slate-750">{recordedAudioFile.type}</strong></span>
+                        <span>Tamanho: <strong className="text-slate-750">{(recordedAudioFile.size / 1024).toFixed(1)} KB</strong></span>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -2569,11 +2716,7 @@ export default function OmnichannelPage() {
                   ) : (
                     <>
                       <button
-                        onClick={() => {
-                          setAudioUrl(null);
-                          setAudioBlob(null);
-                          setRecordingTime(0);
-                        }}
+                        onClick={cancelRecordedAudio}
                         disabled={isSendingMedia}
                         className="p-4 bg-slate-100 text-slate-500 rounded-2xl hover:bg-slate-200 transition-all font-bold"
                       >
