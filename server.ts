@@ -3370,14 +3370,30 @@ const DEFAULT_TEAM = {
         }
       );
 
-      const base64 = req.file.buffer.toString("base64");
-      const audioDataUri = `data:${fileMime};base64,${base64}`;
+      // 1. Upload to Supabase Storage
+      const extension = getExtensionFromMimeOrFileName(fileMime, req.file.originalname || "audio.webm");
+      const safeName = sanitizeFileName(req.file.originalname || `audio-${Date.now()}.${extension}`);
+      const datePath = new Date().toISOString().slice(0, 10);
+      const storagePath = `sent/${datePath}/${Date.now()}-${safeName}`;
 
+      const { error: uploadErr } = await supabaseAdmin.storage
+        .from("chat-media")
+        .upload(storagePath, req.file.buffer, {
+          contentType: fileMime,
+          upsert: true
+        });
+
+      if (uploadErr) throw uploadErr;
+
+      const { data: storageData } = supabaseAdmin.storage.from("chat-media").getPublicUrl(storagePath);
+      const publicUrl = storageData.publicUrl;
+
+      // 2. Send via Z-API using public URL
       const zapiResponse = await callZapi(
         "/send-audio",
         {
           phone,
-          audio: audioDataUri,
+          audio: publicUrl,
           viewOnce: false,
           waveform: true
         },
@@ -3389,6 +3405,7 @@ const DEFAULT_TEAM = {
 
       const now = new Date().toISOString();
 
+      // 3. Save message with media_url and media_storage_url filled
       const { data: savedMessage, error: messageError } = await supabaseAdmin
         .from("crm_messages")
         .insert({
@@ -3405,6 +3422,8 @@ const DEFAULT_TEAM = {
           media_mime_type: fileMime,
           media_file_name: req.file.originalname || `audio-${Date.now()}.webm`,
           media_size: req.file.size,
+          media_url: publicUrl,
+          media_storage_url: publicUrl,
           status: "sent",
           is_internal: false,
           raw_payload: zapiResponse,
@@ -3437,7 +3456,7 @@ const DEFAULT_TEAM = {
           ...savedMessage,
           normalized_message_type: "audio",
           display_content: savedMessage.content,
-          display_media_url: audioDataUri
+          display_media_url: publicUrl
         }
       });
 
