@@ -155,6 +155,147 @@ async function callZapi(path: string, body?: any, meta: any = {}) {
   return responseBody;
 }
 
+async function callZapiQrRaw(path: string) {
+  const baseUrl = process.env.ZAPI_BASE_URL || "https://api.z-api.io";
+  const instanceId = process.env.ZAPI_INSTANCE_ID;
+  const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
+  const clientToken = process.env.ZAPI_CLIENT_TOKEN;
+
+  if (!instanceId || !instanceToken) {
+    throw new Error("Z-API não configurada: verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN no servidor.");
+  }
+
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  const url = `${baseUrl}/instances/${instanceId}/token/${instanceToken}${cleanPath}`;
+
+  const headers: Record<string, string> = {
+    Accept: "application/json,text/plain,image/png,*/*"
+  };
+
+  if (clientToken && String(clientToken).trim()) {
+    headers["Client-Token"] = String(clientToken).trim();
+  }
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+  const text = await response.text();
+
+  let json = null;
+
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    contentType,
+    text,
+    json
+  };
+}
+
+function normalizeQrImage(value: any) {
+  if (!value) return null;
+
+  let raw = String(value).trim();
+
+  if (!raw) return null;
+
+  raw = raw.replace(/^"+|"+$/g, "");
+
+  if (raw.startsWith("data:image/")) {
+    return raw;
+  }
+
+  if (raw.startsWith("iVBOR") || raw.startsWith("/9j/") || raw.startsWith("UklGR")) {
+    return `data:image/png;base64,${raw}`;
+  }
+
+  const clean = raw.replace(/\s/g, "");
+
+  const looksLikeBase64 =
+    clean.length > 100 &&
+    /^[A-Za-z0-9+/=]+$/.test(clean);
+
+  if (looksLikeBase64) {
+    return `data:image/png;base64,${clean}`;
+  }
+
+  return null;
+}
+
+function extractQrFromAnyResponse(response: any) {
+  const candidates: any[] = [];
+
+  function add(value: any) {
+    if (value !== undefined && value !== null) {
+      candidates.push(value);
+    }
+  }
+
+  const json = response?.json;
+  const text = response?.text;
+
+  add(text);
+
+  if (json) {
+    add(json.value);
+    add(json.qrcode);
+    add(json.qrCode);
+    add(json.qr_code);
+    add(json.qr);
+    add(json.base64);
+    add(json.image);
+    add(json.imageBase64);
+    add(json.data);
+    add(json.result);
+
+    add(json?.data?.value);
+    add(json?.data?.qrcode);
+    add(json?.data?.qrCode);
+    add(json?.data?.qr);
+    add(json?.data?.base64);
+    add(json?.data?.image);
+
+    add(json?.result?.value);
+    add(json?.result?.qrcode);
+    add(json?.result?.qrCode);
+    add(json?.result?.qr);
+    add(json?.result?.base64);
+    add(json?.result?.image);
+  }
+
+  for (const candidate of [...candidates]) {
+    if (candidate && typeof candidate === "object") {
+      add(candidate.value);
+      add(candidate.qrcode);
+      add(candidate.qrCode);
+      add(candidate.qr_code);
+      add(candidate.qr);
+      add(candidate.base64);
+      add(candidate.image);
+      add(candidate.imageBase64);
+    }
+  }
+
+  for (const candidate of candidates) {
+    const normalized = normalizeQrImage(candidate);
+
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
 function flattenObject(obj: any, prefix = "", result: Record<string, any> = {}) {
   if (!obj || typeof obj !== "object") return result;
 
@@ -4215,50 +4356,101 @@ const DEFAULT_TEAM = {
   });
 
   app.get("/api/zapi/qrcode", async (req, res) => {
+    const endpoints = ["/qr-code", "/qr-code/image"];
+    const attempts = [];
+
     try {
-      // 1. Tentar imagem direta primeiro
-      let imgResult;
-      try {
-        imgResult = await callZapi("/qr-code/image", undefined);
-      } catch {
-        imgResult = null;
-      }
+      for (const endpoint of endpoints) {
+        try {
+          const response = await callZapiQrRaw(endpoint);
+          const qrCodeImage = extractQrFromAnyResponse(response);
 
-      if (imgResult && imgResult.value) {
-        return res.json({
-          success: true,
-          value: imgResult.value,
-          source: "qr-code-image"
-        });
-      }
+          attempts.push({
+            endpoint,
+            status: response.status,
+            contentType: response.contentType,
+            ok: response.ok,
+            hasJson: Boolean(response.json),
+            jsonKeys: response.json ? Object.keys(response.json) : [],
+            valuePreview: response.json?.value ? String(response.json.value).slice(0, 250) : null,
+            textPreview: response.text ? String(response.text).slice(0, 250) : null,
+            extracted: Boolean(qrCodeImage),
+            extractedLength: qrCodeImage ? qrCodeImage.length : 0
+          });
 
-      // 2. Fallback para JSON normal
-      const result = await callZapi("/qr-code", undefined);
-      if (result && result.value) {
-        let value = result.value;
-        // Se não tiver o prefixo de data:image, e parecer base64, adicionamos
-        if (!value.startsWith("data:") && value.length > 100) {
-          value = `data:image/png;base64,${value}`;
+          if (qrCodeImage) {
+            return res.json({
+              success: true,
+              qrCodeImage,
+              qrCode: qrCodeImage,
+              value: qrCodeImage, // compatible with older frontend expectation
+              endpointUsed: endpoint,
+              attempts
+            });
+          }
+        } catch (error) {
+          attempts.push({
+            endpoint,
+            error: error instanceof Error ? error.message : String(error)
+          });
         }
-        return res.json({
-          success: true,
-          value: value,
-          source: "qr-code"
-        });
       }
 
-      return res.status(200).json({
+      return res.status(422).json({
         success: false,
-        error: "QR Code não disponível no momento.",
-        details: result
+        error: "A Z-API não retornou o QR Code em um formato válido.",
+        attempts
       });
-    } catch (err: any) {
-      return res.status(200).json({
+    } catch (error) {
+      return res.status(500).json({
         success: false,
-        error: "Falha ao buscar QR Code",
-        details: err.message
+        error: error instanceof Error ? error.message : "Erro ao gerar QR Code.",
+        attempts
       });
     }
+  });
+
+  app.get("/api/debug/zapi/qrcode-raw", async (req, res) => {
+    const endpoints = ["/qr-code", "/qr-code/image"];
+    const attempts = [];
+
+    const config = {
+      hasInstanceId: Boolean(process.env.ZAPI_INSTANCE_ID),
+      hasInstanceToken: Boolean(process.env.ZAPI_INSTANCE_TOKEN),
+      hasClientToken: Boolean(process.env.ZAPI_CLIENT_TOKEN),
+      baseUrl: process.env.ZAPI_BASE_URL || "https://api.z-api.io"
+    };
+
+    for (const endpoint of endpoints) {
+      try {
+        const response = await callZapiQrRaw(endpoint);
+        const extracted = extractQrFromAnyResponse(response);
+
+        attempts.push({
+          endpoint,
+          status: response.status,
+          contentType: response.contentType,
+          ok: response.ok,
+          hasJson: Boolean(response.json),
+          jsonKeys: response.json ? Object.keys(response.json) : [],
+          valuePreview: response.json?.value ? String(response.json.value).slice(0, 300) : null,
+          textPreview: response.text ? String(response.text).slice(0, 300) : null,
+          extracted: Boolean(extracted),
+          extractedLength: extracted ? extracted.length : 0
+        });
+      } catch (error) {
+        attempts.push({
+          endpoint,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      config,
+      attempts
+    });
   });
 
   app.get("/api/debug/send-message-config", async (req, res) => {

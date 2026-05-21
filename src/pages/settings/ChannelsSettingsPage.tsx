@@ -239,16 +239,13 @@ export default function ChannelsSettingsPage() {
         throw data;
       }
 
-      const normalized = normalizeQrCodeValue(data);
+      const qr = data.qrCodeImage || data.qrCode || data.value;
 
-      if (!normalized) {
-        throw {
-          message: "A Z-API não retornou o QR Code em um formato válido.",
-          details: data
-        };
+      if (!qr || !String(qr).startsWith("data:image/")) {
+        throw new Error("QR Code recebido, mas não é uma imagem renderizável.");
       }
 
-      setQrCodeData(normalized);
+      setQrCodeData({ value: qr, type: 'IMAGE' });
       startStatusPolling();
     } catch (error) {
       setQrError(getErrorMessage(error));
@@ -918,7 +915,7 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                           {qrCodeData.type === 'IMAGE' ? (
                             <img 
                               src={qrCodeData.value} 
-                              alt="Z-API QR Code" 
+                              alt="QR Code Z-API" 
                               className="w-full h-full object-contain"
                               onError={() => setQrError("A imagem do QR Code não pôde ser carregada.")}
                             />
