@@ -2,8 +2,17 @@ import { supabase } from '../integrations/supabase/client';
 
 export function getApiBaseUrl() {
   // Em desenvolvimento ou se estivermos rodando no editor do AI Studio,
-  // preferimos caminhos relativos para evitar erros de CORS ou apontar para o servidor errado.
-  if (import.meta.env.DEV) {
+  // ou em qualquer ambiente de preview do AI Studio (.run.app ou .aistudio.google),
+  // preferimos caminhos relativos para evitar erros de CORS ou apontar para o servidor errado/antigo.
+  if (
+    import.meta.env.DEV || 
+    (typeof window !== "undefined" && (
+      window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1" ||
+      window.location.hostname.includes("run.app") ||
+      window.location.hostname.includes("aistudio")
+    ))
+  ) {
     return "";
   }
 

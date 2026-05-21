@@ -4619,10 +4619,12 @@ const DEFAULT_TEAM = {
 
   // Catch-all for API routes to always return JSON
   app.use("/api", (req, res) => {
+    console.error(`[404 NOT FOUND] Rota de API não encontrada: ${req.method} ${req.originalUrl}`);
     return res.status(404).json({
       success: false,
-      error: "Rota de API não encontrada.",
-      path: req.originalUrl
+      error: `Rota de API não encontrada: ${req.method} ${req.originalUrl}`,
+      path: req.originalUrl,
+      method: req.method
     });
   });
 
