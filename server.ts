@@ -757,6 +757,11 @@ function normalizeBrazilPhone(input: any) {
   return digits;
 }
 
+function isValidUUID(id: string): boolean {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(id || "");
+}
+
 function diagnoseZapiPayloadOrigin(payload: any) {
   const signals: any[] = [];
 
@@ -2920,6 +2925,9 @@ const DEFAULT_TEAM = {
 
   app.patch("/api/omnichannel/conversations/:id", async (req, res) => {
     const { id } = req.params;
+    if (!isValidUUID(id)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
     const body = req.body;
 
     try {
@@ -3009,10 +3017,7 @@ const DEFAULT_TEAM = {
 
   app.get("/api/omnichannel/conversations/:id/messages", async (req, res) => {
     const { id } = req.params;
-    
-    // Validate UUID format
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!uuidRegex.test(id)) {
+    if (!isValidUUID(id)) {
       return res.json({
         success: true,
         messages: []
@@ -3066,6 +3071,9 @@ const DEFAULT_TEAM = {
 
   app.get("/api/omnichannel/conversations/:id/debug", async (req, res) => {
     const { id } = req.params;
+    if (!isValidUUID(id)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
     try {
       const { data: conv } = await supabaseAdmin.from(TABLES.conversations).select('*').eq('id', id).single();
       const { data: messages } = await supabaseAdmin.from(TABLES.messages).select('*').eq('conversation_id', id).order('created_at', { ascending: true });
@@ -3087,6 +3095,9 @@ const DEFAULT_TEAM = {
       const currentUser = await getAuthenticatedUser(req);
   
       const conversationId = req.params.id;
+      if (!isValidUUID(conversationId)) {
+        return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+      }
       const message = String(req.body?.message || "").trim();
   
       if (!message) {
@@ -3200,6 +3211,9 @@ const DEFAULT_TEAM = {
 
   app.post("/api/omnichannel/conversations/:id/transfer", async (req, res) => {
     const { id } = req.params;
+    if (!isValidUUID(id)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
     const { transfer_type, team_id, team_name, user_id, user_name, reason } = req.body;
 
     if (!transfer_type || !team_id) {
@@ -3287,6 +3301,9 @@ const DEFAULT_TEAM = {
 
   app.post("/api/omnichannel/conversations/:id/internal-note", async (req, res) => {
     const { id } = req.params;
+    if (!isValidUUID(id)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
     const { note } = req.body;
 
     if (!note || note.trim() === "") {
@@ -3338,6 +3355,10 @@ const DEFAULT_TEAM = {
   });
 
   app.post("/api/omnichannel/conversations/:id/send-media", (req, res) => {
+    const { id } = req.params;
+    if (!isValidUUID(id)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
     upload.single("file")(req, res, async (err) => {
       if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
@@ -3347,8 +3368,6 @@ const DEFAULT_TEAM = {
       } else if (err) {
         return res.status(500).json({ success: false, error: `Erro inesperado: ${err.message}` });
       }
-
-      const { id } = req.params;
       const { type, caption } = req.body;
       const file = req.file;
 
@@ -3546,10 +3565,13 @@ const DEFAULT_TEAM = {
 
   app.post("/api/omnichannel/conversations/:id/send-image", upload.single("file"), async (req, res) => {
     let debugLogId = null;
+    const conversationId = req.params.id;
+    if (!isValidUUID(conversationId)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
 
     try {
       const currentUser = await getAuthenticatedUser(req);
-      const conversationId = req.params.id;
 
       const { data: conversation, error: conversationError } = await supabaseAdmin
         .from("crm_conversations")
@@ -3822,6 +3844,9 @@ const DEFAULT_TEAM = {
     let debugLogId = null;
     let currentUser: any = null;
     const conversationId = req.params.id;
+    if (!isValidUUID(conversationId)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
 
     let frontendDebug = null;
     try {
@@ -5120,6 +5145,9 @@ const DEFAULT_TEAM = {
   // --- Conversation Tags ---
   app.get("/api/omnichannel/conversations/:id/tags", async (req, res) => {
     const { id } = req.params;
+    if (!isValidUUID(id)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
     try {
       const { data, error } = await supabaseAdmin
         .from(TABLES.conversation_tags)
@@ -5138,6 +5166,9 @@ const DEFAULT_TEAM = {
 
   app.post("/api/omnichannel/conversations/:id/tags", async (req, res) => {
     const { id: conversationId } = req.params;
+    if (!isValidUUID(conversationId)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
     try {
       const { tag_id, created_by, created_by_name } = req.body;
       if (!tag_id) return res.status(400).json({ success: false, error: "tag_id is required" });
@@ -5168,6 +5199,9 @@ const DEFAULT_TEAM = {
 
   app.delete("/api/omnichannel/conversations/:id/tags/:tagId", async (req, res) => {
     const { id: conversationId, tagId } = req.params;
+    if (!isValidUUID(conversationId)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
     try {
       const { error } = await supabaseAdmin
         .from(TABLES.conversation_tags)
@@ -5187,6 +5221,9 @@ const DEFAULT_TEAM = {
   // --- Lead Details ---
   app.get("/api/omnichannel/conversations/:id/details", async (req, res) => {
     const { id } = req.params;
+    if (!isValidUUID(id)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
     try {
       const { data: conversation, error: convErr } = await supabaseAdmin
         .from(TABLES.conversations)
