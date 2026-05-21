@@ -167,30 +167,63 @@ function clean(value?: any) {
 /**
  * Obtém a configuração da Z-API de forma segura, checando as credenciais do canal ativo.
  */
-async function getZapiConfig() {
-  const envConfig = {
-    baseUrl: String(process.env.ZAPI_BASE_URL || "https://api.z-api.io").trim(),
-    instanceId: String(process.env.ZAPI_INSTANCE_ID || "").trim(),
-    instanceToken: String(process.env.ZAPI_INSTANCE_TOKEN || "").trim(),
-    clientToken: String(process.env.ZAPI_CLIENT_TOKEN || "").trim()
-  };
-
-  try {
-    const list = await loadChannelsDBOrFile();
-    const active = list.find((c: any) => c.is_active);
-    if (active && active.instance_id && active.instance_token) {
-      return {
-        baseUrl: envConfig.baseUrl,
-        instanceId: String(active.instance_id).trim(),
-        instanceToken: String(active.instance_token).trim(),
-        clientToken: String(active.client_token || "").trim()
-      };
-    }
-  } catch (err) {
-    // Ignora
+async function getActiveWhatsappChannel() {
+  if (!globalSupabaseAdmin) {
+    return {
+      id: "env-zapi",
+      name: "WhatsApp Z-API ENV",
+      type: "whatsapp_zapi",
+      instance_id: process.env.ZAPI_INSTANCE_ID || null,
+      instance_token: process.env.ZAPI_INSTANCE_TOKEN || null,
+      client_token: process.env.ZAPI_CLIENT_TOKEN || null,
+      base_url: process.env.ZAPI_BASE_URL || "https://api.z-api.io",
+      source: "env"
+    };
   }
 
-  return envConfig;
+  const { data: channel } = await globalSupabaseAdmin
+    .from("crm_channels")
+    .select("*")
+    .eq("type", "whatsapp_zapi")
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const envChannel = {
+    id: "env-zapi",
+    name: "WhatsApp Z-API ENV",
+    type: "whatsapp_zapi",
+    instance_id: process.env.ZAPI_INSTANCE_ID || null,
+    instance_token: process.env.ZAPI_INSTANCE_TOKEN || null,
+    client_token: process.env.ZAPI_CLIENT_TOKEN || null,
+    base_url: process.env.ZAPI_BASE_URL || "https://api.z-api.io",
+    source: "env"
+  };
+
+  if (channel?.instance_id && channel?.instance_token) {
+    return {
+      ...channel,
+      base_url: process.env.ZAPI_BASE_URL || "https://api.z-api.io",
+      source: "database"
+    };
+  }
+
+  if (envChannel.instance_id && envChannel.instance_token) {
+    return envChannel;
+  }
+
+  return null;
+}
+
+async function getZapiConfig() {
+  const channel = await getActiveWhatsappChannel();
+  return {
+    baseUrl: channel?.base_url || process.env.ZAPI_BASE_URL || "https://api.z-api.io",
+    instanceId: channel?.instance_id || "",
+    instanceToken: channel?.instance_token || "",
+    clientToken: channel?.client_token || ""
+  };
 }
 
 function getPublicAppUrl() {
@@ -202,10 +235,19 @@ function getPublicAppUrl() {
 }
 
 async function callZapi(path: string, body?: any, meta: any = {}) {
-  const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig();
+  const channel = await getActiveWhatsappChannel();
+
+  if (!channel) {
+    throw new Error("Canal WhatsApp não configurado. Verifique a instância Z-API.");
+  }
+
+  const baseUrl = channel.base_url || process.env.ZAPI_BASE_URL || "https://api.z-api.io";
+  const instanceId = channel.instance_id;
+  const instanceToken = channel.instance_token;
+  const clientToken = channel.client_token || process.env.ZAPI_CLIENT_TOKEN;
 
   if (!instanceId || !instanceToken) {
-    throw new Error("Z-API não configurada: cadastre um canal ativo ou verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN no servidor.");
+    throw new Error("Canal WhatsApp sem Instance ID ou Token configurado.");
   }
 
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
@@ -230,7 +272,7 @@ async function callZapi(path: string, body?: any, meta: any = {}) {
           source_id: meta.source_id ? String(meta.source_id) : null,
           phone: body?.phone || null,
           endpoint: cleanPath,
-          request_body: body || null,
+          request_body: body,
           success: false
         })
         .select("id")
@@ -266,7 +308,12 @@ async function callZapi(path: string, body?: any, meta: any = {}) {
           response_status: response.status,
           response_body: responseBody,
           success: response.ok,
-          error: response.ok ? null : (responseBody?.message || responseBody?.error || responseText || `HTTP ${response.status}`)
+          error: response.ok ? null : (
+            responseBody?.message ||
+            responseBody?.error ||
+            responseText ||
+            `HTTP ${response.status}`
+          )
         })
         .eq("id", logId);
     } catch (logUpdateError) {
@@ -284,6 +331,7 @@ async function callZapi(path: string, body?: any, meta: any = {}) {
 
     error.status = response.status;
     error.zapiResponse = responseBody;
+
     throw error;
   }
 
@@ -1065,6 +1113,56 @@ async function startServer() {
 
     const authUser = data.user;
 
+    // Garantir identidade do admin reservas@vivadestinosexperience.com
+    if (authUser.email === "reservas@vivadestinosexperience.com") {
+      const { data: existingAdmin } = await supabaseAdmin
+        .from(TABLES.users)
+        .select("*")
+        .eq("email", authUser.email)
+        .maybeSingle();
+
+      if (!existingAdmin) {
+        const { data: newAdmin } = await supabaseAdmin
+          .from(TABLES.users)
+          .insert({
+            auth_user_id: authUser.id,
+            email: authUser.email,
+            name: "Josiel Fonseca",
+            role: "admin",
+            team_id: "comercial",
+            team_name: "Comercial",
+            is_active: true
+          })
+          .select()
+          .single();
+        return newAdmin;
+      } else {
+        if (
+          existingAdmin.name !== "Josiel Fonseca" ||
+          existingAdmin.role !== "admin" ||
+          existingAdmin.team_id !== "comercial" ||
+          existingAdmin.is_active !== true ||
+          existingAdmin.auth_user_id !== authUser.id
+        ) {
+          const { data: updatedAdmin } = await supabaseAdmin
+            .from(TABLES.users)
+            .update({
+              auth_user_id: authUser.id,
+              name: "Josiel Fonseca",
+              role: "admin",
+              team_id: "comercial",
+              team_name: "Comercial",
+              is_active: true
+            })
+            .eq("id", existingAdmin.id)
+            .select()
+            .single();
+          return updatedAdmin;
+        }
+        return existingAdmin;
+      }
+    }
+
     const { data: crmUser, error: crmError } = await supabaseAdmin
       .from(TABLES.users)
       .select("*")
@@ -1097,15 +1195,15 @@ async function startServer() {
     return crmUser;
   }
 
-  function formatAgentMessageForWhatsApp(message: string, senderName: string) {
+  function formatAgentMessageForWhatsApp(message: string, userName: string) {
     const cleanMessage = String(message || "").trim();
-    const cleanSenderName = String(senderName || "Atendente").trim();
+    const cleanUserName = String(userName || "Atendente").trim();
 
     if (!cleanMessage) return "";
 
-    const prefix = `*${cleanSenderName}:*`;
+    const displayName = `Guia de Férias - ${cleanUserName}`;
+    const prefix = `*${displayName}:*`;
 
-    // Evitar duplicação se já vier com o prefixo
     if (cleanMessage.startsWith(prefix)) {
       return cleanMessage;
     }
@@ -1664,6 +1762,123 @@ const DEFAULT_TEAM = {
         hasServiceRole: !!process.env.SUPABASE_SERVICE_ROLE_KEY
       }
     });
+  });
+
+  app.get("/api/debug/whatsapp-channel", async (req, res) => {
+    try {
+      const channel = await getActiveWhatsappChannel();
+      if (!channel) {
+        return res.json({
+          success: true,
+          channel: {
+            foundInDatabase: false,
+            usingEnvFallback: false,
+            hasInstanceId: false,
+            hasInstanceToken: false,
+            hasClientToken: false,
+            source: null,
+            name: null,
+            status: "not_configured"
+          }
+        });
+      }
+
+      const isEnv = channel.source === "env";
+      return res.json({
+        success: true,
+        channel: {
+          foundInDatabase: !isEnv,
+          usingEnvFallback: isEnv,
+          hasInstanceId: !!channel.instance_id,
+          hasInstanceToken: !!channel.instance_token,
+          hasClientToken: !!channel.client_token,
+          source: channel.source,
+          name: channel.name || "Canal Ativo",
+          status: "configured"
+        }
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.get("/api/debug/system", async (req, res) => {
+    try {
+      const hasSupabaseUrl = !!process.env.VITE_SUPABASE_URL;
+      const hasServiceRole = !!process.env.SUPABASE_SERVICE_ROLE_KEY;
+      const { instanceId, instanceToken, clientToken } = await getZapiConfig();
+      const hasZapiInstanceId = !!instanceId;
+      const hasZapiInstanceToken = !!instanceToken;
+      const hasZapiClientToken = !!clientToken;
+
+      const getCount = async (table: string) => {
+        try {
+          const { count, error } = await supabaseAdmin.from(table).select("*", { count: "exact", head: true });
+          if (error) return 0;
+          return count || 0;
+        } catch {
+          return 0;
+        }
+      };
+
+      const [
+        users,
+        teams,
+        teamMembers,
+        conversations,
+        messages,
+        campaigns,
+        campaignRecipients,
+        zapiSendLogs
+      ] = await Promise.all([
+        getCount(TABLES.users),
+        getCount(TABLES.teams),
+        getCount(TABLES.team_members),
+        getCount(TABLES.conversations),
+        getCount(TABLES.messages),
+        getCount(TABLES.campaigns),
+        getCount(TABLES.campaign_recipients),
+        getCount("zapi_send_logs")
+      ]);
+
+      const { data: adminUser } = await supabaseAdmin
+        .from(TABLES.users)
+        .select("*")
+        .eq("email", "reservas@vivadestinosexperience.com")
+        .maybeSingle();
+
+      return res.json({
+        success: true,
+        env: {
+          hasSupabaseUrl,
+          hasServiceRole,
+          hasZapiInstanceId,
+          hasZapiInstanceToken,
+          hasZapiClientToken
+        },
+        counts: {
+          users,
+          teams,
+          teamMembers,
+          conversations,
+          messages,
+          campaigns,
+          campaignRecipients,
+          zapiSendLogs
+        },
+        admin: adminUser ? {
+          exists: true,
+          name: adminUser.name,
+          email: adminUser.email,
+          role: adminUser.role,
+          is_active: adminUser.is_active
+        } : {
+          exists: false
+        }
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
   });
 
   app.post("/api/debug/zapi/test-send", async (req, res) => {
@@ -2321,6 +2536,168 @@ const DEFAULT_TEAM = {
     }
   });
 
+  app.post("/api/omnichannel/start-chat", async (req, res) => {
+    try {
+      const currentUser = await getAuthenticatedUser(req);
+      const { name, phone, message, customerId, customer_id, newName, newPhone, accountId, t_id } = req.body;
+
+      let finalPhone = phone || newPhone;
+      let finalName = name || newName;
+
+      const cid = customerId || customer_id;
+      if (cid) {
+        const { data: cust } = await supabaseAdmin
+          .from(TABLES.customers)
+          .select("*")
+          .eq("id", cid)
+          .single();
+        if (cust) {
+          finalPhone = cust.phone_normalized || cust.phone;
+          finalName = cust.name;
+        }
+      }
+
+      if (!finalPhone) {
+        return res.status(400).json({ success: false, error: "O número de telefone é obrigatório." });
+      }
+
+      const normalized = normalizeBrazilPhone(finalPhone);
+      if (!normalized) {
+        return res.status(400).json({ success: false, error: "Telefone inválido ou formato não suportado." });
+      }
+
+      const rawMessage = message || "Olá! Te chamei pelo CRM Viva Experience.";
+      const finalMessage = formatAgentMessageForWhatsApp(rawMessage, currentUser.name);
+
+      // Find or create customer
+      const customer = await findOrCreateCustomerByPhone(normalized, finalName || "Cliente Novo");
+
+      // Find or create conversation
+      let { data: conversation } = await supabaseAdmin
+        .from(TABLES.conversations)
+        .select("*")
+        .eq("customer_phone_normalized", normalized)
+        .maybeSingle();
+
+      const now = new Date().toISOString();
+
+      const activeAccountId = accountId || req.body.whatsapp_account_id || null;
+
+      if (conversation) {
+        // Reutilizar conversa antiga e atualizar para OPEN e atribuir
+        const { data: updatedConv, error: updateErr } = await supabaseAdmin
+          .from(TABLES.conversations)
+          .update({
+            status: "OPEN",
+            whatsapp_account_id: activeAccountId || conversation.whatsapp_account_id,
+            assigned_user_id: currentUser.id,
+            assigned_user_name: currentUser.name,
+            team_id: currentUser.team_id || "comercial",
+            team_name: currentUser.team_name || "Comercial",
+            queue_id: currentUser.team_id || "comercial",
+            queue_name: currentUser.team_name || "Comercial",
+            last_message: finalMessage,
+            last_message_at: now,
+            updated_at: now
+          })
+          .eq("id", conversation.id)
+          .select()
+          .single();
+
+        if (updateErr) throw updateErr;
+        conversation = updatedConv;
+      } else {
+        // Criar nova conversa
+        let resolvedAccountId = activeAccountId;
+        if (!resolvedAccountId) {
+          const { data: channels } = await supabaseAdmin.from("crm_channels").select("*").eq("is_active", true).limit(1);
+          resolvedAccountId = channels && channels[0] ? channels[0].id : null;
+        }
+
+        const { data: newConv, error: insertErr } = await supabaseAdmin
+          .from(TABLES.conversations)
+          .insert({
+            customer_id: customer.id,
+            whatsapp_account_id: resolvedAccountId,
+            customer_phone_normalized: normalized,
+            assigned_user_id: currentUser.id,
+            assigned_user_name: currentUser.name,
+            status: "OPEN",
+            team_id: currentUser.team_id || "comercial",
+            team_name: currentUser.team_name || "Comercial",
+            queue_id: currentUser.team_id || "comercial",
+            queue_name: currentUser.team_name || "Comercial",
+            source: "WhatsApp Z-API",
+            last_message: finalMessage,
+            last_message_at: now,
+            created_at: now,
+            updated_at: now
+          })
+          .select()
+          .single();
+
+        if (insertErr) throw insertErr;
+        conversation = newConv;
+      }
+
+      // Enviar pela Z-API via callZapi
+      const zapiResponse = await callZapi(
+        "/send-text",
+        {
+          phone: normalized,
+          message: finalMessage
+        },
+        {
+          source: "start-chat",
+          source_id: conversation.id
+        }
+      );
+
+      // Salvar em crm_messages
+      const { data: savedMessage, error: messageError } = await supabaseAdmin
+        .from(TABLES.messages)
+        .insert({
+          conversation_id: conversation.id,
+          customer_phone_normalized: normalized,
+          external_message_id: zapiResponse?.messageId || zapiResponse?.id || `sent-${Date.now()}`,
+          sender_type: "agent",
+          sender_user_id: currentUser.id,
+          sender_name: currentUser.name,
+          from_phone: "",
+          to_phone: normalized,
+          message_type: "text",
+          content: finalMessage,
+          status: "sent",
+          is_internal: false,
+          raw_payload: zapiResponse,
+          created_at: now
+        })
+        .select()
+        .single();
+
+      if (messageError) throw messageError;
+
+      broadcastEvent("conversation.updated", conversation);
+      broadcastEvent("message.received", {
+        conversation,
+        message: {
+          ...savedMessage,
+          normalized_message_type: "text",
+          display_content: savedMessage.content
+        }
+      });
+
+      return res.json({
+        success: true,
+        conversation,
+        message: savedMessage
+      });
+    } catch (err: any) {
+      console.error("[START CHAT ERR]", err);
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
   app.post("/api/omnichannel/conversations/:id/assign", async (req, res) => {
     const { id } = req.params;
     const { userId, userName } = req.body;
@@ -2921,6 +3298,167 @@ const DEFAULT_TEAM = {
     });
   });
 
+  app.post("/api/omnichannel/conversations/:id/send-audio", upload.single("file"), async (req, res) => {
+    try {
+      const currentUser = await getAuthenticatedUser(req);
+      const conversationId = req.params.id;
+
+      const { data: conversation, error: conversationError } = await supabaseAdmin
+        .from("crm_conversations")
+        .select("*")
+        .eq("id", conversationId)
+        .single();
+
+      if (conversationError || !conversation) {
+        return res.status(404).json({
+          success: false,
+          error: "Conversa não encontrada."
+        });
+      }
+
+      const phone = normalizeBrazilPhone(conversation.customer_phone_normalized);
+
+      if (!phone) {
+        return res.status(400).json({
+          success: false,
+          error: "Telefone do cliente inválido."
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: "Arquivo de áudio não recebido."
+        });
+      }
+
+      const fileMime = req.file.mimetype || "audio/webm";
+
+      const allowedMimes = [
+        "audio/webm",
+        "audio/ogg",
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/mp4",
+        "audio/wav",
+        "audio/x-m4a"
+      ];
+
+      const isAllowed = allowedMimes.some((mime) => fileMime.startsWith(mime));
+
+      if (!isAllowed) {
+        return res.status(400).json({
+          success: false,
+          error: `Formato de áudio não permitido: ${fileMime}`
+        });
+      }
+
+      const introMessage = formatAgentMessageForWhatsApp(
+        "Estou enviando um áudio.",
+        currentUser.name
+      );
+
+      await callZapi(
+        "/send-text",
+        {
+          phone,
+          message: introMessage
+        },
+        {
+          source: "conversation-audio-intro",
+          source_id: conversationId
+        }
+      );
+
+      const base64 = req.file.buffer.toString("base64");
+      const audioDataUri = `data:${fileMime};base64,${base64}`;
+
+      const zapiResponse = await callZapi(
+        "/send-audio",
+        {
+          phone,
+          audio: audioDataUri,
+          viewOnce: false,
+          waveform: true
+        },
+        {
+          source: "conversation-audio",
+          source_id: conversationId
+        }
+      );
+
+      const now = new Date().toISOString();
+
+      const { data: savedMessage, error: messageError } = await supabaseAdmin
+        .from("crm_messages")
+        .insert({
+          conversation_id: conversationId,
+          customer_phone_normalized: phone,
+          external_message_id: zapiResponse?.messageId || zapiResponse?.id || `audio-${Date.now()}`,
+          sender_type: "agent",
+          sender_user_id: currentUser.id,
+          sender_name: currentUser.name,
+          from_phone: "",
+          to_phone: phone,
+          message_type: "audio",
+          content: "Áudio enviado",
+          media_mime_type: fileMime,
+          media_file_name: req.file.originalname || `audio-${Date.now()}.webm`,
+          media_size: req.file.size,
+          status: "sent",
+          is_internal: false,
+          raw_payload: zapiResponse,
+          created_at: now
+        })
+        .select("*")
+        .single();
+
+      if (messageError) {
+        throw messageError;
+      }
+
+      const { data: updatedConv } = await supabaseAdmin
+        .from("crm_conversations")
+        .update({
+          assigned_user_id: conversation.assigned_user_id || currentUser.id,
+          assigned_user_name: conversation.assigned_user_name || currentUser.name,
+          status: "OPEN",
+          last_message: "Áudio enviado",
+          last_message_at: now,
+          updated_at: now
+        })
+        .eq("id", conversationId)
+        .select()
+        .single();
+
+      broadcastEvent("message.received", {
+        conversation: updatedConv || conversation,
+        message: {
+          ...savedMessage,
+          normalized_message_type: "audio",
+          display_content: savedMessage.content,
+          display_media_url: audioDataUri
+        }
+      });
+
+      broadcastEvent("conversation.updated", { conversation: updatedConv || conversation });
+
+      return res.json({
+        success: true,
+        message: savedMessage,
+        zapiResponse
+      });
+    } catch (error: any) {
+      console.error("[SEND AUDIO ERROR]", error);
+
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Erro ao enviar áudio.",
+        zapiResponse: error?.zapiResponse || null
+      });
+    }
+  });
+
   // Cleanup route at 1427 removed.
 
 
@@ -3001,20 +3539,24 @@ const DEFAULT_TEAM = {
 
       const { name, email, password, confirmPassword, role, team_id, team_name, is_active } = req.body;
       if (!name || !email || !password) throw new Error("Campos obrigatórios: Nome, e-mail e senha.");
+
+      const cleanEmail = String(email).trim().toLowerCase();
+      const cleanName = String(name).trim();
+
       if (password !== confirmPassword) throw new Error("A senha e a confirmação não conferem.");
       if (password.length < 8) throw new Error("A senha deve ter no mínimo 8 caracteres.");
 
       // 1. Check if user already exists in CRM DB
-      const { data: existingCrmUser } = await supabaseAdmin.from(TABLES.users).select('id').eq('email', email).maybeSingle();
+      const { data: existingCrmUser } = await supabaseAdmin.from(TABLES.users).select('id').eq('email', cleanEmail).maybeSingle();
       
       let authUserId = null;
 
       // 2. Try to create in Supabase Auth
       const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-        email,
+        email: cleanEmail,
         password,
         email_confirm: true,
-        user_metadata: { name, role, team_id: team_id || DEFAULT_TEAM.id, team_name: team_name || DEFAULT_TEAM.name }
+        user_metadata: { name: cleanName, role, team_id: team_id || DEFAULT_TEAM.id, team_name: team_name || DEFAULT_TEAM.name }
       });
 
       if (authError) {
@@ -3029,7 +3571,7 @@ const DEFAULT_TEAM = {
           const { data: listData, error: listError } = await supabaseAdmin.auth.admin.listUsers();
           if (listError) throw listError;
           
-          const existingAuthUser = (listData.users as any[]).find(u => u.email === email);
+          const existingAuthUser = (listData.users as any[]).find(u => u.email === cleanEmail);
           if (!existingAuthUser) throw new Error("Usuário já registrado no Auth, mas erro ao recuperar ID.");
           
           authUserId = existingAuthUser.id;
@@ -3040,11 +3582,20 @@ const DEFAULT_TEAM = {
         authUserId = authData.user.id;
       }
 
+      if (!authUserId) {
+        throw new Error("Não foi possível gerar ou recuperar o ID de autenticação do usuário.");
+      }
+
+      // Segurança crítica: nunca usar ID do administrador atual
+      if (authUserId === currentUser.auth_user_id || authUserId === currentUser.id) {
+        throw new Error("Erro de integridade de segurança: Tentativa ilegal de associar ID do administrador atual.");
+      }
+
       // 3. Create or update in crm_users (Profile)
       const { data: newUser, error: dbError } = await supabaseAdmin.from(TABLES.users).upsert({
         auth_user_id: authUserId,
-        name,
-        email,
+        name: cleanName,
+        email: cleanEmail,
         role: role || 'agent',
         team_id: team_id || DEFAULT_TEAM.id,
         team_name: team_name || DEFAULT_TEAM.name,
