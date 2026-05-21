@@ -107,6 +107,11 @@ export default function ChannelsSettingsPage() {
   const [isLoadingQr, setIsLoadingQr] = useState(false);
   const [qrCodeData, setQrCodeData] = useState<{ value: string; type: 'IMAGE' | 'RAW' } | null>(null);
   const [qrError, setQrError] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<any | null>(null);
+  const [qrAttempts, setQrAttempts] = useState(0);
+  const [qrPollingActive, setQrPollingActive] = useState(false);
+  const [isRestarting, setIsRestarting] = useState(false);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [configStatus, setConfigStatus] = useState<any | null>(null);
   const [webhookInfo, setWebhookInfo] = useState<any | null>(null);
   const [webhookLogs, setWebhookLogs] = useState<any[]>([]);
@@ -218,10 +223,51 @@ export default function ChannelsSettingsPage() {
   }
 
   async function handleGenerateQrCode() {
+    await handleConnectWhatsapp();
+  }
+
+  function clearQrTimers() {
+    if (statusIntervalRef.current) {
+      clearInterval(statusIntervalRef.current);
+      statusIntervalRef.current = null;
+    }
+    if (qrIntervalRef.current) {
+      clearInterval(qrIntervalRef.current);
+      qrIntervalRef.current = null;
+    }
+  }
+
+  async function checkZapiConnectionStatus() {
+    try {
+      const response = await authorizedFetch(`/api/zapi/status`);
+      const data = await safeReadJson(response);
+
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || "Erro ao verificar status.");
+      }
+
+      setConnectionStatus(data);
+
+      if (data.connected === true) {
+        setQrCodeData(null);
+        setQrPollingActive(false);
+        clearQrTimers();
+        toast.success("WhatsApp conectado com sucesso.");
+        handleConnectComplete(data.phone || data.raw?.smartphonePhone || data.raw?.phone);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.error("[ZAPI STATUS ERROR]", error);
+      return false;
+    }
+  }
+
+  async function generateQrCode() {
     try {
       setIsLoadingQr(true);
       setQrError(null);
-      setQrCodeData(null);
 
       const statusResponse = await authorizedFetch("/api/zapi/config-status");
       const statusData = await safeReadJson(statusResponse);
@@ -235,63 +281,153 @@ export default function ChannelsSettingsPage() {
       const response = await authorizedFetch("/api/zapi/qrcode");
       const data = await safeReadJson(response);
 
-      if (!response.ok) {
-        throw data;
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || "Erro ao gerar QR Code.");
+      }
+
+      if (data.connected === true) {
+        setQrCodeData(null);
+        setConnectionStatus(data.status || data);
+        setQrPollingActive(false);
+        clearQrTimers();
+        toast.success("WhatsApp já está conectado.");
+        handleConnectComplete(data.status?.phone || data.phone || data.rawStatus?.phone);
+        return;
       }
 
       const qr = data.qrCodeImage || data.qrCode || data.value;
 
       if (!qr || !String(qr).startsWith("data:image/")) {
-        throw new Error("QR Code recebido, mas não é uma imagem renderizável.");
+        throw new Error("QR Code recebido, mas não é uma imagem válida.");
       }
 
       setQrCodeData({ value: qr, type: 'IMAGE' });
-      startStatusPolling();
+      setQrPollingActive(true);
+      setQrAttempts((prev) => prev + 1);
     } catch (error) {
-      setQrError(getErrorMessage(error));
+      console.error("[GENERATE QR ERROR]", error);
+      setQrError(error instanceof Error ? error.message : "Erro ao gerar QR Code.");
+      toast.error(error instanceof Error ? error.message : "Erro ao gerar QR Code.");
     } finally {
       setIsLoadingQr(false);
     }
   }
 
-  const startStatusPolling = () => {
-    if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
-    // Polling more frequently for connection
+  function startStatusPolling() {
+    if (statusIntervalRef.current) {
+      clearInterval(statusIntervalRef.current);
+    }
+
     statusIntervalRef.current = setInterval(async () => {
-      try {
-        const res = await authorizedFetch(`/api/zapi/status`);
-        const data = await safeReadJson(res);
-        
-        if (data.connected) {
-          handleConnectComplete(data.raw?.smartphonePhone || data.raw?.phone);
-        }
-      } catch (e) {
-        console.error("Polling error", e);
+      const connected = await checkZapiConnectionStatus();
+      if (connected) {
+        clearQrTimers();
       }
-    }, 5000);
-  };
+    }, 3000);
+  }
+
+  function startQrAutoRefresh() {
+    if (qrIntervalRef.current) {
+      clearInterval(qrIntervalRef.current);
+    }
+
+    qrIntervalRef.current = setInterval(async () => {
+      const connected = await checkZapiConnectionStatus();
+
+      if (connected) {
+        clearQrTimers();
+        return;
+      }
+
+      let attemptsCount = 0;
+      setQrAttempts((prev) => {
+        const next = prev + 1;
+        attemptsCount = next;
+
+        if (next > 3) {
+          clearQrTimers();
+          setQrPollingActive(false);
+          toast.info("QR Code expirado. Clique em gerar novo QR Code.");
+          return prev;
+        }
+
+        return next;
+      });
+
+      if (attemptsCount <= 3) {
+        await generateQrCode();
+      }
+    }, 15000);
+  }
+
+  async function handleConnectWhatsapp() {
+    setQrAttempts(0);
+    setConnectionStatus(null);
+    setQrError(null);
+
+    const alreadyConnected = await checkZapiConnectionStatus();
+    if (alreadyConnected) return;
+
+    await generateQrCode();
+    startStatusPolling();
+    startQrAutoRefresh();
+  }
 
   const handleConnectComplete = async (detectedPhone?: string) => {
-     if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
-     if (qrIntervalRef.current) clearInterval(qrIntervalRef.current);
+    clearQrTimers();
 
-     await safeAction(async () => {
-       const newChannel: Partial<WhatsAppAccount> = {
-          id: `ch-${Date.now()}`,
-          name: formData.name || 'WhatsApp Z-API',
-          type: 'WHATSAPP',
-          provider: 'ZAPI',
-          provider_type: 'zapi',
-          phone_number: detectedPhone || formData.phone,
-          status: 'CONNECTED',
-          team_id: formData.teamId,
-          responsible_user_id: formData.responsibleId,
-          created_at: new Date().toISOString()
-       };
-       await addWhatsAppAccount(newChannel as WhatsAppAccount);
-       toast.success("Canal conectado com sucesso!");
-       resetModal();
-     });
+    await safeAction(async () => {
+      const newChannel: Partial<WhatsAppAccount> = {
+        id: `ch-${Date.now()}`,
+        name: formData.name || 'WhatsApp Z-API',
+        type: 'WHATSAPP',
+        provider: 'ZAPI',
+        provider_type: 'zapi',
+        phone_number: detectedPhone || formData.phone,
+        status: 'CONNECTED',
+        team_id: formData.teamId,
+        responsible_user_id: formData.responsibleId,
+        created_at: new Date().toISOString()
+      };
+      await addWhatsAppAccount(newChannel as WhatsAppAccount);
+      toast.success("Canal conectado com sucesso!");
+      resetModal();
+    });
+  };
+
+  const handleRestartZapi = async () => {
+    setIsRestarting(true);
+    await safeAction(async () => {
+      const res = await authorizedFetch('/api/zapi/restart');
+      const data = await safeReadJson(res);
+      if (res.ok && data.success) {
+        toast.success("Instância reiniciada com sucesso. Aguarde alguns segundos para gerar um novo QR.");
+        setQrCodeData(null);
+        clearQrTimers();
+        setQrAttempts(0);
+      } else {
+        throw new Error(data.error || "Erro ao reiniciar na Z-API.");
+      }
+    }, { label: "Falha ao reiniciar" });
+    setIsRestarting(false);
+  };
+
+  const handleDisconnectZapi = async () => {
+    setIsDisconnecting(true);
+    await safeAction(async () => {
+      const res = await authorizedFetch('/api/zapi/disconnect');
+      const data = await safeReadJson(res);
+      if (res.ok && data.success) {
+        toast.success("Sessão desconectada. Você já pode gerar um novo QR Code.");
+        setQrCodeData(null);
+        clearQrTimers();
+        setQrAttempts(0);
+        setConnectionStatus(null);
+      } else {
+        throw new Error(data.error || "Erro ao desconectar na Z-API.");
+      }
+    }, { label: "Falha ao desconectar" });
+    setIsDisconnecting(false);
   };
 
   const checkExistingAccountStatus = async (account: WhatsAppAccount) => {
@@ -903,15 +1039,56 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                    </div>
                  )}
 
-                 <div className="flex flex-col items-center justify-center py-6">
+                 <div className="flex flex-col items-center justify-center py-4 space-y-4">
+                    {/* Connection status display */}
+                    {connectionStatus && (
+                      <div className={`w-full max-w-md p-4 rounded-2xl text-left border ${
+                        connectionStatus.connected 
+                          ? "bg-emerald-50 border-emerald-100 text-emerald-800" 
+                          : "bg-amber-50 border-amber-100 text-amber-800"
+                       }`}>
+                        <p className="text-[10px] font-black uppercase tracking-wider mb-1">Status da Instância Z-API</p>
+                        <div className="flex items-center justify-between text-xs font-bold">
+                          <span className="flex items-center gap-1.5">
+                            <div className={`w-2.5 h-2.5 rounded-full ${connectionStatus.connected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
+                            {connectionStatus.connected ? "Conectado" : "Desconectado"}
+                          </span>
+                          {connectionStatus.phone && (
+                            <span className="font-mono text-slate-600 bg-white/60 px-2 py-0.5 rounded">
+                              {connectionStatus.phone}
+                            </span>
+                          )}
+                        </div>
+
+                        {connectionStatus.error && (
+                          <p className="text-[10px] text-red-500 mt-2 font-black leading-relaxed">
+                            ⚠️ Z-API reportou: {String(connectionStatus.error)}
+                          </p>
+                        )}
+
+                        {/* Diagnostics based on errors */}
+                        {connectionStatus.error === "You need to restore the session" && (
+                          <div className="mt-2.5 p-2 bg-red-100/40 rounded-xl text-[10px] text-red-700 font-semibold leading-relaxed border border-red-200/20">
+                            <strong>Diagnóstico:</strong> A sessão precisa ser restaurada. Tente usar o botão abaixo <strong>Reiniciar Instância</strong> ou <strong>Desconectar Sessão</strong> antes de gerar um novo QR Code.
+                          </div>
+                        )}
+
+                        {connectionStatus.error === "You are not connected" && qrAttempts > 0 && !qrPollingActive && (
+                          <div className="mt-2.5 p-2 bg-amber-100/40 rounded-xl text-[10px] text-amber-700 font-semibold leading-relaxed border border-amber-200/40">
+                            <strong>Diagnóstico:</strong> O QR foi lido, mas a instância ainda não conectou completamente. Por favor, clique em gerar um novo QR Code e tente novamente.
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {isLoadingQr ? (
-                      <div className="flex flex-col items-center gap-4">
+                      <div className="flex flex-col items-center gap-4 py-8">
                         <RefreshCw className="w-12 h-12 text-blue-500 animate-spin" />
-                        <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Gerando QR Code...</p>
+                        <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Iniciando conexão e obtendo QR Code...</p>
                       </div>
                     ) : qrCodeData ? (
-                      <div className="space-y-6 flex flex-col items-center">
-                        <div className="w-[220px] h-[220px] bg-white p-4 rounded-[2rem] border-4 border-emerald-100 shadow-2xl flex items-center justify-center">
+                      <div className="space-y-4 flex flex-col items-center">
+                        <div className="w-[220px] h-[220px] bg-white p-4 rounded-[2rem] border-4 border-emerald-100 shadow-2xl flex items-center justify-center relative">
                           {qrCodeData.type === 'IMAGE' ? (
                             <img 
                               src={qrCodeData.value} 
@@ -928,16 +1105,56 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                             />
                           )}
                         </div>
-                        <p className="text-sm text-slate-800 font-black text-center max-w-xs">
-                          Escaneie o código acima no Menu "Aparelhos Conectados" do seu WhatsApp.
-                        </p>
+
+                        {/* Active Polling details */}
+                        <div className="text-center space-y-1">
+                          <p className="text-xs text-slate-800 font-black">
+                            Abra o WhatsApp no celular &gt; Aparelhos conectados &gt; Conectar aparelho &gt; escaneie o QR Code.
+                          </p>
+                          <p className="text-[9px] font-medium text-slate-500 max-w-sm mx-auto">
+                            Este QR Code expira em aproximadamente 20 segundos. Se não for escaneado, um novo QR será gerado automaticamente.
+                          </p>
+                          
+                          {qrPollingActive && (
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 border border-blue-100 rounded-full text-[10px] font-black text-blue-600 uppercase tracking-wider mt-2">
+                              <RefreshCw className="w-3 h-3 animate-spin text-blue-500" />
+                              Atualizando QR Code (Tentativa {qrAttempts} de 3)
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ) : (
-                      <div className="text-center space-y-2 opacity-40">
+                      <div className="text-center py-8 space-y-3 opacity-60">
                          <MobileIcon className="w-12 h-12 mx-auto text-slate-300" />
-                         <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Aguardando geração do QR Code</p>
+                         <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Aguardando geração do QR Code para conexão</p>
+                         <p className="text-xs text-slate-500 max-w-xs mx-auto">Preencha o nome do canal e clique no botão azul abaixo para iniciar o processo.</p>
                       </div>
                     )}
+
+                    {/* Action Buttons for diagnostic or session controls */}
+                    <div className="w-full max-w-md pt-2 border-t border-slate-100 flex flex-col gap-2 text-left">
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Ações Administrativas / Diagnóstico</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          disabled={isRestarting}
+                          onClick={handleRestartZapi}
+                          className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-50 rounded-xl font-bold text-[9px] uppercase tracking-wider transition-all"
+                        >
+                          {isRestarting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3 text-amber-500" />}
+                          Reiniciar Instância
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isDisconnecting}
+                          onClick={handleDisconnectZapi}
+                          className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 disabled:opacity-50 rounded-xl font-bold text-[9px] uppercase tracking-wider transition-all"
+                        >
+                          {isDisconnecting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+                          Desconectar Sessão
+                        </button>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4 mx-4 text-left">
@@ -967,20 +1184,21 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
 
                <div className="p-8 border-t border-slate-100 bg-slate-50 grid grid-cols-2 gap-4">
                   <button 
-                    onClick={handleCheckConfig}
-                    disabled={isCheckingConfig}
+                    type="button"
+                    onClick={checkZapiConnectionStatus}
                     className="flex items-center justify-center gap-2 px-6 py-4 bg-white border border-slate-200 text-slate-600 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-100 transition-all shadow-sm"
                   >
-                    {isCheckingConfig ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Smartphone className="w-4 h-4 text-blue-500" />}
-                    Verificar Configuração
+                    <Smartphone className="w-4 h-4 text-emerald-500" />
+                    Verificar Conexão
                   </button>
                   <button 
+                    type="button"
                     onClick={handleGenerateQrCode}
                     disabled={isLoadingQr}
                     className="flex items-center justify-center gap-2 px-6 py-4 bg-blue-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 transition-all shadow-xl shadow-blue-100"
                   >
                     <RefreshCw className="w-4 h-4" />
-                    Gerar QR Code
+                    {qrPollingActive ? "Gerar Novo QR" : "Gerar QR Code"}
                   </button>
                </div>
             </motion.div>

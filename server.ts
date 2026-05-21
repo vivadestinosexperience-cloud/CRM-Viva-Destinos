@@ -296,6 +296,110 @@ function extractQrFromAnyResponse(response: any) {
   return null;
 }
 
+async function getZapiStatusRaw() {
+  const baseUrl = process.env.ZAPI_BASE_URL || "https://api.z-api.io";
+  const instanceId = process.env.ZAPI_INSTANCE_ID;
+  const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
+  const clientToken = process.env.ZAPI_CLIENT_TOKEN;
+
+  if (!instanceId || !instanceToken) {
+    throw new Error("Z-API não configurada: verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN.");
+  }
+
+  const headers: Record<string, string> = {
+    Accept: "application/json"
+  };
+
+  if (clientToken && String(clientToken).trim()) {
+    headers["Client-Token"] = String(clientToken).trim();
+  }
+
+  const url = `${baseUrl}/instances/${instanceId}/token/${instanceToken}/status`;
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers
+  });
+
+  const text = await response.text();
+
+  let json = null;
+
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = { raw: text };
+  }
+
+  if (!response.ok) {
+    throw new Error(json?.message || json?.error || text || `Erro Z-API status HTTP ${response.status}`);
+  }
+
+  return json;
+}
+
+function normalizeZapiStatus(raw: any) {
+  const connected =
+    raw?.connected === true ||
+    raw?.connected === "true" ||
+    raw?.status === "connected" ||
+    raw?.error === "You are already connected";
+
+  const smartphoneConnected =
+    raw?.smartphoneConnected === true ||
+    raw?.smartphoneConnected === "true";
+
+  return {
+    connected,
+    smartphoneConnected,
+    error: raw?.error || raw?.message || null,
+    phone:
+      raw?.phone ||
+      raw?.connectedPhone ||
+      raw?.number ||
+      raw?.whatsapp ||
+      null,
+    raw
+  };
+}
+
+async function callZapiActionRaw(path: string, method: "GET" | "POST" = "POST") {
+  const baseUrl = process.env.ZAPI_BASE_URL || "https://api.z-api.io";
+  const instanceId = process.env.ZAPI_INSTANCE_ID;
+  const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
+  const clientToken = process.env.ZAPI_CLIENT_TOKEN;
+
+  if (!instanceId || !instanceToken) {
+    throw new Error("Z-API não configurada: verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN.");
+  }
+
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  const url = `${baseUrl}/instances/${instanceId}/token/${instanceToken}${cleanPath}`;
+
+  const headers: Record<string, string> = {
+    Accept: "application/json"
+  };
+
+  if (clientToken && String(clientToken).trim()) {
+    headers["Client-Token"] = String(clientToken).trim();
+  }
+
+  const response = await fetch(url, {
+    method,
+    headers
+  });
+
+  const text = await response.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = { raw: text };
+  }
+
+  return { ok: response.ok, status: response.status, json, text };
+}
+
 function flattenObject(obj: any, prefix = "", result: Record<string, any> = {}) {
   if (!obj || typeof obj !== "object") return result;
 
@@ -4334,32 +4438,72 @@ const DEFAULT_TEAM = {
 
   app.get("/api/zapi/status", async (req, res) => {
     try {
-      const result = await callZapi("/status", undefined);
-      const connected = result && (result.connected === true || result.status === 'CONNECTED');
-      
-      return res.status(200).json({
+      const raw = await getZapiStatusRaw();
+      const normalized = normalizeZapiStatus(raw);
+
+      return res.json({
         success: true,
-        connected: connected,
-        smartphoneConnected: result?.smartphoneConnected === true,
-        status: connected ? "CONNECTED" : (result?.status || "DISCONNECTED"),
-        raw: result
+        ...normalized
       });
-    } catch (err: any) {
-      return res.status(200).json({
+    } catch (error) {
+      return res.status(500).json({
         success: false,
         connected: false,
         smartphoneConnected: false,
-        status: "ERROR",
-        error: err.message
+        error: error instanceof Error ? error.message : "Erro ao verificar status da Z-API."
+      });
+    }
+  });
+
+  app.get("/api/zapi/restart", async (req, res) => {
+    try {
+      let result = await callZapiActionRaw("/restart", "POST");
+      if (!result.ok) {
+        result = await callZapiActionRaw("/restart", "GET");
+      }
+      return res.json({ success: result.ok, status: result.status, data: result.json || result.text });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Erro ao reiniciar Z-API."
+      });
+    }
+  });
+
+  app.get("/api/zapi/disconnect", async (req, res) => {
+    try {
+      let result = await callZapiActionRaw("/disconnect", "POST");
+      if (!result.ok) {
+        result = await callZapiActionRaw("/disconnect", "GET");
+      }
+      return res.json({ success: result.ok, status: result.status, data: result.json || result.text });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Erro ao desconectar Z-API."
       });
     }
   });
 
   app.get("/api/zapi/qrcode", async (req, res) => {
-    const endpoints = ["/qr-code", "/qr-code/image"];
     const attempts = [];
 
     try {
+      const rawStatus = await getZapiStatusRaw();
+      const status = normalizeZapiStatus(rawStatus);
+
+      if (status.connected) {
+        return res.json({
+          success: true,
+          connected: true,
+          qrCodeImage: null,
+          message: "Instância já conectada.",
+          status
+        });
+      }
+
+      const endpoints = ["/qr-code", "/qr-code/image"];
+
       for (const endpoint of endpoints) {
         try {
           const response = await callZapiQrRaw(endpoint);
@@ -4372,8 +4516,6 @@ const DEFAULT_TEAM = {
             ok: response.ok,
             hasJson: Boolean(response.json),
             jsonKeys: response.json ? Object.keys(response.json) : [],
-            valuePreview: response.json?.value ? String(response.json.value).slice(0, 250) : null,
-            textPreview: response.text ? String(response.text).slice(0, 250) : null,
             extracted: Boolean(qrCodeImage),
             extractedLength: qrCodeImage ? qrCodeImage.length : 0
           });
@@ -4381,9 +4523,12 @@ const DEFAULT_TEAM = {
           if (qrCodeImage) {
             return res.json({
               success: true,
+              connected: false,
               qrCodeImage,
               qrCode: qrCodeImage,
-              value: qrCodeImage, // compatible with older frontend expectation
+              value: qrCodeImage, // compatible with older frontend expectations
+              expiresInSeconds: 20,
+              refreshInSeconds: 15,
               endpointUsed: endpoint,
               attempts
             });
@@ -4398,12 +4543,15 @@ const DEFAULT_TEAM = {
 
       return res.status(422).json({
         success: false,
-        error: "A Z-API não retornou o QR Code em um formato válido.",
-        attempts
+        connected: false,
+        error: "A Z-API não retornou um QR Code válido.",
+        attempts,
+        status
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
+        connected: false,
         error: error instanceof Error ? error.message : "Erro ao gerar QR Code.",
         attempts
       });
