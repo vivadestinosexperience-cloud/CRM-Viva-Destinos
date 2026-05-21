@@ -5,10 +5,131 @@ import { GoogleGenAI } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 import multer from "multer";
+import fs from "fs";
 
 dotenv.config();
 
 let globalSupabaseAdmin: any = null;
+
+// Database or JSON filesystem helpers for Channels Settings
+async function loadChannelsDBOrFile() {
+  // 1. Tenta buscar do Supabase
+  try {
+    if (globalSupabaseAdmin) {
+      const { data, error } = await globalSupabaseAdmin
+        .from("crm_channels")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (!error && data) {
+        return data;
+      }
+    }
+  } catch (err) {
+    // Ignora erro de tabela inexistente
+  }
+
+  // 2. Fallback: Lê do arquivo JSON
+  try {
+    const jsonPath = path.join(process.cwd(), "backend_channels.json");
+    if (fs.existsSync(jsonPath)) {
+      return JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+    }
+  } catch (err) {
+    // Ignora
+  }
+
+  return [];
+}
+
+async function saveChannelToDBOrFile(channel: any) {
+  if (!channel.id) {
+    channel.id = crypto.randomUUID();
+  }
+  channel.updated_at = new Date().toISOString();
+  if (!channel.created_at) {
+    channel.created_at = new Date().toISOString();
+  }
+
+  // 1. Tenta salvar no Supabase
+  try {
+    if (globalSupabaseAdmin) {
+      if (channel.is_active) {
+        // Desativa os outros no banco
+        await globalSupabaseAdmin
+          .from("crm_channels")
+          .update({ is_active: false })
+          .neq("id", channel.id);
+      }
+
+      await globalSupabaseAdmin
+        .from("crm_channels")
+        .upsert({
+          id: channel.id,
+          name: channel.name,
+          type: channel.type || "whatsapp_zapi",
+          instance_id: channel.instance_id,
+          instance_token: channel.instance_token,
+          client_token: channel.client_token || "",
+          connected_phone: channel.connected_phone || null,
+          status: channel.status || "DISCONNECTED",
+          is_active: channel.is_active !== undefined ? channel.is_active : true,
+          created_at: channel.created_at,
+          updated_at: channel.updated_at
+        });
+    }
+  } catch (err) {
+    // Ignora erro de tabela inexistente
+  }
+
+  // 2. Salva no arquivo JSON (sempre, as a reliable fallback/cache!)
+  try {
+    const jsonPath = path.join(process.cwd(), "backend_channels.json");
+    let currentList: any[] = [];
+    if (fs.existsSync(jsonPath)) {
+      try {
+        currentList = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+      } catch {
+        currentList = [];
+      }
+    }
+
+    if (channel.is_active) {
+      currentList = currentList.map((c: any) => ({ ...c, is_active: false }));
+    }
+
+    const index = currentList.findIndex((c: any) => c.id === channel.id);
+    if (index >= 0) {
+      currentList[index] = { ...currentList[index], ...channel };
+    } else {
+      currentList.push(channel);
+    }
+
+    fs.writeFileSync(jsonPath, JSON.stringify(currentList, null, 2), "utf-8");
+  } catch (fsErr) {
+    console.error("[SAVE CHANNEL TO FILE ERROR]", fsErr);
+  }
+}
+
+async function deleteChannelDBOrFile(id: string) {
+  try {
+    if (globalSupabaseAdmin) {
+      await globalSupabaseAdmin.from("crm_channels").delete().eq("id", id);
+    }
+  } catch (err) {
+    // Ignora
+  }
+
+  try {
+    const jsonPath = path.join(process.cwd(), "backend_channels.json");
+    if (fs.existsSync(jsonPath)) {
+      let list = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+      list = list.filter((c: any) => c.id !== id);
+      fs.writeFileSync(jsonPath, JSON.stringify(list, null, 2), "utf-8");
+    }
+  } catch (err) {
+    // Ignora
+  }
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -44,15 +165,32 @@ function clean(value?: any) {
 }
 
 /**
- * Obtém a configuração da Z-API de forma segura.
+ * Obtém a configuração da Z-API de forma segura, checando as credenciais do canal ativo.
  */
-function getZapiConfig() {
-  return {
+async function getZapiConfig() {
+  const envConfig = {
     baseUrl: String(process.env.ZAPI_BASE_URL || "https://api.z-api.io").trim(),
     instanceId: String(process.env.ZAPI_INSTANCE_ID || "").trim(),
     instanceToken: String(process.env.ZAPI_INSTANCE_TOKEN || "").trim(),
     clientToken: String(process.env.ZAPI_CLIENT_TOKEN || "").trim()
   };
+
+  try {
+    const list = await loadChannelsDBOrFile();
+    const active = list.find((c: any) => c.is_active);
+    if (active && active.instance_id && active.instance_token) {
+      return {
+        baseUrl: envConfig.baseUrl,
+        instanceId: String(active.instance_id).trim(),
+        instanceToken: String(active.instance_token).trim(),
+        clientToken: String(active.client_token || "").trim()
+      };
+    }
+  } catch (err) {
+    // Ignora
+  }
+
+  return envConfig;
 }
 
 function getPublicAppUrl() {
@@ -64,13 +202,10 @@ function getPublicAppUrl() {
 }
 
 async function callZapi(path: string, body?: any, meta: any = {}) {
-  const baseUrl = process.env.ZAPI_BASE_URL || "https://api.z-api.io";
-  const instanceId = process.env.ZAPI_INSTANCE_ID;
-  const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
-  const clientToken = process.env.ZAPI_CLIENT_TOKEN;
+  const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig();
 
   if (!instanceId || !instanceToken) {
-    throw new Error("Z-API não configurada: verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN no servidor.");
+    throw new Error("Z-API não configurada: cadastre um canal ativo ou verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN no servidor.");
   }
 
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
@@ -156,13 +291,10 @@ async function callZapi(path: string, body?: any, meta: any = {}) {
 }
 
 async function callZapiQrRaw(path: string) {
-  const baseUrl = process.env.ZAPI_BASE_URL || "https://api.z-api.io";
-  const instanceId = process.env.ZAPI_INSTANCE_ID;
-  const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
-  const clientToken = process.env.ZAPI_CLIENT_TOKEN;
+  const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig();
 
   if (!instanceId || !instanceToken) {
-    throw new Error("Z-API não configurada: verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN no servidor.");
+    throw new Error("Z-API não configurada: cadastre um canal ativo ou verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN no servidor.");
   }
 
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
@@ -297,13 +429,10 @@ function extractQrFromAnyResponse(response: any) {
 }
 
 async function getZapiStatusRaw() {
-  const baseUrl = process.env.ZAPI_BASE_URL || "https://api.z-api.io";
-  const instanceId = process.env.ZAPI_INSTANCE_ID;
-  const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
-  const clientToken = process.env.ZAPI_CLIENT_TOKEN;
+  const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig();
 
   if (!instanceId || !instanceToken) {
-    throw new Error("Z-API não configurada: verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN.");
+    throw new Error("Z-API não configurada: cadastre um canal ativo ou verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN.");
   }
 
   const headers: Record<string, string> = {
@@ -364,13 +493,10 @@ function normalizeZapiStatus(raw: any) {
 }
 
 async function callZapiActionRaw(path: string, method: "GET" | "POST" = "POST") {
-  const baseUrl = process.env.ZAPI_BASE_URL || "https://api.z-api.io";
-  const instanceId = process.env.ZAPI_INSTANCE_ID;
-  const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
-  const clientToken = process.env.ZAPI_CLIENT_TOKEN;
+  const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig();
 
   if (!instanceId || !instanceToken) {
-    throw new Error("Z-API não configurada: verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN.");
+    throw new Error("Z-API não configurada: cadastre um canal ativo ou verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN.");
   }
 
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
@@ -1255,7 +1381,7 @@ const DEFAULT_TEAM = {
         return { processed: 0, reason: `Campanha status=${campaign.status}` };
       }
 
-      const { instanceId, instanceToken } = getZapiConfig();
+      const { instanceId, instanceToken } = await getZapiConfig();
       if (!instanceId || !instanceToken) {
         await supabaseAdmin
           .from(TABLES.campaigns)
@@ -1524,7 +1650,7 @@ const DEFAULT_TEAM = {
 
   // --- Routes ---
   app.get("/api/debug/zapi-config", async (req, res) => {
-    const { baseUrl, instanceId, instanceToken, clientToken } = getZapiConfig();
+    const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig();
     return res.json({
       success: true,
       zapi: {
@@ -1962,7 +2088,7 @@ const DEFAULT_TEAM = {
 
   app.get("/api/zapi/diagnostic", async (req, res) => {
     try {
-      const { instanceId, instanceToken } = getZapiConfig();
+      const { instanceId, instanceToken } = await getZapiConfig();
       const zapiStatus = await callZapi("/status");
       
       const configured = !!instanceId && !!instanceToken;
@@ -2132,9 +2258,25 @@ const DEFAULT_TEAM = {
   app.post("/api/omnichannel/conversations", async (req, res) => {
     try {
       const data = req.body;
-      const { data: newConv, error } = await supabase.from(TABLES.conversations)
+      let customerPhone = "";
+
+      if (data.customer_id) {
+        const { data: customer } = await supabaseAdmin
+          .from(TABLES.customers)
+          .select("*")
+          .eq("id", data.customer_id)
+          .single();
+        if (customer) {
+          customerPhone = customer.phone_normalized || customer.phone || "";
+        }
+      }
+
+      const phone = normalizeBrazilPhone(customerPhone);
+
+      const { data: newConv, error } = await supabaseAdmin.from(TABLES.conversations)
         .insert({
           ...data,
+          customer_phone_normalized: phone || undefined,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         })
@@ -2610,7 +2752,7 @@ const DEFAULT_TEAM = {
         const currentUser = await getAuthenticatedUser(req);
         if (!file) throw new Error("Arquivo não recebido.");
 
-        const { instanceId, instanceToken } = getZapiConfig();
+        const { instanceId, instanceToken } = await getZapiConfig();
         if (!instanceId || !instanceToken) {
           return res.status(400).json({ 
             success: false, 
@@ -3356,7 +3498,7 @@ const DEFAULT_TEAM = {
       if (error || !campaign) throw new Error("Campanha não encontrada.");
 
       // Validar Z-API
-      const { instanceId, instanceToken } = getZapiConfig();
+      const { instanceId, instanceToken } = await getZapiConfig();
       if (!instanceId || !instanceToken) throw new Error("Z-API não configurada.");
 
       // Validar se tem contatos PENDING
@@ -3558,7 +3700,7 @@ const DEFAULT_TEAM = {
 
   app.get("/api/debug/campaigns", async (req, res) => {
     try {
-      const { instanceId, instanceToken, clientToken } = getZapiConfig();
+      const { instanceId, instanceToken, clientToken } = await getZapiConfig();
       
       const { data: campaigns } = await supabaseAdmin.from(TABLES.campaigns).select("*");
       const { data: recipients } = await supabaseAdmin.from(TABLES.campaign_recipients).select("status");
@@ -3636,7 +3778,7 @@ const DEFAULT_TEAM = {
         .limit(10);
 
       const reasons = [];
-      const { instanceId, instanceToken } = getZapiConfig();
+      const { instanceId, instanceToken } = await getZapiConfig();
       if (campaign?.status !== "RUNNING") reasons.push(`Status é ${campaign?.status}, não RUNNING`);
       if (stats.pending_count === 0) reasons.push("Sem destinatários PENDING");
       if (!instanceId || !instanceToken) reasons.push("Z-API não configurada");
@@ -3916,7 +4058,7 @@ const DEFAULT_TEAM = {
   });
 
   app.get("/api/zapi/config-status", async (req, res) => {
-    const config = getZapiConfig();
+    const config = await getZapiConfig();
     const appUrl = getPublicAppUrl();
     
     const missing = [];
@@ -4436,10 +4578,111 @@ const DEFAULT_TEAM = {
     }
   });
 
+  app.get("/api/channels", async (req, res) => {
+    try {
+      const list = await loadChannelsDBOrFile();
+      return res.json({ success: true, channels: list });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.get("/api/channels/active", async (req, res) => {
+    try {
+      const list = await loadChannelsDBOrFile();
+      const active = list.find((c: any) => c.is_active);
+      if (active) {
+        return res.json({ success: true, channel: active });
+      } else {
+        // Fallback das env
+        const envConfig = {
+          id: "env-fallback",
+          name: "Canal Padrão (Ambiente)",
+          type: "whatsapp_zapi",
+          instance_id: process.env.ZAPI_INSTANCE_ID || "",
+          instance_token: process.env.ZAPI_INSTANCE_TOKEN || "",
+          client_token: process.env.ZAPI_CLIENT_TOKEN || "",
+          is_active: true,
+          status: "DISCONNECTED"
+        };
+        return res.json({ success: true, channel: envConfig });
+      }
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post("/api/channels", async (req, res) => {
+    try {
+      const { name, type, instance_id, instance_token, client_token, is_active } = req.body;
+      if (!instance_id || !instance_token) {
+        return res.status(400).json({ success: false, error: "id da instância e token são obrigatórios." });
+      }
+      const channel = {
+        name: name || "WhatsApp " + instance_id,
+        type: type || "whatsapp_zapi",
+        instance_id,
+        instance_token,
+        client_token: client_token || "",
+        status: "DISCONNECTED",
+        is_active: is_active !== undefined ? is_active : true
+      };
+      await saveChannelToDBOrFile(channel);
+      return res.json({ success: true, channel });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.patch("/api/channels/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const list = await loadChannelsDBOrFile();
+      const existing = list.find((c: any) => c.id === id);
+      if (!existing) {
+        return res.status(404).json({ success: false, error: "Canal não encontrado." });
+      }
+      const updated = {
+        ...existing,
+        ...req.body,
+        id
+      };
+      await saveChannelToDBOrFile(updated);
+      return res.json({ success: true, channel: updated });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.delete("/api/channels/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      await deleteChannelDBOrFile(id);
+      return res.json({ success: true, message: "Canal removido com sucesso." });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   app.get("/api/zapi/status", async (req, res) => {
     try {
       const raw = await getZapiStatusRaw();
       const normalized = normalizeZapiStatus(raw);
+
+      // Sincroniza status do canal ativo
+      try {
+        const list = await loadChannelsDBOrFile();
+        const active = list.find((c: any) => c.is_active);
+        if (active) {
+          active.status = normalized.connected ? "CONNECTED" : "DISCONNECTED";
+          if (normalized.phone) {
+            active.connected_phone = normalized.phone;
+          }
+          await saveChannelToDBOrFile(active);
+        }
+      } catch (updateErr) {
+        console.error("[AUTO UPDATE CHANNEL STATUS ERROR]", updateErr);
+      }
 
       return res.json({
         success: true,
@@ -4455,7 +4698,7 @@ const DEFAULT_TEAM = {
     }
   });
 
-  app.get("/api/zapi/restart", async (req, res) => {
+  const restartHandler = async (req: any, res: any) => {
     try {
       let result = await callZapiActionRaw("/restart", "POST");
       if (!result.ok) {
@@ -4468,13 +4711,28 @@ const DEFAULT_TEAM = {
         error: error instanceof Error ? error.message : "Erro ao reiniciar Z-API."
       });
     }
-  });
+  };
 
-  app.get("/api/zapi/disconnect", async (req, res) => {
+  app.get("/api/zapi/restart", restartHandler);
+  app.post("/api/zapi/restart", restartHandler);
+
+  const disconnectHandler = async (req: any, res: any) => {
     try {
       let result = await callZapiActionRaw("/disconnect", "POST");
       if (!result.ok) {
         result = await callZapiActionRaw("/disconnect", "GET");
+      }
+      // Se desconectou com sucesso, limpa status do canal ativo
+      try {
+        const list = await loadChannelsDBOrFile();
+        const active = list.find((c: any) => c.is_active);
+        if (active) {
+          active.status = "DISCONNECTED";
+          active.connected_phone = null;
+          await saveChannelToDBOrFile(active);
+        }
+      } catch (updateErr) {
+        console.error("[AUTO DISCONNECT CHANNEL STATUS ERROR]", updateErr);
       }
       return res.json({ success: result.ok, status: result.status, data: result.json || result.text });
     } catch (error) {
@@ -4483,7 +4741,10 @@ const DEFAULT_TEAM = {
         error: error instanceof Error ? error.message : "Erro ao desconectar Z-API."
       });
     }
-  });
+  };
+
+  app.get("/api/zapi/disconnect", disconnectHandler);
+  app.post("/api/zapi/disconnect", disconnectHandler);
 
   app.get("/api/zapi/qrcode", async (req, res) => {
     const attempts = [];
@@ -4603,7 +4864,7 @@ const DEFAULT_TEAM = {
 
   app.get("/api/debug/send-message-config", async (req, res) => {
     try {
-      const { instanceId, instanceToken, clientToken } = getZapiConfig();
+      const { instanceId, instanceToken, clientToken } = await getZapiConfig();
       return res.json({
         success: true,
         hasZapiInstanceId: Boolean(instanceId),

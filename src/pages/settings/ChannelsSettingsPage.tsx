@@ -100,7 +100,10 @@ export default function ChannelsSettingsPage() {
     name: '',
     phone: '',
     teamId: '',
-    responsibleId: ''
+    responsibleId: '',
+    instanceId: '',
+    instanceToken: '',
+    clientToken: ''
   });
 
   const [isCheckingConfig, setIsCheckingConfig] = useState(false);
@@ -194,7 +197,10 @@ export default function ChannelsSettingsPage() {
       name: '',
       phone: '',
       teamId: '',
-      responsibleId: ''
+      responsibleId: '',
+      instanceId: '',
+      instanceToken: '',
+      clientToken: ''
     });
   };
 
@@ -387,6 +393,10 @@ export default function ChannelsSettingsPage() {
         status: 'CONNECTED',
         team_id: formData.teamId,
         responsible_user_id: formData.responsibleId,
+        instance_id: formData.instanceId || undefined,
+        instance_token: formData.instanceToken || undefined,
+        client_token: formData.clientToken || undefined,
+        is_active: true,
         created_at: new Date().toISOString()
       };
       await addWhatsAppAccount(newChannel as WhatsAppAccount);
@@ -1178,6 +1188,43 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                        <option value="">Selecione...</option>
                        {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                      </select>
+                    </div>
+
+                    <div className="col-span-2 border-t border-slate-100 pt-4 mt-2 space-y-4">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Configuração Personalizada da Z-API (Opcional)</p>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">ID da Instância (Opcional)</label>
+                          <input 
+                            type="text" 
+                            className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs"
+                            placeholder="Deixe em branco para usar o padrão"
+                            value={formData.instanceId}
+                            onChange={(e) => setFormData({...formData, instanceId: e.target.value})}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Token da Instância (Opcional)</label>
+                          <input 
+                            type="text" 
+                            className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs"
+                            placeholder="Deixe em branco para usar o padrão"
+                            value={formData.instanceToken}
+                            onChange={(e) => setFormData({...formData, instanceToken: e.target.value})}
+                          />
+                        </div>
+                        <div className="col-span-2 space-y-2">
+                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Client Token (Opcional)</label>
+                          <input 
+                            type="text" 
+                            className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs"
+                            placeholder="Deixe em branco para usar o padrão"
+                            value={formData.clientToken}
+                            onChange={(e) => setFormData({...formData, clientToken: e.target.value})}
+                          />
+                        </div>
+                      </div>
                     </div>
                   </div>
               </div>

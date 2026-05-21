@@ -1,5 +1,6 @@
 import { supabase } from '../integrations/supabase/client';
 import { authorizedFetch, safeReadJson } from './api';
+import { WhatsAppAccount } from '../types';
 
 // Generic error handler
 const handleError = (error: any, context: string) => {
@@ -144,23 +145,109 @@ export const queueService = {
 
 export const whatsappService = {
   async list() {
-    const { data, error } = await supabase.from('whatsapp_accounts').select('*').order('name');
-    if (error) handleError(error, 'whatsappService.list');
-    return data;
+    try {
+      const res = await authorizedFetch('/api/channels');
+      const data = await safeReadJson(res);
+      if (!res.ok) throw new Error(data.error || 'Erro ao buscar canais');
+      
+      const channels = data.channels || [];
+      return channels.map((c: any) => ({
+        id: c.id,
+        name: c.name,
+        type: 'WHATSAPP',
+        provider: 'ZAPI',
+        phone_number: c.connected_phone || '',
+        status: c.status || 'DISCONNECTED',
+        instance_id: c.instance_id,
+        instance_token: c.instance_token,
+        client_token: c.client_token,
+        is_active: c.is_active
+      } as WhatsAppAccount));
+    } catch (err: any) {
+      console.error("[whatsappService.list error, falling back to empty]", err);
+      return [];
+    }
   },
   async create(account: any) {
-    const { data, error } = await supabase.from('whatsapp_accounts').insert(account).select().single();
-    if (error) handleError(error, 'whatsappService.create');
-    return data;
+    try {
+      const res = await authorizedFetch('/api/channels', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: account.name,
+          type: 'whatsapp_zapi',
+          instance_id: account.instance_id || '',
+          instance_token: account.instance_token || '',
+          client_token: account.client_token || '',
+          is_active: account.is_active !== undefined ? account.is_active : true
+        })
+      });
+      const data = await safeReadJson(res);
+      if (!res.ok) throw new Error(data.error || 'Erro ao criar canal');
+      
+      const c = data.channel;
+      return {
+        id: c.id,
+        name: c.name,
+        type: 'WHATSAPP',
+        provider: 'ZAPI',
+        phone_number: c.connected_phone || '',
+        status: (c.status || 'DISCONNECTED') as any,
+        instance_id: c.instance_id,
+        instance_token: c.instance_token,
+        client_token: c.client_token,
+        is_active: c.is_active
+      } as WhatsAppAccount;
+    } catch (err: any) {
+      console.error("[whatsappService.create error]", err);
+      throw err;
+    }
   },
   async update(id: string, updates: any) {
-    const { data, error } = await supabase.from('whatsapp_accounts').update(updates).eq('id', id).select().single();
-    if (error) handleError(error, 'whatsappService.update');
-    return data;
+    try {
+      const res = await authorizedFetch(`/api/channels/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: updates.name,
+          instance_id: updates.instance_id,
+          instance_token: updates.instance_token,
+          client_token: updates.client_token,
+          connected_phone: updates.phone_number || updates.phone,
+          status: updates.status,
+          is_active: updates.is_active
+        })
+      });
+      const data = await safeReadJson(res);
+      if (!res.ok) throw new Error(data.error || 'Erro ao atualizar canal');
+      
+      const c = data.channel;
+      return {
+        id: c.id,
+        name: c.name,
+        type: 'WHATSAPP',
+        provider: 'ZAPI',
+        phone_number: c.connected_phone || '',
+        status: (c.status || 'DISCONNECTED') as any,
+        instance_id: c.instance_id,
+        instance_token: c.instance_token,
+        client_token: c.client_token,
+        is_active: c.is_active
+      } as WhatsAppAccount;
+    } catch (err: any) {
+      console.error("[whatsappService.update error]", err);
+      throw err;
+    }
   },
   async remove(id: string) {
-    const { error } = await supabase.from('whatsapp_accounts').delete().eq('id', id);
-    if (error) handleError(error, 'whatsappService.remove');
+    try {
+      const res = await authorizedFetch(`/api/channels/${id}`, {
+        method: 'DELETE'
+      });
+      const data = await safeReadJson(res);
+      if (!res.ok) throw new Error(data.error || 'Erro ao deletar canal');
+    } catch (err: any) {
+      console.error("[whatsappService.remove error]", err);
+      throw err;
+    }
   }
 };
 

@@ -103,6 +103,9 @@ export interface WhatsAppAccount {
   phone_number?: string;
   number?: string; // Legacy compatibility
   instance_id?: string;
+  instance_token?: string;
+  client_token?: string;
+  is_active?: boolean;
   status: 'CONNECTED' | 'DISCONNECTED' | 'CONNECTING' | 'ERROR' | 'QR_PENDING';
   quality_status?: 'HIGH' | 'MEDIUM' | 'LOW';
   quality?: 'HIGH' | 'MEDIUM' | 'LOW'; // Legacy compatibility
