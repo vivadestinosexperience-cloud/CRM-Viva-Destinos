@@ -8,6 +8,8 @@ import multer from "multer";
 
 dotenv.config();
 
+let globalSupabaseAdmin: any = null;
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -61,63 +63,96 @@ function getPublicAppUrl() {
   ).replace(/\/$/, "");
 }
 
-async function callZapi(path: string, body?: any) {
-  const { baseUrl, instanceId, instanceToken, clientToken } = getZapiConfig();
+async function callZapi(path: string, body?: any, meta: any = {}) {
+  const baseUrl = process.env.ZAPI_BASE_URL || "https://api.z-api.io";
+  const instanceId = process.env.ZAPI_INSTANCE_ID;
+  const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
+  const clientToken = process.env.ZAPI_CLIENT_TOKEN;
 
   if (!instanceId || !instanceToken) {
     throw new Error("Z-API não configurada: verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN no servidor.");
   }
 
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  const endpoint = `${baseUrl}/instances/${instanceId}/token/${instanceToken}${cleanPath}`;
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json"
   };
 
-  if (clientToken && clientToken !== "undefined" && clientToken !== "null") {
-    headers["Client-Token"] = clientToken;
+  if (clientToken && String(clientToken).trim() && clientToken !== "undefined" && clientToken !== "null") {
+    headers["Client-Token"] = String(clientToken).trim();
   }
 
-  const cleanPath = path.startsWith("/") ? path : `/${path}`;
-  const url = `${baseUrl}/instances/${instanceId}/token/${instanceToken}${cleanPath}`;
+  let logId = null;
 
-  console.log("[ZAPI REQUEST]", {
-    path: cleanPath,
-    phone: body?.phone,
-    hasMessage: Boolean(body?.message),
-    hasAudio: Boolean(body?.audio),
-    hasImage: Boolean(body?.image),
-    hasVideo: Boolean(body?.video),
-    hasDocument: Boolean(body?.document)
-  });
+  if (globalSupabaseAdmin) {
+    try {
+      const { data: logData } = await globalSupabaseAdmin
+        .from("zapi_send_logs")
+        .insert({
+          source: meta.source || null,
+          source_id: meta.source_id ? String(meta.source_id) : null,
+          phone: body?.phone || null,
+          endpoint: cleanPath,
+          request_body: body || null,
+          success: false
+        })
+        .select("id")
+        .single();
 
-  const response = await fetch(url, {
+      logId = logData?.id || null;
+    } catch (logError) {
+      console.error("[ZAPI SEND LOG INSERT ERROR]", logError);
+    }
+  }
+
+  const response = await fetch(endpoint, {
     method: "POST",
     headers,
-    body: JSON.stringify(body)
+    body: body ? JSON.stringify(body) : undefined
   });
 
   const responseText = await response.text();
-  let data = null;
+
+  let responseBody: any = null;
 
   try {
-    data = responseText ? JSON.parse(responseText) : null;
+    responseBody = responseText ? JSON.parse(responseText) : null;
   } catch {
-    data = { raw: responseText };
+    responseBody = { raw: responseText };
+  }
+
+  if (logId && globalSupabaseAdmin) {
+    try {
+      await globalSupabaseAdmin
+        .from("zapi_send_logs")
+        .update({
+          response_status: response.status,
+          response_body: responseBody,
+          success: response.ok,
+          error: response.ok ? null : (responseBody?.message || responseBody?.error || responseText || `HTTP ${response.status}`)
+        })
+        .eq("id", logId);
+    } catch (logUpdateError) {
+      console.error("[ZAPI SEND LOG UPDATE ERROR]", logUpdateError);
+    }
   }
 
   if (!response.ok) {
     const error: any = new Error(
-      data?.message ||
-      data?.error ||
+      responseBody?.message ||
+      responseBody?.error ||
       responseText ||
       `Erro na Z-API. HTTP ${response.status}`
     );
 
     error.status = response.status;
-    error.zapiResponse = data;
+    error.zapiResponse = responseBody;
     throw error;
   }
 
-  return data;
+  return responseBody;
 }
 
 function flattenObject(obj: any, prefix = "", result: Record<string, any> = {}) {
@@ -631,6 +666,7 @@ async function startServer() {
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "";
   const supabase = createClient(supabaseUrl, supabaseKey);
   const supabaseAdmin = createClient(supabaseUrl, process.env.SUPABASE_SERVICE_ROLE_KEY || supabaseKey);
+  globalSupabaseAdmin = supabaseAdmin;
 
   // SSE Clients
   let sseClients: any[] = [];
@@ -1060,6 +1096,9 @@ const DEFAULT_TEAM = {
             zapiResponse = await callZapi("/send-text", {
               phone: phone,
               message: renderedMessage
+            }, {
+              source: "campaign",
+              source_id: campaignId
             });
           } else if (campaign.message_type === "image") {
             if (!campaign.media_url) throw new Error("Imagem da campanha não configurada.");
@@ -1068,6 +1107,9 @@ const DEFAULT_TEAM = {
               phone: phone,
               image: campaign.media_url,
               caption: renderedMessage
+            }, {
+              source: "campaign",
+              source_id: campaignId
             });
           } else if (campaign.message_type === "video") {
             if (!campaign.media_url) throw new Error("Vídeo da campanha não configurado.");
@@ -1076,12 +1118,18 @@ const DEFAULT_TEAM = {
               phone: phone,
               video: campaign.media_url,
               caption: renderedMessage
+            }, {
+              source: "campaign",
+              source_id: campaignId
             });
           } else if (campaign.message_type === "audio") {
              if (!campaign.media_url) throw new Error("Áudio da campanha não configurado.");
              zapiResponse = await callZapi("/send-audio", {
                 phone: phone,
                 audio: campaign.media_url
+             }, {
+               source: "campaign",
+               source_id: campaignId
              });
           } else if (campaign.message_type === "document") {
              if (!campaign.media_url) throw new Error("Documento da campanha não configurado.");
@@ -1090,6 +1138,9 @@ const DEFAULT_TEAM = {
                 phone: phone,
                 document: campaign.media_url,
                 fileName: campaign.media_file_name || "arquivo"
+             }, {
+               source: "campaign",
+               source_id: campaignId
              });
           } else {
             throw new Error(`Tipo de campanha não suportado: ${campaign.message_type}`);
@@ -1247,29 +1298,39 @@ const DEFAULT_TEAM = {
   app.post("/api/debug/zapi/test-send", async (req, res) => {
     try {
       const currentUser = await getAuthenticatedUser(req);
-      if (currentUser.role !== 'admin' && currentUser.role !== 'supervisor') {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
+
+      if (!["admin", "supervisor"].includes(currentUser.role)) {
+        return res.status(403).json({
+          success: false,
+          error: "Sem permissão para testar Z-API."
+        });
       }
 
-      const { phone, message } = req.body;
-      const normalizedPhone = normalizeBrazilPhone(phone);
-      
-      if (!normalizedPhone) {
-        return res.status(400).json({ success: false, error: "Telefone inválido." });
+      const phone = normalizeBrazilPhone(req.body?.phone);
+      const message = String(req.body?.message || "Teste Viva CRM").trim();
+
+      if (!phone) {
+        return res.status(400).json({
+          success: false,
+          error: "Telefone inválido."
+        });
       }
 
-      const zapiResponse = await callZapi("/send-text", {
-        phone: normalizedPhone,
-        message: message || "Teste Viva CRM"
+      const zapiResponse = await callZapi(
+        "/send-text",
+        { phone, message },
+        { source: "debug", source_id: "test-send" }
+      );
+
+      return res.json({
+        success: true,
+        zapiResponse
       });
-
-      return res.json({ success: true, zapiResponse });
     } catch (error: any) {
       return res.status(500).json({
         success: false,
-        error: error.message,
-        zapiStatus: error.status,
-        zapiResponse: error.zapiResponse
+        error: error instanceof Error ? error.message : "Erro ao testar envio.",
+        zapiResponse: error?.zapiResponse || null
       });
     }
   });
@@ -2057,9 +2118,9 @@ const DEFAULT_TEAM = {
         });
       }
   
-      const phone = String(conversation.customer_phone_normalized || "").replace(/\D/g, "");
+      const phone = normalizeBrazilPhone(conversation.customer_phone_normalized);
   
-      if (!phone || !phone.startsWith("55") || phone.length < 12 || phone.length > 13) {
+      if (!phone) {
         return res.status(400).json({
           success: false,
           error: "Telefone do cliente inválido."
@@ -2068,10 +2129,17 @@ const DEFAULT_TEAM = {
   
       const finalMessage = formatAgentMessageForWhatsApp(message, currentUser.name);
   
-      const zapiResponse = await callZapi("/send-text", {
-        phone,
-        message: finalMessage
-      });
+      const zapiResponse = await callZapi(
+        "/send-text",
+        {
+          phone,
+          message: finalMessage
+        },
+        {
+          source: "conversation",
+          source_id: conversationId
+        }
+      );
   
       const now = new Date().toISOString();
   
