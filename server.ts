@@ -10,8 +10,10 @@ import os from "os";
 import { promisify } from "util";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
+import ffprobeInstaller from "@ffprobe-installer/ffprobe";
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+ffmpeg.setFfprobePath(ffprobeInstaller.path);
 
 const writeFile = promisify(fs.writeFile);
 const readFile = promisify(fs.readFile);
@@ -170,6 +172,62 @@ function sanitizeFileName(name: string): string {
   return name.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
 }
 
+async function analyzeAudioFile(filePath: string): Promise<{ meanVolume: string | null; maxVolume: string | null; hasAudioSignal: boolean; raw: string }> {
+  return new Promise((resolve) => {
+    let stderr = "";
+
+    ffmpeg(filePath)
+      .audioFilters("volumedetect")
+      .outputOptions("-f", "null")
+      .output(os.platform() === "win32" ? "NUL" : "/dev/null")
+      .on("stderr", (line) => {
+        stderr += line + "\n";
+      })
+      .on("error", (err) => {
+        console.warn("[analyzeAudioFile ffmpeg warning]", err);
+        resolve({
+          meanVolume: null,
+          maxVolume: null,
+          hasAudioSignal: true, // Default to true to be safe
+          raw: String(err)
+        });
+      })
+      .on("end", () => {
+        const meanMatch = stderr.match(/mean_volume:\s*(-?[\d.]+)\s*dB/i);
+        const maxMatch = stderr.match(/max_volume:\s*(-?[\d.]+)\s*dB/i);
+
+        const meanVolume = meanMatch ? meanMatch[1] : null;
+        const maxVolume = maxMatch ? maxMatch[1] : null;
+
+        const maxNumber = maxVolume !== null ? Number(maxVolume) : null;
+        const hasAudioSignal =
+          maxNumber !== null &&
+          Number.isFinite(maxNumber) &&
+          maxNumber > -55;
+
+        resolve({
+          meanVolume,
+          maxVolume,
+          hasAudioSignal: maxVolume !== null ? hasAudioSignal : true,
+          raw: stderr.slice(-1000)
+        });
+      })
+      .run();
+  });
+}
+
+async function getAudioDuration(filePath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(filePath, (error, metadata) => {
+      if (error) {
+        console.warn("[getAudioDuration ffprobe warning]", error);
+        return resolve(null);
+      }
+      resolve(metadata?.format?.duration || null);
+    });
+  });
+}
+
 async function convertAudioBufferToMp3(inputBuffer: Buffer, inputMimeType: string) {
   const tempDir = os.tmpdir();
 
@@ -186,11 +244,22 @@ async function convertAudioBufferToMp3(inputBuffer: Buffer, inputMimeType: strin
   await writeFile(inputPath, inputBuffer);
 
   try {
+    const duration = await getAudioDuration(inputPath);
+    const inputAnalysis = await analyzeAudioFile(inputPath);
+
+    if (duration !== null && Number(duration) < 0.5) {
+      throw new Error("Áudio muito curto para ser enviado (mínimo 0.5 segundos).");
+    }
+
+    if (!inputAnalysis.hasAudioSignal) {
+      throw new Error("O áudio gravado está sem som detectável. Verifique o seu microfone e grave novamente.");
+    }
+
     await new Promise<void>((resolve, reject) => {
       ffmpeg(inputPath)
         .noVideo()
         .audioCodec("libmp3lame")
-        .audioBitrate("64k")
+        .audioBitrate("96k")
         .audioChannels(1)
         .audioFrequency(44100)
         .format("mp3")
@@ -205,10 +274,15 @@ async function convertAudioBufferToMp3(inputBuffer: Buffer, inputMimeType: strin
       throw new Error("Falha na conversão: MP3 gerado vazio.");
     }
 
+    const outputAnalysis = await analyzeAudioFile(outputPath);
+
     return {
       buffer: outputBuffer,
       mimeType: "audio/mpeg",
-      fileName: `audio-${Date.now()}.mp3`
+      fileName: `audio-${Date.now()}.mp3`,
+      duration,
+      inputAnalysis,
+      outputAnalysis
     };
   } finally {
     try { await unlink(inputPath); } catch {}
@@ -1961,6 +2035,49 @@ const DEFAULT_TEAM = {
     }
   });
 
+  app.get("/api/debug/audio/logs", async (req, res) => {
+    try {
+      const { data: logs, error } = await supabaseAdmin
+        .from("audio_debug_logs")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(20);
+
+      if (error) {
+        throw error;
+      }
+
+      return res.json({
+        success: true,
+        count: logs?.length || 0,
+        logs
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.get("/api/debug/audio/logs/:id", async (req, res) => {
+    try {
+      const { data: log, error } = await supabaseAdmin
+        .from("audio_debug_logs")
+        .select("*")
+        .eq("id", req.params.id)
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      return res.json({
+        success: true,
+        log
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   app.post("/api/debug/zapi/test-send", async (req, res) => {
     try {
       const currentUser = await getAuthenticatedUser(req);
@@ -3379,10 +3496,25 @@ const DEFAULT_TEAM = {
   });
 
   app.post("/api/omnichannel/conversations/:id/send-audio", upload.single("file"), async (req, res) => {
-    try {
-      const currentUser = await getAuthenticatedUser(req);
-      const conversationId = req.params.id;
+    let debugLogId = null;
+    let currentUser: any = null;
+    const conversationId = req.params.id;
 
+    let frontendDebug = null;
+    try {
+      frontendDebug = req.body?.frontendDebug ? JSON.parse(req.body.frontendDebug) : null;
+    } catch {
+      frontendDebug = { raw: req.body?.frontendDebug || null };
+    }
+
+    try {
+      currentUser = await getAuthenticatedUser(req);
+    } catch (authErr) {
+      console.warn("[SEND AUDIO AUTH WARNING]", authErr);
+      currentUser = { id: "anonymous", name: "Agente CRM" };
+    }
+
+    try {
       const { data: conversation, error: conversationError } = await supabaseAdmin
         .from("crm_conversations")
         .select("*")
@@ -3434,6 +3566,29 @@ const DEFAULT_TEAM = {
         });
       }
 
+      // Safe debug log insertion
+      try {
+        const { data: debugInsert, error: debugInsertErr } = await supabaseAdmin
+          .from("audio_debug_logs")
+          .insert({
+            conversation_id: conversationId,
+            user_id: currentUser.id,
+            user_name: currentUser.name,
+            original_mime_type: originalMimeType,
+            original_size: req.file.size,
+            frontend_debug: frontendDebug,
+            success: false
+          })
+          .select("id")
+          .single();
+
+        if (!debugInsertErr && debugInsert) {
+          debugLogId = debugInsert.id;
+        }
+      } catch (dbLogErr) {
+        console.error("[DB LOG INSERT WARNING]", dbLogErr);
+      }
+
       // Convert audio buffer to MP3
       const converted = await convertAudioBufferToMp3(req.file.buffer, originalMimeType);
 
@@ -3445,17 +3600,21 @@ const DEFAULT_TEAM = {
         currentUser.name
       );
 
-      await callZapi(
-        "/send-text",
-        {
-          phone,
-          message: introMessage
-        },
-        {
-          source: "conversation-audio-intro",
-          source_id: conversationId
-        }
-      );
+      try {
+        await callZapi(
+          "/send-text",
+          {
+            phone,
+            message: introMessage
+          },
+          {
+            source: "conversation-audio-intro",
+            source_id: conversationId
+          }
+        );
+      } catch (introErr) {
+        console.error("[INTRO MSG WARNING]", introErr);
+      }
 
       // Upload converted MP3 to Supabase Storage
       let publicUrl = "";
@@ -3486,7 +3645,9 @@ const DEFAULT_TEAM = {
         "/send-audio",
         {
           phone,
-          audio: audioDataUri
+          audio: audioDataUri,
+          viewOnce: false,
+          waveform: true
         },
         {
           source: "conversation-audio",
@@ -3521,7 +3682,10 @@ const DEFAULT_TEAM = {
             originalMimeType,
             originalSize: req.file.size,
             convertedMimeType: converted.mimeType,
-            convertedSize: converted.buffer.length
+            convertedSize: converted.buffer.length,
+            duration: converted.duration,
+            inputAnalysis: converted.inputAnalysis,
+            outputAnalysis: converted.outputAnalysis
           },
           created_at: now
         })
@@ -3546,6 +3710,31 @@ const DEFAULT_TEAM = {
         .select()
         .single();
 
+      // Safe debug log completion update
+      if (debugLogId) {
+        try {
+          await supabaseAdmin
+            .from("audio_debug_logs")
+            .update({
+              converted_mime_type: converted.mimeType,
+              converted_size: converted.buffer.length,
+              duration_seconds: converted.duration,
+              mean_volume: converted.outputAnalysis?.meanVolume || null,
+              max_volume: converted.outputAnalysis?.maxVolume || null,
+              has_audio_signal: converted.outputAnalysis?.hasAudioSignal || false,
+              backend_debug: {
+                inputAnalysis: converted.inputAnalysis,
+                outputAnalysis: converted.outputAnalysis
+              },
+              zapi_response: zapiResponse,
+              success: true
+            })
+            .eq("id", debugLogId);
+        } catch (dbLogUpErr) {
+          console.error("[DB LOG UPDATE WARNING]", dbLogUpErr);
+        }
+      }
+
       broadcastEvent("message.received", {
         conversation: updatedConv || conversation,
         message: {
@@ -3562,15 +3751,32 @@ const DEFAULT_TEAM = {
         success: true,
         message: savedMessage,
         zapiResponse,
-        audio: {
+        audioDebug: {
           originalMimeType,
           originalSize: req.file.size,
           convertedMimeType: converted.mimeType,
-          convertedSize: converted.buffer.length
+          convertedSize: converted.buffer.length,
+          duration: converted.duration,
+          inputAnalysis: converted.inputAnalysis,
+          outputAnalysis: converted.outputAnalysis
         }
       });
     } catch (error: any) {
       console.error("[SEND AUDIO ERROR]", error);
+
+      if (debugLogId) {
+        try {
+          await supabaseAdmin
+            .from("audio_debug_logs")
+            .update({
+              success: false,
+              error: error instanceof Error ? error.message : String(error)
+            })
+            .eq("id", debugLogId);
+        } catch (dbLogErrUp) {
+          console.error("[DB LOG ERROR UPDATE WARNING]", dbLogErrUp);
+        }
+      }
 
       return res.status(500).json({
         success: false,

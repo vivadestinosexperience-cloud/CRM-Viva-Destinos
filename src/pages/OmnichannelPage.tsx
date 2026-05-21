@@ -119,6 +119,9 @@ export default function OmnichannelPage() {
   const [recordingTime, setRecordingTime] = useState(0);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [recordedAudioDebug, setRecordedAudioDebug] = useState<any>(null);
+  const [liveVolume, setLiveVolume] = useState(0);
+  const [isSilentWarning, setIsSilentWarning] = useState(false);
   const [showAudioRecorder, setShowAudioRecorder] = useState(false);
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
@@ -429,6 +432,10 @@ export default function OmnichannelPage() {
   const audioChunksRef = useRef<Blob[]>([]);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const recordingTimerRef = useRef<any>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const volumeTimerRef = useRef<any>(null);
+  const silentTicksRef = useRef<number>(0);
   const [recordedAudioFile, setRecordedAudioFile] = useState<File | null>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -655,6 +662,71 @@ export default function OmnichannelPage() {
     return "";
   };
 
+  const startLiveVolumeMeter = (stream: MediaStream) => {
+    try {
+      stopLiveVolumeMeter();
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) return;
+
+      const audioContext = new AudioContextClass();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+
+      analyser.fftSize = 512;
+      source.connect(analyser);
+
+      audioContextRef.current = audioContext;
+      analyserRef.current = analyser;
+
+      const dataArray = new Uint8Array(analyser.fftSize);
+      silentTicksRef.current = 0;
+      setIsSilentWarning(false);
+
+      volumeTimerRef.current = setInterval(() => {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteTimeDomainData(dataArray);
+
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          const value = (dataArray[i] - 128) / 128;
+          sum += value * value;
+        }
+
+        const rms = Math.sqrt(sum / dataArray.length);
+        setLiveVolume(rms);
+
+        if (rms < 0.005) {
+          silentTicksRef.current += 1;
+          if (silentTicksRef.current >= 20) {
+            setIsSilentWarning(true);
+          }
+        } else {
+          silentTicksRef.current = 0;
+          setIsSilentWarning(false);
+        }
+      }, 100);
+    } catch (error) {
+      console.warn("[LIVE VOLUME METER ERROR]", error);
+    }
+  };
+
+  const stopLiveVolumeMeter = () => {
+    if (volumeTimerRef.current) {
+      clearInterval(volumeTimerRef.current);
+      volumeTimerRef.current = null;
+    }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+
+    analyserRef.current = null;
+    silentTicksRef.current = 0;
+    setIsSilentWarning(false);
+    setLiveVolume(0);
+  };
+
   const startRecording = async () => {
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -677,8 +749,18 @@ export default function OmnichannelPage() {
         },
       });
 
+      const audioTracks = stream.getAudioTracks();
+      if (!audioTracks || audioTracks.length === 0) {
+        toast.error("Nenhum microfone foi encontrado.");
+        return;
+      }
+
+      console.log("[AUDIO TRACK SETTINGS]", audioTracks[0].getSettings());
+
       mediaStreamRef.current = stream;
       audioChunksRef.current = [];
+
+      startLiveVolumeMeter(stream);
 
       const mimeType = getSupportedAudioMimeType();
 
@@ -689,6 +771,10 @@ export default function OmnichannelPage() {
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (event) => {
+        console.log("[AUDIO CHUNK]", {
+          size: event.data?.size,
+          type: event.data?.type
+        });
         if (event.data && event.data.size > 0) {
           audioChunksRef.current.push(event.data);
         }
@@ -701,21 +787,28 @@ export default function OmnichannelPage() {
 
       recorder.onstop = async () => {
         try {
+          stopLiveVolumeMeter();
+
           const finalMimeType = recorder.mimeType || mimeType || "audio/webm";
 
           const blob = new Blob(audioChunksRef.current, {
             type: finalMimeType,
           });
 
-          console.log("[AUDIO BLOB]", {
-            size: blob.size,
-            type: blob.type,
+          const debug = {
+            blobSize: blob.size,
+            blobType: blob.type,
             chunks: audioChunksRef.current.length,
-          });
+            recorderMimeType: recorder.mimeType,
+            selectedMimeType: mimeType,
+            recordingSeconds: recordingTime
+          };
 
-          if (!blob || blob.size < 1000) {
+          console.log("[AUDIO FINAL BLOB]", debug);
+
+          if (!blob || blob.size < 2000) {
             toast.error(
-              "O áudio gravado ficou vazio. Verifique o microfone e grave novamente.",
+              "O áudio gravado ficou vazio ou curto demais. Fale perto do microfone e grave novamente.",
             );
             cancelRecordedAudio();
             return;
@@ -736,6 +829,7 @@ export default function OmnichannelPage() {
           setAudioBlob(blob);
           setRecordedAudioFile(file);
           setAudioUrl(previewUrl);
+          setRecordedAudioDebug(debug);
         } catch (error) {
           console.error("[AUDIO ONSTOP ERROR]", error);
           toast.error("Erro ao preparar a prévia do áudio.");
@@ -775,7 +869,15 @@ export default function OmnichannelPage() {
       const recorder = mediaRecorderRef.current;
 
       if (recorder && recorder.state !== "inactive") {
-        recorder.stop();
+        try {
+          recorder.requestData();
+        } catch {}
+
+        setTimeout(() => {
+          if (recorder.state !== "inactive") {
+            recorder.stop();
+          }
+        }, 250);
       }
 
       if (recordingTimerRef.current) {
@@ -810,6 +912,8 @@ export default function OmnichannelPage() {
         clearInterval(recordingTimerRef.current);
         recordingTimerRef.current = null;
       }
+
+      stopLiveVolumeMeter();
     } catch (error) {
       console.warn("[CANCEL AUDIO WARNING]", error);
     }
@@ -819,6 +923,8 @@ export default function OmnichannelPage() {
     setAudioUrl(null);
     setAudioBlob(null);
     setRecordedAudioFile(null);
+    setRecordedAudioDebug(null);
+    setLiveVolume(0);
     audioChunksRef.current = [];
   };
 
@@ -828,8 +934,8 @@ export default function OmnichannelPage() {
       return;
     }
 
-    if (!recordedAudioFile || recordedAudioFile.size < 1000) {
-      toast.error("Áudio inválido ou vazio. Grave novamente.");
+    if (!recordedAudioFile || recordedAudioFile.size < 2000) {
+      toast.error("Áudio inválido ou sem som detectável. Grave novamente.");
       return;
     }
 
@@ -843,6 +949,10 @@ export default function OmnichannelPage() {
         formData.append(
           "originalMimeType",
           recordedAudioFile.type || "audio/webm",
+        );
+        formData.append(
+          "frontendDebug",
+          JSON.stringify(recordedAudioDebug || {}),
         );
 
         const res = await authorizedFetch(
@@ -2685,6 +2795,27 @@ export default function OmnichannelPage() {
                     {formatTime(recordingTime)}
                   </p>
                 </div>
+
+                {isRecording && (
+                  <div className="w-full space-y-2">
+                    <div className="flex justify-between items-center text-xs text-slate-500 font-bold uppercase tracking-wider">
+                      <span>Volume de Entrada</span>
+                      <span>{(liveVolume * 100).toFixed(0)}%</span>
+                    </div>
+                    <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden border border-slate-200">
+                      <motion.div
+                        className="bg-blue-600 h-full rounded-full"
+                        animate={{ width: `${Math.min(100, liveVolume * 300)}%` }}
+                        transition={{ type: "spring", stiffness: 300, damping: 25 }}
+                      />
+                    </div>
+                    {isSilentWarning && (
+                      <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-xl p-3 font-semibold mt-2 animate-pulse">
+                        ⚠️ Não estou detectando som no microfone. Verifique se o microfone correto está selecionado nas configurações de privacidade do navegador.
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {audioUrl && !isRecording && (
                   <div className="w-full bg-slate-50 p-4 rounded-3xl border border-slate-100 flex flex-col gap-3">
