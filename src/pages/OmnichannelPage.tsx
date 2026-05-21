@@ -55,6 +55,7 @@ import {
   History,
   Calendar,
   ExternalLink,
+  ArrowLeft,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import EmojiPicker, { EmojiClickData } from "emoji-picker-react";
@@ -1802,7 +1803,7 @@ export default function OmnichannelPage() {
   return (
     <div className="flex h-full w-full bg-white overflow-hidden">
       {/* 1. SIDEBAR: Inbox */}
-      <div className="w-80 lg:w-96 border-r border-slate-200 flex flex-col shrink-0 bg-white shadow-sm z-10">
+      <div className={`w-full md:w-80 lg:w-96 border-r border-slate-200 flex flex-col shrink-0 bg-white shadow-sm z-10 ${activeConversationId ? "hidden md:flex" : "flex"}`}>
         <div className="p-5 border-b border-slate-50">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
@@ -2072,12 +2073,20 @@ export default function OmnichannelPage() {
       </div>
 
       {/* 2. MAIN: Chat Area */}
-      <div className="flex-1 flex flex-col min-w-0 bg-slate-50">
+      <div className={`flex-1 flex flex-col min-w-0 bg-slate-50 ${activeConversationId ? "flex" : "hidden md:flex"}`}>
         {activeConversation ? (
           <>
             {/* Chat Header */}
-            <header className="h-20 bg-white border-b border-slate-100 px-6 flex items-center justify-between shrink-0 z-20">
-              <div className="flex items-center gap-4 min-w-0">
+            <header className="h-20 bg-white border-b border-slate-100 px-4 md:px-6 flex items-center justify-between shrink-0 z-20">
+              <div className="flex items-center gap-3 md:gap-4 min-w-0">
+                <button
+                  onClick={() => setActiveConversationId(null)}
+                  className="p-2 hover:bg-slate-50 active:bg-slate-100 rounded-xl text-slate-500 md:hidden border border-slate-100 flex items-center justify-center shrink-0 transition-all mr-1"
+                  title="Voltar para a lista"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+
                 <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center shrink-0 font-bold text-slate-600">
                   {activeCustomer?.name?.charAt(0) || activeCustomer?.phone?.charAt(0) || "C"}
                 </div>
@@ -2202,20 +2211,22 @@ export default function OmnichannelPage() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2">
                 <button
                   onClick={() => setShowIAPanel(!showIAPanel)}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all font-bold text-xs ${showIAPanel ? "bg-blue-600 border-blue-600 text-white shadow-lg shadow-blue-100" : "bg-white border-slate-200 text-slate-600 hover:border-blue-300"}`}
+                  className={`flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-xl border transition-all font-bold text-xs ${showIAPanel ? "bg-blue-600 border-blue-600 text-white shadow-lg shadow-blue-100" : "bg-white border-slate-200 text-slate-600 hover:border-blue-300"}`}
+                  title="Assistente IA"
                 >
                   <Sparkles
                     className={`w-4 h-4 ${showIAPanel ? "animate-pulse" : "text-blue-500"}`}
                   />
-                  Assistente IA
+                  <span className="hidden sm:inline">Assistente IA</span>
                 </button>
-                <div className="w-px h-6 bg-slate-200 mx-1"></div>
+                <div className="w-px h-6 bg-slate-200 mx-0.5 sm:mx-1"></div>
                 <button
                   onClick={() => setShowTransferModal(true)}
-                  className="p-2.5 hover:bg-slate-50 rounded-xl text-slate-400 transition-all"
+                  className="p-2 sm:p-2.5 hover:bg-slate-50 rounded-xl text-slate-400 transition-all shrink-0"
+                  title="Transferir Atendimento"
                 >
                   <ArrowRightLeft className="w-5 h-5" />
                 </button>
@@ -2225,7 +2236,7 @@ export default function OmnichannelPage() {
                 activeConversation.status === "CONCLUÍDO" ? (
                   <button
                     onClick={handleReopen}
-                    className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl transition-all font-bold text-sm px-4"
+                    className="p-2 sm:p-2.5 bg-emerald-50 text-emerald-600 rounded-xl transition-all font-bold text-xs sm:text-sm px-3 sm:px-4 shrink-0"
                   >
                     Reabrir
                   </button>
@@ -2237,14 +2248,14 @@ export default function OmnichannelPage() {
                         onClick={() =>
                           handleAssumeConversation(activeConversation.id)
                         }
-                        className="p-2.5 bg-blue-600 text-white rounded-xl transition-all font-bold text-sm px-4 shadow-lg shadow-blue-100 hover:scale-105"
+                        className="p-2 sm:p-2.5 bg-blue-600 text-white rounded-xl transition-all font-bold text-xs sm:text-sm px-3 sm:px-4 shadow-lg shadow-blue-100 hover:scale-105 shrink-0"
                       >
-                        Assumir Atendimento
+                        Assumir<span className="hidden sm:inline"> Atendimento</span>
                       </button>
                     )}
                     <button
                       onClick={() => setShowCloseModal(true)}
-                      className="p-2.5 bg-blue-50 text-blue-600 rounded-xl transition-all font-bold text-sm px-4"
+                      className="p-2 sm:p-2.5 bg-blue-50 text-blue-600 rounded-xl transition-all font-bold text-xs sm:text-sm px-3 sm:px-4 shrink-0"
                     >
                       Concluir
                     </button>
