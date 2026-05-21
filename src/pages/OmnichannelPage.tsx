@@ -1442,6 +1442,18 @@ export default function OmnichannelPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (type === "image") {
+      const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+      if (!allowed.includes(file.type)) {
+        toast.error("Formato de imagem não permitido. Use JPG, PNG ou WEBP.");
+        return;
+      }
+      if (file.size < 1000) {
+        toast.error("Imagem inválida ou vazia.");
+        return;
+      }
+    }
+
     // Size limits
     const limits = {
       image: 5 * 1024 * 1024, // 5MB
@@ -1483,11 +1495,18 @@ export default function OmnichannelPage() {
         const baseUrl = getApiBaseUrl();
         const formData = new FormData();
         formData.append("file", selectedFile);
-        formData.append("type", mediaType || "document");
-        formData.append("caption", mediaCaption || "");
+
+        let endpoint = `${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-media`;
+        if (mediaType === "image") {
+          endpoint = `${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-image`;
+          formData.append("caption", mediaCaption || "");
+        } else {
+          formData.append("type", mediaType || "document");
+          formData.append("caption", mediaCaption || "");
+        }
 
         const res = await authorizedFetch(
-          `${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-media`,
+          endpoint,
           {
             method: "POST",
             body: formData,
