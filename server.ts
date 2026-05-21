@@ -3515,7 +3515,43 @@ const DEFAULT_TEAM = {
     });
   });
 
-  async function processImageForZapi(fileBuffer: Buffer, mimeType: string) {
+  async function uploadChatMediaToStorage(buffer: Buffer, fileName: string, mimeType: string, conversationId: string) {
+    const safeFileName = fileName
+      .replace(/[^\w.\-]/g, "_")
+      .replace(/_+/g, "_");
+
+    const storagePath = `conversations/${conversationId}/${Date.now()}-${safeFileName}`;
+
+    const { error: uploadError } = await supabaseAdmin
+      .storage
+      .from("chat-media")
+      .upload(storagePath, buffer, {
+        contentType: mimeType,
+        upsert: true
+      });
+
+    if (uploadError) {
+      throw new Error(`Erro ao salvar mídia no Storage: ${uploadError.message}`);
+    }
+
+    const { data: publicData } = supabaseAdmin
+      .storage
+      .from("chat-media")
+      .getPublicUrl(storagePath);
+
+    const publicUrl = publicData?.publicUrl;
+
+    if (!publicUrl) {
+      throw new Error("Não foi possível gerar URL pública da imagem.");
+    }
+
+    return {
+      storagePath,
+      publicUrl
+    };
+  }
+
+  async function processImageForChat(fileBuffer: Buffer, mimeType: string) {
     const allowedMimes = [
       "image/jpeg",
       "image/jpg",
@@ -3551,15 +3587,11 @@ const DEFAULT_TEAM = {
       })
       .toBuffer();
 
-    if (!processedBuffer || processedBuffer.length < 1000) {
-      throw new Error("Falha ao processar imagem.");
-    }
-
     return {
       buffer: processedBuffer,
       mimeType: "image/jpeg",
       fileName: `imagem-${Date.now()}.jpg`,
-      originalMetadata: metadata
+      metadata
     };
   }
 
@@ -3622,10 +3654,14 @@ const DEFAULT_TEAM = {
 
       debugLogId = debugInsert?.id || null;
 
-      const processed = await processImageForZapi(req.file.buffer, originalMimeType);
+      const processed = await processImageForChat(req.file.buffer, originalMimeType);
 
-      const imageBase64 = processed.buffer.toString("base64");
-      const imageDataUri = `data:${processed.mimeType};base64,${imageBase64}`;
+      const { storagePath, publicUrl } = await uploadChatMediaToStorage(
+        processed.buffer,
+        processed.fileName,
+        processed.mimeType,
+        conversationId
+      );
 
       const finalCaption = caption
         ? formatAgentMessageForWhatsApp(caption, currentUser.name)
@@ -3635,7 +3671,7 @@ const DEFAULT_TEAM = {
         "/send-image",
         {
           phone,
-          image: imageDataUri,
+          image: publicUrl,
           caption: finalCaption
         },
         {
@@ -3643,29 +3679,6 @@ const DEFAULT_TEAM = {
           source_id: conversationId
         }
       );
-
-      // Save processed JPEG back to Supabase Storage Chat Media
-      let publicUrl = "";
-      let storagePath = "";
-      try {
-        const datePath = new Date().toISOString().slice(0, 10);
-        storagePath = `sent/${datePath}/${Date.now()}-${processed.fileName}`;
-        const { error: uploadErr } = await supabaseAdmin.storage
-          .from("chat-media")
-          .upload(storagePath, processed.buffer, {
-            contentType: "image/jpeg",
-            upsert: true
-          });
-
-        if (!uploadErr) {
-          const { data: storageData } = supabaseAdmin.storage.from("chat-media").getPublicUrl(storagePath);
-          publicUrl = storageData?.publicUrl || "";
-        } else {
-          console.warn("[UPLOAD PROCESSED IMAGE WARNING]", uploadErr);
-        }
-      } catch (storageErr) {
-        console.warn("[STORAGE PROCESSED IMAGE ERROR]", storageErr);
-      }
 
       const now = new Date().toISOString();
 
@@ -3682,7 +3695,7 @@ const DEFAULT_TEAM = {
           to_phone: phone,
           message_type: "image",
           content: finalCaption || "Imagem enviada",
-          caption: finalCaption,
+          caption: caption || null,
           media_mime_type: processed.mimeType,
           media_file_name: processed.fileName,
           media_size: processed.buffer.length,
@@ -3697,7 +3710,7 @@ const DEFAULT_TEAM = {
             originalSize: req.file.size,
             processedMimeType: processed.mimeType,
             processedSize: processed.buffer.length,
-            originalMetadata: processed.originalMetadata
+            metadata: processed.metadata
           },
           created_at: now
         })
@@ -3727,7 +3740,9 @@ const DEFAULT_TEAM = {
             processed_mime_type: processed.mimeType,
             processed_size: processed.buffer.length,
             backend_debug: {
-              originalMetadata: processed.originalMetadata
+              metadata: processed.metadata,
+              storagePath,
+              publicUrl
             },
             zapi_response: zapiResponse,
             success: true
@@ -3775,7 +3790,7 @@ const DEFAULT_TEAM = {
           originalSize: req.file.size,
           processedMimeType: processed.mimeType,
           processedSize: processed.buffer.length,
-          originalMetadata: processed.originalMetadata
+          metadata: processed.metadata
         }
       });
     } catch (error: any) {
@@ -3799,6 +3814,236 @@ const DEFAULT_TEAM = {
     }
   });
 
+  app.post("/api/omnichannel/conversations/:id/send-images", upload.array("files", 10), async (req, res) => {
+    const conversationId = req.params.id;
+    if (!isValidUUID(conversationId)) {
+      return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+    }
+
+    try {
+      const currentUser = await getAuthenticatedUser(req);
+
+      const { data: conversation, error: conversationError } = await supabaseAdmin
+        .from("crm_conversations")
+        .select("*")
+        .eq("id", conversationId)
+        .single();
+
+      if (conversationError || !conversation) {
+        return res.status(404).json({
+          success: false,
+          error: "Conversa não encontrada."
+        });
+      }
+
+      const phone = normalizeBrazilPhone(conversation.customer_phone_normalized);
+
+      if (!phone) {
+        return res.status(400).json({
+          success: false,
+          error: "Telefone do cliente inválido."
+        });
+      }
+
+      const files = (req.files || []) as any[];
+      if (files.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "Nenhuma imagem recebida."
+        });
+      }
+
+      const caption = String(req.body?.caption || "").trim();
+      const savedMessages: any[] = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        let fileDebugLogId = null;
+        try {
+          const originalMimeType = file.mimetype || "application/octet-stream";
+          
+          const { data: debugInsert } = await supabaseAdmin
+            .from("media_debug_logs")
+            .insert({
+              conversation_id: conversationId,
+              user_id: currentUser.id,
+              user_name: currentUser.name,
+              media_type: "image",
+              original_mime_type: originalMimeType,
+              original_size: file.size,
+              file_name: file.originalname || null,
+              success: false
+            })
+            .select("id")
+            .single();
+
+          fileDebugLogId = debugInsert?.id || null;
+
+          const processed = await processImageForChat(file.buffer, originalMimeType);
+
+          const { storagePath, publicUrl } = await uploadChatMediaToStorage(
+            processed.buffer,
+            processed.fileName,
+            processed.mimeType,
+            conversationId
+          );
+
+          // Padrão: legenda somente na primeira imagem.
+          const instanceCaption = i === 0 ? caption : "";
+          const finalCaption = instanceCaption
+            ? formatAgentMessageForWhatsApp(instanceCaption, currentUser.name)
+            : `*Guia de Férias - ${currentUser.name}:*`;
+
+          const zapiResponse = await callZapi(
+            "/send-image",
+            {
+              phone,
+              image: publicUrl,
+              caption: finalCaption
+            },
+            {
+              source: "conversation-image-multi",
+              source_id: conversationId
+            }
+          );
+
+          const now = new Date().toISOString();
+
+          const { data: savedMessage, error: messageError } = await supabaseAdmin
+            .from("crm_messages")
+            .insert({
+              conversation_id: conversationId,
+              customer_phone_normalized: phone,
+              external_message_id: zapiResponse?.messageId || zapiResponse?.id || `image-multi-${Date.now()}-${i}`,
+              sender_type: "agent",
+              sender_user_id: currentUser.id,
+              sender_name: currentUser.name,
+              from_phone: "",
+              to_phone: phone,
+              message_type: "image",
+              content: finalCaption || "Imagem enviada",
+              caption: instanceCaption || null,
+              media_mime_type: processed.mimeType,
+              media_file_name: processed.fileName,
+              media_size: processed.buffer.length,
+              media_url: publicUrl,
+              media_storage_url: publicUrl,
+              storage_path: storagePath,
+              status: "sent",
+              is_internal: false,
+              raw_payload: {
+                zapiResponse,
+                originalMimeType,
+                originalSize: file.size,
+                processedMimeType: processed.mimeType,
+                processedSize: processed.buffer.length,
+                metadata: processed.metadata,
+                multiIndex: i
+              },
+              created_at: now
+            })
+            .select("*")
+            .single();
+
+          if (messageError) {
+            throw messageError;
+          }
+
+          savedMessages.push(savedMessage);
+
+          await supabaseAdmin
+            .from("crm_conversations")
+            .update({
+              assigned_user_id: conversation.assigned_user_id || currentUser.id,
+              assigned_user_name: conversation.assigned_user_name || currentUser.name,
+              status: "OPEN",
+              last_message: "Imagem enviada",
+              last_message_at: now,
+              updated_at: now
+            })
+            .eq("id", conversationId);
+
+          if (fileDebugLogId) {
+            await supabaseAdmin
+              .from("media_debug_logs")
+              .update({
+                processed_mime_type: processed.mimeType,
+                processed_size: processed.buffer.length,
+                backend_debug: {
+                  metadata: processed.metadata,
+                  storagePath,
+                  publicUrl
+                },
+                zapi_response: zapiResponse,
+                success: true
+              })
+              .eq("id", fileDebugLogId);
+          }
+
+          // Live update via SSE for each message
+          broadcastEvent("message.received", {
+            conversation: {
+              ...conversation,
+              assigned_user_id: conversation.assigned_user_id || currentUser.id,
+              assigned_user_name: conversation.assigned_user_name || currentUser.name,
+              status: "OPEN",
+              last_message: "Imagem enviada",
+              last_message_at: now,
+              updated_at: now
+            },
+            message: {
+              ...savedMessage,
+              normalized_message_type: "image",
+              display_content: savedMessage.content,
+              display_media_url: publicUrl
+            }
+          });
+
+        } catch (fileErr: any) {
+          console.error(`[SEND MULTI-IMAGE FILE ${i} ERROR]`, fileErr);
+          if (fileDebugLogId) {
+            await supabaseAdmin
+              .from("media_debug_logs")
+              .update({
+                success: false,
+                error: fileErr instanceof Error ? fileErr.message : String(fileErr)
+              })
+              .eq("id", fileDebugLogId);
+          }
+        }
+
+        // Wait 1 second (1000ms) between sends to avoid rate limits
+        if (i < files.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+
+      broadcastEvent("conversation.updated", {
+        conversation: {
+          ...conversation,
+          assigned_user_id: conversation.assigned_user_id || currentUser.id,
+          assigned_user_name: conversation.assigned_user_name || currentUser.name,
+          status: "OPEN",
+          last_message: "Imagens enviadas",
+          last_message_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }
+      });
+
+      return res.json({
+        success: true,
+        messages: savedMessages
+      });
+
+    } catch (error: any) {
+      console.error("[SEND IMAGES BATCH ERROR]", error);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Erro ao processar lote de imagens."
+      });
+    }
+  });
+
   app.get("/api/debug/media", async (req, res) => {
     try {
       let sharpAvailable = false;
@@ -3809,9 +4054,9 @@ const DEFAULT_TEAM = {
       return res.json({
         success: true,
         sharpAvailable,
-        maxUploadMb: 20,
-        acceptedImages: ["image/jpeg", "image/png", "image/webp"],
-        outputImageFormat: "image/jpeg"
+        bucketExists: true,
+        bucketName: "chat-media",
+        maxUploadMb: 20
       });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });

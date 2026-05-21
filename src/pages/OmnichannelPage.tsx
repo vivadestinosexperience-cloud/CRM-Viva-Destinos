@@ -104,6 +104,11 @@ export default function OmnichannelPage() {
   const [showIAPanel, setShowIAPanel] = useState(false);
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
   const [showMediaPreview, setShowMediaPreview] = useState(false);
+  const [selectedImageFiles, setSelectedImageFiles] = useState<File[]>([]);
+  const [imagePreviewUrls, setImagePreviewUrls] = useState<string[]>([]);
+  const [imageCaption, setImageCaption] = useState("");
+  const [isSendingImages, setIsSendingImages] = useState(false);
+  const [showMultiImagePreview, setShowMultiImagePreview] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [noteContent, setNoteContent] = useState("");
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
@@ -450,6 +455,21 @@ export default function OmnichannelPage() {
     (a) => a.id === activeConversation?.whatsapp_account_id,
   );
 
+  function getMessageImageSrc(message: Message) {
+    if (!message) return null;
+    const raw_payload = (message as any).raw_payload;
+    return (
+      (message as any).display_media_url ||
+      (message as any).media_storage_url ||
+      message.media_url ||
+      raw_payload?.media_storage_url ||
+      raw_payload?.publicUrl ||
+      raw_payload?.imageUrl ||
+      raw_payload?.zapiResponse?.imageUrl ||
+      null
+    );
+  }
+
   function renderMessageContent(message: Message) {
     if (!message) return null;
 
@@ -473,23 +493,24 @@ export default function OmnichannelPage() {
           <p className="text-sm whitespace-pre-wrap break-words">{content}</p>
         );
 
-      case "image":
+      case "image": {
+        const imageSrc = getMessageImageSrc(message);
         return (
           <div className="space-y-2">
-            {mediaUrl ? (
+            {imageSrc ? (
               <img
                 referrerPolicy="no-referrer"
-                src={mediaUrl}
+                src={imageSrc}
                 alt={message.caption || content || "Imagem"}
-                className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity shadow-sm border border-slate-100"
-                onClick={() => window.open(mediaUrl, "_blank")}
+                className="max-w-xs rounded-xl border object-cover cursor-pointer hover:opacity-90 transition-opacity shadow-sm border-slate-100"
+                onClick={() => window.open(imageSrc, "_blank")}
                 onError={(e) => {
-                  e.currentTarget.style.display = "none";
+                  console.error("Erro ao carregar imagem", imageSrc);
                 }}
               />
             ) : (
-              <div className="text-[10px] text-red-500 italic">
-                Imagem indisponível
+              <div className="text-[11px] text-amber-600 bg-amber-50/50 px-2 py-1 rounded border border-amber-100">
+                Imagem enviada anteriormente sem arquivo salvo.
               </div>
             )}
             {(message.caption ||
@@ -500,6 +521,7 @@ export default function OmnichannelPage() {
             )}
           </div>
         );
+      }
 
       case "audio":
       case "ptt": {
@@ -1419,6 +1441,126 @@ export default function OmnichannelPage() {
       },
       { label: "Erro ao reabrir atendimento" },
     );
+  };
+
+  const handleMultiFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+    const validFiles: File[] = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!allowed.includes(file.type)) {
+        toast.error(`Formato de imagem não permitido para "${file.name}". Use JPG, PNG ou WEBP.`);
+        continue;
+      }
+      if (file.size < 1000) {
+        toast.error(`Arquivo "${file.name}" está corrompido ou vazio.`);
+        continue;
+      }
+      if (file.size > 20 * 1024 * 1024) {
+        toast.error(`Arquivo "${file.name}" é muito grande (máximo 20MB).`);
+        continue;
+      }
+      validFiles.push(file);
+    }
+
+    if (validFiles.length === 0) return;
+
+    const previews = validFiles.map((file) => URL.createObjectURL(file));
+
+    setSelectedImageFiles((prev) => [...prev, ...validFiles]);
+    setImagePreviewUrls((prev) => [...prev, ...previews]);
+    setShowMultiImagePreview(true);
+    setShowAttachmentMenu(false);
+    
+    e.target.value = "";
+  };
+
+  const handleRemoveImageFile = (index: number) => {
+    setSelectedImageFiles((prev) => {
+      const updated = [...prev];
+      updated.splice(index, 1);
+      if (updated.length === 0) {
+        setShowMultiImagePreview(false);
+      }
+      return updated;
+    });
+    setImagePreviewUrls((prev) => {
+      URL.revokeObjectURL(prev[index]);
+      const updated = [...prev];
+      updated.splice(index, 1);
+      return updated;
+    });
+  };
+
+  const handleCancelMultiImage = () => {
+    imagePreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+    setSelectedImageFiles([]);
+    setImagePreviewUrls([]);
+    setImageCaption("");
+    setShowMultiImagePreview(false);
+  };
+
+  const handleSendImages = async () => {
+    if (!activeConversationId) {
+      toast.error("Nenhuma conversa selecionada.");
+      return;
+    }
+
+    if (!selectedImageFiles.length) {
+      toast.error("Nenhuma imagem selecionada.");
+      return;
+    }
+
+    setIsSendingImages(true);
+
+    await safeAction(
+      async () => {
+        const baseUrl = getApiBaseUrl();
+        const formData = new FormData();
+
+        selectedImageFiles.forEach((file) => {
+          formData.append("files", file);
+        });
+
+        formData.append("caption", imageCaption || "");
+
+        const response = await authorizedFetch(
+          `${baseUrl}/api/omnichannel/conversations/${activeConversationId}/send-images`,
+          {
+            method: "POST",
+            body: formData,
+          }
+        );
+
+        const data = await safeReadJson(response);
+
+        if (!response.ok || !data?.success) {
+          throw new Error(data?.error || "Erro ao enviar imagens.");
+        }
+
+        toast.success(
+          selectedImageFiles.length === 1
+            ? "Imagem enviada com sucesso!"
+            : "Imagens enviadas com sucesso!"
+        );
+
+        imagePreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+        setSelectedImageFiles([]);
+        setImagePreviewUrls([]);
+        setImageCaption("");
+        setShowMultiImagePreview(false);
+
+        await loadMessages(activeConversationId, true);
+        await loadConversations(true);
+      },
+      { label: "Erro ao enviar imagem(ens)" }
+    );
+
+    setIsSendingImages(false);
   };
 
   const fileToBase64 = (file: File): Promise<string> => {
@@ -2528,8 +2670,9 @@ export default function OmnichannelPage() {
                               type="file"
                               ref={fileInputRef}
                               className="hidden"
-                              accept="image/*"
-                              onChange={(e) => handleFileSelect(e, "image")}
+                              accept="image/jpeg,image/png,image/webp"
+                              multiple
+                              onChange={(e) => handleMultiFileSelect(e)}
                             />
                             <input
                               type="file"
@@ -2895,6 +3038,107 @@ export default function OmnichannelPage() {
                 >
                   Fechar
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {showMultiImagePreview && (
+          <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                if (!isSendingImages) handleCancelMultiImage();
+              }}
+              className="absolute inset-0 bg-slate-900/80 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-2xl bg-white rounded-[2.5rem] shadow-2xl overflow-hidden z-10"
+            >
+              <div className="p-8 border-b border-slate-50 flex items-center justify-between">
+                <div>
+                  <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">
+                    Enviar {selectedImageFiles.length === 1 ? "Foto" : `${selectedImageFiles.length} Fotos`}
+                  </h3>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+                    Viva Destinos Omnichannel
+                  </p>
+                </div>
+                <button
+                  onClick={handleCancelMultiImage}
+                  disabled={isSendingImages}
+                  className="p-3 hover:bg-red-50 text-slate-300 hover:text-red-500 rounded-2xl transition-all"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="p-8 space-y-6 max-h-[70vh] overflow-y-auto">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                  {imagePreviewUrls.map((url, index) => (
+                    <div key={index} className="relative aspect-square bg-slate-50 rounded-2xl border border-slate-100 overflow-hidden group">
+                      <img
+                        src={url}
+                        className="w-full h-full object-cover"
+                        alt={`Preview ${index + 1}`}
+                      />
+                      {!isSendingImages && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveImageFile(index)}
+                          className="absolute top-2 right-2 p-1.5 bg-red-600 hover:bg-red-700 text-white rounded-full shadow-md transition-colors"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2">
+                    Legenda Opcional
+                  </label>
+                  <textarea
+                    rows={2}
+                    className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-3xl focus:ring-4 focus:ring-blue-500/10 outline-none transition-all font-bold text-sm resize-none"
+                    placeholder="Digite uma legenda para a sua mídia..."
+                    value={imageCaption}
+                    onChange={(e) => setImageCaption(e.target.value)}
+                    disabled={isSendingImages}
+                  />
+                </div>
+
+                <div className="flex items-center gap-4 pt-4">
+                  <button
+                    onClick={handleCancelMultiImage}
+                    disabled={isSendingImages}
+                    className="flex-1 p-5 text-xs font-black text-slate-400 uppercase tracking-widest hover:text-slate-600 transition-colors"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={handleSendImages}
+                    disabled={isSendingImages}
+                    className="flex-[2] p-5 bg-blue-600 text-white rounded-[1.5rem] text-xs font-black uppercase tracking-widest shadow-xl shadow-blue-100 hover:scale-[1.02] transition-all flex items-center justify-center gap-3"
+                  >
+                    {isSendingImages ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />{" "}
+                        Enviando...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-4 h-4" /> {selectedImageFiles.length === 1 ? "Enviar Foto" : `Enviar ${selectedImageFiles.length} Fotos`}
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>
