@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
   Megaphone, 
   Plus, 
@@ -81,10 +81,33 @@ export default function CampaignsPage() {
     getCampaignRecipients,
     whatsAppAccounts, 
     customers,
+    conversations,
     currentUser,
     teams,
     tags
   } = useAppStore();
+
+  const enrichedCustomers = useMemo(() => {
+    return customers.map(c => {
+      const customerConvs = conversations.filter(conv => conv.customer_id === c.id);
+      const tagSet = new Set<string>();
+      customerConvs.forEach(conv => {
+        if (conv.tags && Array.isArray(conv.tags)) {
+          conv.tags.forEach((tag: any) => {
+            if (typeof tag === 'string') {
+              tagSet.add(tag);
+            } else if (tag && typeof tag === 'object' && tag.name) {
+              tagSet.add(tag.name);
+            }
+          });
+        }
+      });
+      return {
+        ...c,
+        tags: Array.from(tagSet)
+      };
+    });
+  }, [customers, conversations]);
   
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
@@ -184,7 +207,7 @@ export default function CampaignsPage() {
       const contacts: any[] = [];
       
       if (formData.audienceType === 'crm') {
-         const targetCustomers = customers.filter(c => {
+         const targetCustomers = enrichedCustomers.filter(c => {
            if (c.opt_out) return false;
            if (formData.selectedTags.length === 0) return true;
            return formData.selectedTags.some(tag => c.tags?.includes(tag));
@@ -711,7 +734,7 @@ export default function CampaignsPage() {
                                      </div>
                                      <div>
                                         <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight">Recuperação Estimada</h4>
-                                        <p className="text-[10px] font-bold text-indigo-600 uppercase">Cerca de {customers.filter(c => formData.selectedTags.length === 0 || formData.selectedTags.some(t => c.tags?.includes(t))).length} contatos encontrados</p>
+                                        <p className="text-[10px] font-bold text-indigo-600 uppercase">Cerca de {enrichedCustomers.filter(c => formData.selectedTags.length === 0 || formData.selectedTags.some(t => c.tags?.includes(t))).length} contatos encontrados</p>
                                      </div>
                                   </div>
                                   <ShieldCheck className="w-6 h-6 text-indigo-200" />
@@ -796,7 +819,7 @@ export default function CampaignsPage() {
                                <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
                                   <div className="space-y-1">
                                      <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Contatos</p>
-                                     <p className="text-lg font-black">{formData.audienceType === 'crm' ? customers.filter(c => formData.selectedTags.length === 0 || formData.selectedTags.some(t => c.tags?.includes(t))).length : formData.validatedList.filter(v => v.valid).length}</p>
+                                     <p className="text-lg font-black">{formData.audienceType === 'crm' ? enrichedCustomers.filter(c => formData.selectedTags.length === 0 || formData.selectedTags.some(t => c.tags?.includes(t))).length : formData.validatedList.filter(v => v.valid).length}</p>
                                   </div>
                                   <div className="space-y-1">
                                      <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Mensagem</p>

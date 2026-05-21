@@ -695,16 +695,9 @@ export const useAppStore = create<AppState>()(
         try {
           const newCampaign = await campaignService.create({
             ...campaign,
+            contacts: recipients,
             created_by: get().currentUser?.id
           });
-          
-          if (recipients && recipients.length > 0) {
-            const enrichedRecipients = recipients.map(r => ({
-              ...r,
-              campaign_id: newCampaign.id
-            }));
-            await campaignRecipientService.bulkCreate(enrichedRecipients);
-          }
           
           const campaignWithCount = {
             ...newCampaign,

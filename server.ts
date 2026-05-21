@@ -2255,6 +2255,35 @@ const DEFAULT_TEAM = {
     }
   });
 
+  app.post("/api/crm/customers", async (req, res) => {
+    try {
+      const { name, phone: rawPhone, source } = req.body;
+
+      if (!rawPhone) {
+        return res.status(400).json({ success: false, error: "O número de telefone é obrigatório." });
+      }
+
+      const normalized = normalizeBrazilPhone(rawPhone);
+      if (!normalized) {
+        return res.status(400).json({ success: false, error: "Número de telefone inválido para o padrão brasileiro." });
+      }
+
+      // Find or create customer
+      const customer = await findOrCreateCustomerByPhone(normalized, name || "Cliente");
+
+      return res.json({
+        success: true,
+        customer
+      });
+    } catch (err: any) {
+      console.error("[POST /api/crm/customers error]", err);
+      return res.status(500).json({
+        success: false,
+        error: err?.message || "Erro interno ao cadastrar/buscar cliente"
+      });
+    }
+  });
+
   app.post("/api/omnichannel/conversations", async (req, res) => {
     try {
       const data = req.body;
