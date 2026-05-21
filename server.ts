@@ -4188,27 +4188,6 @@ const DEFAULT_TEAM = {
       const audioBase64 = converted.buffer.toString("base64");
       const audioDataUri = `data:${converted.mimeType};base64,${audioBase64}`;
 
-      const introMessage = formatAgentMessageForWhatsApp(
-        "Estou enviando um áudio.",
-        currentUser.name
-      );
-
-      try {
-        await callZapi(
-          "/send-text",
-          {
-            phone,
-            message: introMessage
-          },
-          {
-            source: "conversation-audio-intro",
-            source_id: conversationId
-          }
-        );
-      } catch (introErr) {
-        console.error("[INTRO MSG WARNING]", introErr);
-      }
-
       // Upload converted MP3 to Supabase Storage
       let publicUrl = "";
       try {
