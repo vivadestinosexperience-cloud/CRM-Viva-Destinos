@@ -1546,7 +1546,7 @@ const DEFAULT_TEAM = {
       customer_phone_normalized: normalized.phone,
       external_message_id: normalized.messageId,
       sender_type: isOutgoing ? 'agent_external' : 'customer',
-      sender_name: isOutgoing ? 'WhatsApp Celular' : (normalized.name || customer.name || 'Cliente'),
+      sender_name: isOutgoing ? 'WhatsApp Business' : (normalized.name || customer.name || 'Cliente'),
       from_phone: isOutgoing ? (normalized.raw?.connectedPhone || "") : normalized.phone,
       to_phone: isOutgoing ? normalized.phone : (normalized.raw?.connectedPhone || ""),
       message_type: normalized.messageType,
@@ -2250,8 +2250,8 @@ const DEFAULT_TEAM = {
     });
   });
 
-  // Recebimento Real (POST) - Chamado pela Z-API
-  app.post("/api/webhooks/zapi/received", async (req, res) => {
+  // Processador único de Webhooks Z-API
+  async function processZapiMessageWebhook(req: any, res: any, webhookKind: string) {
     const payload = req.body || {};
     let logId: string | null = null;
     const direction = getZapiMessageDirection(payload);
@@ -2263,7 +2263,7 @@ const DEFAULT_TEAM = {
       const { data: logData, error: logError } = await supabaseAdmin
         .from("zapi_webhook_logs")
         .insert({
-          event_type: "received",
+          event_type: webhookKind,
           payload,
           raw_phone: payload?.phone || null,
           phone_normalized: customerPhoneNormalized || null,
@@ -2347,6 +2347,16 @@ const DEFAULT_TEAM = {
         error: errorMsg
       });
     }
+  }
+
+  // Recebimento Real (POST) - Chamado pela Z-API
+  app.post("/api/webhooks/zapi/received", async (req, res) => {
+    return processZapiMessageWebhook(req, res, "received");
+  });
+
+  // Envio Real (POST) - Chamado pela Z-API
+  app.post("/api/webhooks/zapi/sent", async (req, res) => {
+    return processZapiMessageWebhook(req, res, "sent");
   });
 
   // Events SSE for fallback Real-time
@@ -2367,159 +2377,42 @@ const DEFAULT_TEAM = {
 
   app.get("/api/debug/zapi/sync-sent", async (req, res) => {
     try {
-      const results: any[] = [];
+      const appUrl = getPublicAppUrl();
+      const now24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-      const scenarios = [
-        {
-          name: "1. Mensagem recebida individual válida",
-          payload: {
-            phone: "5511999998888",
-            connectedPhone: "5511988887777",
-            senderName: "Cliente Teste",
-            text: { message: "Olá, gostaria de saber mais informacoes." },
-            messageId: `test-inc-${Date.now()}`,
-            fromMe: false
-          }
-        },
-        {
-          name: "2. Mensagem enviada pelo celular (fromMe: true)",
-          payload: {
-            phone: "5511999998888",
-            connectedPhone: "5511988887777",
-            senderName: "WhatsApp Celular",
-            text: { message: "Claro! Como posso te ajudar?" },
-            messageId: `test-out-${Date.now()}`,
-            fromMe: true
-          }
-        },
-        {
-          name: "3. Mensagem de grupo (Bloqueada)",
-          payload: {
-            phone: "120363222333@g.us",
-            isGroup: true,
-            text: { message: "Mensagem no grupo de teste." },
-            messageId: `test-group-${Date.now()}`,
-            fromMe: false
-          }
-        },
-        {
-          name: "4. Mensagem de Newsletter (Bloqueada)",
-          payload: {
-            phone: "120363999999@newsletter",
-            isNewsletter: true,
-            text: { message: "Novidades do canal." },
-            messageId: `test-news-${Date.now()}`,
-            fromMe: false
-          }
-        },
-        {
-          name: "5. Mensagem duplicada (fromMe: true)",
-          payload: null as any
-        }
-      ];
+      const { data: logs, error: logsError } = await supabaseAdmin
+        .from("zapi_webhook_logs")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(200);
 
-      const scenario2Id = scenarios[1].payload.messageId;
-      scenarios[4].payload = {
-        ...scenarios[1].payload,
-        messageId: scenario2Id
-      };
+      if (logsError) throw logsError;
 
-      for (const sc of scenarios) {
-        const payload = sc.payload;
-        const diagnosis = diagnoseZapiPayloadOrigin(payload);
-        const direction = getZapiMessageDirection(payload);
-        const fromMe = payload?.fromMe === true;
-        const customerPhoneNormalized = getCustomerPhoneFromZapiPayload(payload);
+      const fromMeTrueProcessed = logs?.filter(l => l.from_me === true && l.processed === true && l.ignored === false).length || 0;
+      const fromMeFalseProcessed = logs?.filter(l => l.from_me === false && l.processed === true && l.ignored === false).length || 0;
+      const ignoredGroups = logs?.filter(l => l.ignored === true).length || 0;
+      const last24h = logs?.filter(l => l.created_at >= now24).length || 0;
 
-        let status = "ignored";
-        let messageDbId = null;
-        let logDbId = null;
-        let errorMsg = null;
-
-        try {
-          const { data: logData, error: logError } = await supabaseAdmin
-            .from("zapi_webhook_logs")
-            .insert({
-              event_type: "received_debug",
-              payload,
-              raw_phone: payload?.phone || null,
-              phone_normalized: customerPhoneNormalized || null,
-              processed: false,
-              ignored: false,
-              origin: null,
-              error: null,
-              direction,
-              from_me: fromMe,
-              customer_phone_normalized: customerPhoneNormalized || null,
-              created_at: new Date().toISOString()
-            })
-            .select("id")
-            .single();
-
-          if (logError) throw logError;
-          logDbId = logData?.id || null;
-
-          if (!diagnosis.allowed) {
-            status = "ignored";
-            if (logDbId) {
-              await supabaseAdmin
-                .from("zapi_webhook_logs")
-                .update({
-                  processed: false,
-                  ignored: true,
-                  origin: (diagnosis as any).suggestedOrigin || diagnosis.origin || "blocked",
-                  raw_phone: diagnosis.rawPhone || payload?.phone || null,
-                  phone_normalized: customerPhoneNormalized || null,
-                  customer_phone_normalized: customerPhoneNormalized || null,
-                  error: diagnosis.reason || "Payload bloqueado: não é conversa individual.",
-                  ignored_reason: diagnosis.reason || "Payload bloqueado: não é conversa individual.",
-                  diagnostic: diagnosis
-                })
-                .eq("id", logDbId);
-            }
-          } else {
-            const result = await processIncomingDirectZapiMessage(payload, logDbId, diagnosis);
-            status = "processed";
-            messageDbId = result.message_db_id;
-          }
-        } catch (err: any) {
-          status = "error";
-          errorMsg = getErrorMessage(err);
-          if (logDbId) {
-            await supabaseAdmin
-              .from("zapi_webhook_logs")
-              .update({
-                processed: false,
-                ignored: false,
-                error: errorMsg,
-                ignored_reason: errorMsg
-              })
-              .eq("id", logDbId);
-          }
-        }
-
-        results.push({
-          scenario: sc.name,
-          payload,
-          diagnosis,
-          status,
-          direction,
-          customerPhoneNormalized,
-          logDbId,
-          messageDbId,
-          error: errorMsg
-        });
-      }
+      const lastOutgoingWebhooks = logs?.filter(l => l.from_me === true).slice(0, 10) || [];
+      const lastIncomingWebhooks = logs?.filter(l => l.from_me === false && l.ignored === false).slice(0, 10) || [];
+      const lastIgnored = logs?.filter(l => l.ignored === true).slice(0, 10) || [];
 
       return res.status(200).json({
         success: true,
-        summary: {
-          total: scenarios.length,
-          processed: results.filter(r => r.status === "processed").length,
-          ignored: results.filter(r => r.status === "ignored").length,
-          error: results.filter(r => r.status === "error").length
+        instruction: "Verifique na Z-API se o campo Ao enviar está configurado e se 'Notificar as enviadas por mim também' está ativo.",
+        webhookUrls: {
+          received: `${appUrl}/api/webhooks/zapi/received`,
+          sent: `${appUrl}/api/webhooks/zapi/sent`
         },
-        results
+        totals: {
+          fromMeTrueProcessed,
+          fromMeFalseProcessed,
+          ignoredGroups,
+          last24h
+        },
+        lastOutgoingWebhooks,
+        lastIncomingWebhooks,
+        lastIgnored
       });
     } catch (err: any) {
       return res.status(500).json({
@@ -3013,7 +2906,7 @@ const DEFAULT_TEAM = {
   app.post("/api/omnichannel/start-chat", async (req, res) => {
     try {
       const currentUser = await getAuthenticatedUser(req);
-      const { name, phone, message, customerId, customer_id, newName, newPhone, accountId, t_id } = req.body;
+      const { name, phone, message, customerId, customer_id, newName, newPhone, accountId } = req.body;
 
       let finalPhone = phone || newPhone;
       let finalName = name || newName;
@@ -3040,8 +2933,9 @@ const DEFAULT_TEAM = {
         return res.status(400).json({ success: false, error: "Telefone inválido ou formato não suportado." });
       }
 
-      const rawMessage = message || "Olá! Te chamei pelo CRM Viva Experience.";
-      const finalMessage = formatAgentMessageForWhatsApp(rawMessage, currentUser.name);
+      const trimMessageText = String(message || "").trim();
+      const hasMessageText = trimMessageText.length > 0;
+      const finalMessage = hasMessageText ? formatAgentMessageForWhatsApp(trimMessageText, currentUser.name) : null;
 
       // Find or create customer
       const customer = await findOrCreateCustomerByPhone(normalized, finalName || "Cliente Novo");
@@ -3054,26 +2948,29 @@ const DEFAULT_TEAM = {
         .maybeSingle();
 
       const now = new Date().toISOString();
-
       const activeAccountId = accountId || req.body.whatsapp_account_id || null;
 
       if (conversation) {
         // Reutilizar conversa antiga e atualizar para OPEN e atribuir
+        const updates: any = {
+          status: "OPEN",
+          whatsapp_account_id: activeAccountId || conversation.whatsapp_account_id,
+          assigned_user_id: currentUser.id,
+          assigned_user_name: currentUser.name,
+          team_id: currentUser.team_id || "comercial",
+          team_name: currentUser.team_name || "Comercial",
+          queue_id: currentUser.team_id || "comercial",
+          queue_name: currentUser.team_name || "Comercial",
+          updated_at: now
+        };
+        if (hasMessageText && finalMessage) {
+          updates.last_message = finalMessage;
+          updates.last_message_at = now;
+        }
+
         const { data: updatedConv, error: updateErr } = await supabaseAdmin
           .from(TABLES.conversations)
-          .update({
-            status: "OPEN",
-            whatsapp_account_id: activeAccountId || conversation.whatsapp_account_id,
-            assigned_user_id: currentUser.id,
-            assigned_user_name: currentUser.name,
-            team_id: currentUser.team_id || "comercial",
-            team_name: currentUser.team_name || "Comercial",
-            queue_id: currentUser.team_id || "comercial",
-            queue_name: currentUser.team_name || "Comercial",
-            last_message: finalMessage,
-            last_message_at: now,
-            updated_at: now
-          })
+          .update(updates)
           .eq("id", conversation.id)
           .select()
           .single();
@@ -3088,25 +2985,27 @@ const DEFAULT_TEAM = {
           resolvedAccountId = channels && channels[0] ? channels[0].id : null;
         }
 
+        const insertPayload: any = {
+          customer_id: customer.id,
+          whatsapp_account_id: resolvedAccountId,
+          customer_phone_normalized: normalized,
+          assigned_user_id: currentUser.id,
+          assigned_user_name: currentUser.name,
+          status: "OPEN",
+          team_id: currentUser.team_id || "comercial",
+          team_name: currentUser.team_name || "Comercial",
+          queue_id: currentUser.team_id || "comercial",
+          queue_name: currentUser.team_name || "Comercial",
+          source: "WhatsApp Z-API",
+          last_message: finalMessage || "Atendimento iniciado",
+          last_message_at: now,
+          created_at: now,
+          updated_at: now
+        };
+
         const { data: newConv, error: insertErr } = await supabaseAdmin
           .from(TABLES.conversations)
-          .insert({
-            customer_id: customer.id,
-            whatsapp_account_id: resolvedAccountId,
-            customer_phone_normalized: normalized,
-            assigned_user_id: currentUser.id,
-            assigned_user_name: currentUser.name,
-            status: "OPEN",
-            team_id: currentUser.team_id || "comercial",
-            team_name: currentUser.team_name || "Comercial",
-            queue_id: currentUser.team_id || "comercial",
-            queue_name: currentUser.team_name || "Comercial",
-            source: "WhatsApp Z-API",
-            last_message: finalMessage,
-            last_message_at: now,
-            created_at: now,
-            updated_at: now
-          })
+          .insert(insertPayload)
           .select()
           .single();
 
@@ -3114,52 +3013,58 @@ const DEFAULT_TEAM = {
         conversation = newConv;
       }
 
-      // Enviar pela Z-API via callZapi
-      const zapiResponse = await callZapi(
-        "/send-text",
-        {
-          phone: normalized,
-          message: finalMessage
-        },
-        {
-          source: "start-chat",
-          source_id: conversation.id
-        }
-      );
+      let savedMessage = null;
 
-      // Salvar em crm_messages
-      const { data: savedMessage, error: messageError } = await supabaseAdmin
-        .from(TABLES.messages)
-        .insert({
-          conversation_id: conversation.id,
-          customer_phone_normalized: normalized,
-          external_message_id: zapiResponse?.messageId || zapiResponse?.id || `sent-${Date.now()}`,
-          sender_type: "agent",
-          sender_user_id: currentUser.id,
-          sender_name: currentUser.name,
-          from_phone: "",
-          to_phone: normalized,
-          message_type: "text",
-          content: finalMessage,
-          status: "sent",
-          is_internal: false,
-          raw_payload: zapiResponse,
-          created_at: now
-        })
-        .select()
-        .single();
+      if (hasMessageText && finalMessage) {
+        // Enviar pela Z-API via callZapi
+        const zapiResponse = await callZapi(
+          "/send-text",
+          {
+            phone: normalized,
+            message: finalMessage
+          },
+          {
+            source: "start-chat",
+            source_id: conversation.id
+          }
+        );
 
-      if (messageError) throw messageError;
+        // Salvar em crm_messages
+        const { data: savedMsg, error: messageError } = await supabaseAdmin
+          .from(TABLES.messages)
+          .insert({
+            conversation_id: conversation.id,
+            customer_phone_normalized: normalized,
+            external_message_id: zapiResponse?.messageId || zapiResponse?.id || `sent-${Date.now()}`,
+            sender_type: "agent",
+            sender_user_id: currentUser.id,
+            sender_name: currentUser.name,
+            from_phone: "",
+            to_phone: normalized,
+            message_type: "text",
+            content: finalMessage,
+            status: "sent",
+            is_internal: false,
+            raw_payload: zapiResponse,
+            created_at: now
+          })
+          .select()
+          .single();
+
+        if (messageError) throw messageError;
+        savedMessage = savedMsg;
+
+        broadcastEvent("message.received", {
+          conversation,
+          message: {
+            ...savedMessage,
+            normalized_message_type: "text",
+            display_content: savedMessage.content
+          }
+        });
+      }
 
       broadcastEvent("conversation.updated", conversation);
-      broadcastEvent("message.received", {
-        conversation,
-        message: {
-          ...savedMessage,
-          normalized_message_type: "text",
-          display_content: savedMessage.content
-        }
-      });
 
       return res.json({
         success: true,

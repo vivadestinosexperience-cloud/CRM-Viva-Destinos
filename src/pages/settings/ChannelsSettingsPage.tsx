@@ -622,6 +622,13 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                   </div>
                 );
               })}
+
+              <div className="p-4 bg-blue-50/50 border border-blue-100 rounded-2xl text-[11px] text-slate-600 leading-relaxed font-medium space-y-1">
+                <span className="font-extrabold text-blue-700 block uppercase tracking-wider text-[10px]">⚠️ Sincronização de Mensagens do Celular / WhatsApp Business</span>
+                <p>
+                  Para mensagens enviadas diretamente pelo celular, WhatsApp Business ou WhatsApp Web aparecerem no CRM, o webhook <strong className="text-blue-700 font-extrabold">Ao enviar</strong> precisa estar ativo na Z-API, com a opção <strong className="text-blue-700 font-extrabold">“Notificar as enviadas por mim também”</strong> obrigatoriamente ativa.
+                </p>
+              </div>
               
               <div className="pt-4 flex flex-wrap gap-3">
                 <button 

@@ -75,6 +75,25 @@ import { TagManagementModal } from "../components/TagManagementModal";
 import { LeadDetailsModal } from "../components/LeadDetailsModal";
 import { FilterPanel } from "../components/FilterPanel";
 
+function safeArray(value: any): any[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function safeText(value: any, fallback: string = ""): string {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+
+  try {
+    if (value.message) return String(value.message);
+    if (value.text) return String(value.text);
+    if (value.content) return String(value.content);
+    return JSON.stringify(value);
+  } catch {
+    return fallback;
+  }
+}
+
 export default function OmnichannelPage() {
   const {
     whatsAppAccounts,
@@ -195,7 +214,7 @@ export default function OmnichannelPage() {
 
       if (response && response.success) {
         // Optimistic update
-        const updatedConvs = conversations.map((c) => {
+        const updatedConvs = safeConversations.map((c) => {
           if (c.id === conversationId) {
             const currentTags = c.tags || [];
             if (!currentTags.some((t) => t.id === tagId)) {
@@ -221,7 +240,7 @@ export default function OmnichannelPage() {
       );
       if (response && response.success) {
         // Optimistic update
-        const updatedConvs = conversations.map((c) => {
+        const updatedConvs = safeConversations.map((c) => {
           if (c.id === conversationId) {
             const currentTags = c.tags || [];
             return { ...c, tags: currentTags.filter((t) => t.id !== tagId) };
@@ -1213,18 +1232,26 @@ export default function OmnichannelPage() {
 
   const handleCreateChat = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newChatData.accountId || !newChatData.teamId) {
-      toast.error("Informe o canal e a equipe");
-      return;
+
+    const customerId = newChatData.customerId || null;
+    const phone = customerId ? "has_customer" : String(newChatData.newPhone || "").trim();
+    const name = customerId ? "has_customer" : String(newChatData.newName || "").trim();
+
+    if (!customerId) {
+      if (!phone) {
+        toast.error("Informe o telefone do cliente.");
+        return;
+      }
+      if (!name) {
+        toast.error("Informe o nome do cliente.");
+        return;
+      }
     }
 
-    if (
-      !newChatData.customerId &&
-      (!newChatData.newName || !newChatData.newPhone)
-    ) {
-      toast.error("Informe o cliente ou preencha nome e telefone.");
-      return;
-    }
+    const finalTeamId = newChatData.teamId || "comercial";
+    const selectedTeamObj = safeTeams.find((t) => t.id === finalTeamId);
+    const finalTeamName = selectedTeamObj?.name || "Comercial";
+    const finalAccountId = newChatData.accountId || null;
 
     await safeAction(
       async () => {
@@ -1236,12 +1263,13 @@ export default function OmnichannelPage() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              customerId: newChatData.customerId || undefined,
-              newName: newChatData.newName,
-              newPhone: newChatData.newPhone,
-              accountId: newChatData.accountId,
-              teamId: newChatData.teamId,
-              message: "Olá! Te chamei pelo CRM Viva Experience.",
+              customerId: customerId || undefined,
+              newName: newChatData.newName || "",
+              newPhone: newChatData.newPhone || "",
+              accountId: finalAccountId,
+              teamId: finalTeamId,
+              teamName: finalTeamName,
+              message: "",
             }),
           },
         );
@@ -1249,8 +1277,21 @@ export default function OmnichannelPage() {
         const startChatData = await safeReadJson(startChatRes);
         if (!startChatRes.ok) throw startChatData;
 
+        // 1. Recarregar conversas
         await loadConversations(true);
-        setActiveConversationId(startChatData.conversation.id);
+        
+        // 2. Selecionar a conversa criada
+        if (startChatData?.conversation?.id) {
+          setActiveConversationId(startChatData.conversation.id);
+        }
+        
+        // 3. Mudar aba para "Meus"
+        setActiveTab("meus");
+
+        // 4. Deixar campo de resposta vazio
+        setNewMessage("");
+
+        // 5. Fechar modal e resetar dados
         setShowNewChatModal(false);
         setNewChatData({
           accountId: "",
@@ -1299,7 +1340,7 @@ export default function OmnichannelPage() {
 
   const handleAISuggestion = async () => {
     if (!activeConversation) return;
-    const history = messages
+    const history = safeMessages
       .map(
         (m) =>
           `${m.sender_type === "customer" ? "Cliente" : "Agente"}: ${m.content}`,
@@ -1333,7 +1374,7 @@ export default function OmnichannelPage() {
 
   const handleAIClassify = async () => {
     if (!activeConversation) return;
-    const history = messages
+    const history = safeMessages
       .map(
         (m) =>
           `${m.sender_type === "customer" ? "Cliente" : "Agente"}: ${m.content}`,
@@ -1879,7 +1920,7 @@ export default function OmnichannelPage() {
             >
               Minhas Equipes
             </button>
-            {teams
+            {safeTeams
               .filter((t) => t.is_active)
               .map((team) => (
                 <button
@@ -1988,7 +2029,7 @@ export default function OmnichannelPage() {
                     </p>
 
                     <div className="flex flex-wrap gap-1">
-                      {conv.tags?.slice(0, 2).map((tag: any) => (
+                      {safeArray(conv.tags).slice(0, 2).map((tag: any) => (
                         <span
                           key={tag.id}
                           className="px-1.5 py-0.5 rounded-md text-[8px] font-bold uppercase tracking-wider shadow-sm"
@@ -2067,7 +2108,7 @@ export default function OmnichannelPage() {
 
                     {/* Exibição de Etiquetas no Header */}
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      {activeConversation.tags?.map((tag: any) => (
+                      {safeArray(activeConversation.tags).map((tag: any) => (
                         <div
                           key={tag.id}
                           className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider"
@@ -2311,7 +2352,7 @@ export default function OmnichannelPage() {
                     Carregando mensagens...
                   </p>
                 </div>
-              ) : messages.length === 0 ? (
+              ) : safeMessages.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full opacity-30 select-none grayscale">
                   <div className="w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center mb-4">
                     <MessageSquare className="w-8 h-8" />
@@ -2322,7 +2363,7 @@ export default function OmnichannelPage() {
                 </div>
               ) : null}
 
-              {messages.map((msg: Message) => {
+              {safeMessages.map((msg: Message) => {
                 const isMine =
                   msg.sender_type === "agent" ||
                   (msg.sender_type as any) === "agent_external" ||

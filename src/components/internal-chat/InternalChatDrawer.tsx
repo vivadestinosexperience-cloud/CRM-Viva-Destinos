@@ -21,7 +21,10 @@ export function InternalChatDrawer({ userId, onClose }: InternalChatDrawerProps)
   const [currentChatId, setCurrentChatId] = useState<string | null>(userId && userId !== 'LIST' ? userId : null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const selectedUser = users.find(u => u.id === currentChatId);
+  const safeUsers = Array.isArray(users) ? users : [];
+  const safeMessages = Array.isArray(messages) ? messages : [];
+
+  const selectedUser = safeUsers.find(u => u && u.id === currentChatId);
 
   // Sync internal current chat with prop
   useEffect(() => {
@@ -133,7 +136,7 @@ export function InternalChatDrawer({ userId, onClose }: InternalChatDrawerProps)
           {/* User List or Messages */}
           {!currentChatId ? (
             <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-50/50 custom-scrollbar">
-              {users.filter(u => u.active && u.id !== currentUser?.id).map((user) => (
+              {safeUsers.filter(u => u && u.active && u.id !== currentUser?.id).map((user) => (
                 <button
                   key={user.id}
                   onClick={() => setCurrentChatId(user.id)}
@@ -141,7 +144,7 @@ export function InternalChatDrawer({ userId, onClose }: InternalChatDrawerProps)
                 >
                   <div className="relative">
                     <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-500 font-bold border-2 border-white shadow-sm ring-1 ring-slate-100 overflow-hidden group-hover:scale-105 transition-transform">
-                      {user.avatar ? <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" /> : user.name.charAt(0)}
+                      {user.avatar ? <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" /> : (user.name || "U").charAt(0)}
                     </div>
                     <span className={`absolute -bottom-1 -right-1 w-4 h-4 border-2 border-white rounded-full ${
                       user.online ? 'bg-emerald-500' : 'bg-slate-300'
@@ -164,17 +167,17 @@ export function InternalChatDrawer({ userId, onClose }: InternalChatDrawerProps)
                 ref={scrollRef}
                 className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 custom-scrollbar"
               >
-                {messages.length === 0 ? (
+                {safeMessages.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-center p-8 opacity-40">
                     <div className="w-20 h-20 bg-white rounded-3xl flex items-center justify-center mb-6 shadow-xl shadow-slate-200/50 rotate-3 group">
                       <UserIcon className="w-10 h-10 text-slate-300 group-hover:scale-110 transition-transform" />
                     </div>
                     <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] leading-loose max-w-[200px]">
-                      Inicie uma conversa privada com {selectedUser?.name.split(' ')[0]}
+                      Inicie uma conversa privada com {selectedUser?.name ? selectedUser?.name?.split(' ')[0] : "atendente"}
                     </p>
                   </div>
                 ) : (
-                  messages.map((msg) => {
+                  safeMessages.map((msg) => {
                     const isMine = msg.sender_id === currentUser?.id;
                     return (
                       <div key={msg.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>

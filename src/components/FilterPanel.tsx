@@ -39,14 +39,19 @@ export function FilterPanel({
   if (!isOpen) return null;
 
   const toggleFilter = (list: string[], setList: (l: string[]) => void, id: string) => {
-    if (list.includes(id)) {
-      setList(list.filter(i => i !== id));
+    const safeList = Array.isArray(list) ? list : [];
+    if (safeList.includes(id)) {
+      setList(safeList.filter(i => i !== id));
     } else {
-      setList([...list, id]);
+      setList([...safeList, id]);
     }
   };
 
-  const filteredTags = tags.filter(t => (t.is_active !== false) && t.name.toLowerCase().includes(tagSearch.toLowerCase()));
+  const safeTagsList = Array.isArray(tags) ? tags : [];
+  const safeAccountsList = Array.isArray(accounts) ? accounts : [];
+  const safeUsersList = Array.isArray(users) ? users : [];
+
+  const filteredTags = safeTagsList.filter(t => (t.is_active !== false) && (t.name || "").toLowerCase().includes((tagSearch || "").toLowerCase()));
 
   return (
     <AnimatePresence>
@@ -82,17 +87,17 @@ export function FilterPanel({
                 <LayoutGrid className="w-3.5 h-3.5" /> Canais
               </h3>
               <div className="space-y-1.5">
-                {accounts.map(acc => (
+                {safeAccountsList.map(acc => (
                   <button 
                     key={acc.id}
-                    onClick={() => toggleFilter(selectedAccountIds, setSelectedAccountIds, acc.id)}
-                    className={`w-full flex items-center justify-between p-3 rounded-xl transition-all border ${selectedAccountIds.includes(acc.id) ? 'bg-blue-50 border-blue-100 text-blue-700' : 'bg-white border-transparent hover:bg-slate-50 text-slate-600'}`}
+                    onClick={() => toggleFilter(selectedAccountIds || [], setSelectedAccountIds, acc.id)}
+                    className={`w-full flex items-center justify-between p-3 rounded-xl transition-all border ${(selectedAccountIds || []).includes(acc.id) ? 'bg-blue-50 border-blue-100 text-blue-700' : 'bg-white border-transparent hover:bg-slate-50 text-slate-600'}`}
                   >
                     <div className="flex items-center gap-3">
                       <div className="w-2 h-2 rounded-full bg-emerald-500" />
                       <span className="text-sm font-bold">{acc.name}</span>
                     </div>
-                    {selectedAccountIds.includes(acc.id) && <Check className="w-4 h-4" />}
+                    {(selectedAccountIds || []).includes(acc.id) && <Check className="w-4 h-4" />}
                   </button>
                 ))}
               </div>
@@ -104,7 +109,7 @@ export function FilterPanel({
                 <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
                   <Tag className="w-3.5 h-3.5" /> Etiquetas
                 </h3>
-                {selectedTagIds.length > 0 && (
+                {(selectedTagIds || []).length > 0 && (
                   <button 
                     onClick={() => setSelectedTagIds([])}
                     className="text-[10px] font-black uppercase text-red-500 hover:underline"
@@ -126,14 +131,14 @@ export function FilterPanel({
                 {filteredTags.map(tag => (
                   <button 
                     key={tag.id}
-                    onClick={() => toggleFilter(selectedTagIds, setSelectedTagIds, tag.id)}
-                    className={`w-full flex items-center justify-between p-3 rounded-xl transition-all border ${selectedTagIds.includes(tag.id) ? 'bg-blue-50 border-blue-100 text-blue-700' : 'bg-white border-transparent hover:bg-slate-50 text-slate-600'}`}
+                    onClick={() => toggleFilter(selectedTagIds || [], setSelectedTagIds, tag.id)}
+                    className={`w-full flex items-center justify-between p-3 rounded-xl transition-all border ${(selectedTagIds || []).includes(tag.id) ? 'bg-blue-50 border-blue-100 text-blue-700' : 'bg-white border-transparent hover:bg-slate-50 text-slate-600'}`}
                   >
                     <div className="flex items-center gap-3">
                       <div className="w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: tag.color }} />
                       <span className="text-sm font-bold">{tag.name}</span>
                     </div>
-                    {selectedTagIds.includes(tag.id) && <Check className="w-4 h-4" />}
+                    {(selectedTagIds || []).includes(tag.id) && <Check className="w-4 h-4" />}
                   </button>
                 ))}
               </div>
@@ -145,19 +150,19 @@ export function FilterPanel({
                 <User className="w-3.5 h-3.5" /> Atendentes
               </h3>
               <div className="space-y-1.5">
-                {users.filter(u => u.active !== false).map(user => (
+                {safeUsersList.filter(u => u && u.active !== false).map(user => (
                   <button 
                     key={user.id}
-                    onClick={() => toggleFilter(selectedUserIds, setSelectedUserIds, user.id)}
-                    className={`w-full flex items-center justify-between p-3 rounded-xl transition-all border ${selectedUserIds.includes(user.id) ? 'bg-blue-50 border-blue-100 text-blue-700' : 'bg-white border-transparent hover:bg-slate-50 text-slate-600'}`}
+                    onClick={() => toggleFilter(selectedUserIds || [], setSelectedUserIds, user.id)}
+                    className={`w-full flex items-center justify-between p-3 rounded-xl transition-all border ${(selectedUserIds || []).includes(user.id) ? 'bg-blue-50 border-blue-100 text-blue-700' : 'bg-white border-transparent hover:bg-slate-50 text-slate-600'}`}
                   >
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-[10px] font-black">
-                        {user.name.charAt(0)}
+                        {(user.name || "U").charAt(0)}
                       </div>
-                      <span className="text-sm font-bold">{user.name}</span>
+                      <span className="text-sm font-bold">{user.name || "Sem Nome"}</span>
                     </div>
-                    {selectedUserIds.includes(user.id) && <Check className="w-4 h-4" />}
+                    {(selectedUserIds || []).includes(user.id) && <Check className="w-4 h-4" />}
                   </button>
                 ))}
               </div>
