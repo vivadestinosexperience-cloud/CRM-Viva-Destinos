@@ -752,6 +752,18 @@ function normalizeBrazilPhone(input: any) {
   }
 
   if (!digits.startsWith("55")) return "";
+
+  // Standardization to add 9th digit for Brazilian mobile phones
+  if (digits.length === 12 || digits.length === 13) {
+    const ddd = digits.substring(2, 4);
+    const dddNum = parseInt(ddd, 10);
+    if (dddNum >= 11 && dddNum <= 99) {
+      if (digits.length === 12) {
+        digits = `55${ddd}9${digits.substring(4)}`;
+      }
+    }
+  }
+
   if (digits.length < 12 || digits.length > 13) return "";
 
   return digits;
@@ -1285,10 +1297,25 @@ async function startServer() {
   // SSE Clients
   let sseClients: any[] = [];
 
+  // Heartbeat interval to keep SSE connections open over Cloud Run/NginX proxies
+  setInterval(() => {
+    sseClients.forEach(client => {
+      try {
+        client.res.write(": keep-alive\n\n");
+      } catch (err) {
+        // Client connection already closed or failed
+      }
+    });
+  }, 15000);
+
   function broadcastEvent(event: string, data: any) {
     const payload = JSON.stringify({ event, data });
     sseClients.forEach(client => {
-      client.res.write(`data: ${payload}\n\n`);
+      try {
+        client.res.write(`data: ${payload}\n\n`);
+      } catch (err) {
+        // Safe catch if client dropped but socket wasn't cleaned yet
+      }
     });
   }
 

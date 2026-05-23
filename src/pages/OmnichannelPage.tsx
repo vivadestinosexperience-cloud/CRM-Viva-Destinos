@@ -66,6 +66,7 @@ import { authorizedFetch, safeReadJson, getApiBaseUrl } from "../services/api";
 import { toast } from "sonner";
 import { getErrorMessage, renderSafeText } from "../utils/renderSafeText";
 import { safeAction } from "../utils/safeAction";
+import { normalizeBrazilPhone } from "../utils/phoneUtils";
 
 import {
   getAgentDisplayName,
@@ -103,6 +104,7 @@ export default function OmnichannelPage() {
     users,
     currentUser,
     addCustomer,
+    updateCustomer,
     internalNotes,
     addInternalNote,
     updateInternalNote,
@@ -426,43 +428,83 @@ export default function OmnichannelPage() {
     latestLoadMessages.current = loadMessages;
   }, [loadMessages]);
 
-  // Real-time updates (SSE + Polling fallback)
+  // Real-time updates (SSE with active Auto-Reconnect + fast Polling fallback)
   useEffect(() => {
-    const baseUrl = getApiBaseUrl();
-    const eventSource = new EventSource(`${baseUrl}/api/events`);
+    let eventSource: EventSource | null = null;
+    let reconnectTimeout: any = null;
+    let isDestroyed = false;
 
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (
-          data.event === "message.received" ||
-          data.event === "conversation.updated"
-        ) {
-          latestLoadConversations.current(true);
-          const activeId = activeConversationIdRef.current;
-          if (activeId) {
-            latestLoadMessages.current(activeId, true);
-          }
-        }
-      } catch (e) {
-        console.error("Error parsing SSE data", e);
+    function connectSSE() {
+      if (isDestroyed) return;
+
+      const baseUrl = getApiBaseUrl();
+      if (eventSource) {
+        eventSource.close();
       }
-    };
 
-    eventSource.onerror = () => {
-      console.warn("SSE connection error. Fallback to polling.");
-    };
+      console.log("[SSE] Conectando ao canal de eventos...");
+      eventSource = new EventSource(`${baseUrl}/api/events`);
 
+      eventSource.onopen = () => {
+        console.log("[SSE] Conexão em tempo real estabelecida com sucesso.");
+      };
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (
+            data.event === "message.received" ||
+            data.event === "conversation.updated" ||
+            data.event === "campaign.updated"
+          ) {
+            latestLoadConversations.current(true);
+            const activeId = activeConversationIdRef.current;
+            if (activeId) {
+              latestLoadMessages.current(activeId, true);
+            }
+          }
+        } catch (e) {
+          console.error("[SSE] Erro ao parsear dados:", e);
+        }
+      };
+
+      eventSource.onerror = (err) => {
+        console.warn("[SSE] Erro na conexão. Tentando reconectar em 5 segundos...", err);
+        if (eventSource) {
+          eventSource.close();
+        }
+        
+        // Carrega as atualizações imediatamente para garantir sincronia caso algo tenha atualizado durante a queda
+        latestLoadConversations.current(true);
+        const activeId = activeConversationIdRef.current;
+        if (activeId) {
+          latestLoadMessages.current(activeId, true);
+        }
+
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = setTimeout(() => {
+          connectSSE();
+        }, 5000);
+      };
+    }
+
+    connectSSE();
+
+    // Polling rápido de 4s como fallback resiliente e em tempo real para múltiplos dispositivos
     const interval = setInterval(() => {
       latestLoadConversations.current(true);
       const activeId = activeConversationIdRef.current;
       if (activeId) {
         latestLoadMessages.current(activeId, true);
       }
-    }, 10000);
+    }, 4000);
 
     return () => {
-      eventSource.close();
+      isDestroyed = true;
+      if (eventSource) {
+        eventSource.close();
+      }
+      clearTimeout(reconnectTimeout);
       clearInterval(interval);
     };
   }, []);
@@ -492,6 +534,57 @@ export default function OmnichannelPage() {
   const currentAccount = safeAccounts.find(
     (a) => a.id === activeConversation?.whatsapp_account_id,
   );
+
+  const [isEditingCustomer, setIsEditingCustomer] = useState(false);
+  const [editCustomerForm, setEditCustomerForm] = useState({
+    name: "",
+    phone: "",
+    email: "",
+    city: "",
+    temperature: "WARM" as "COLD" | "WARM" | "HOT",
+  });
+
+  useEffect(() => {
+    if (activeCustomer) {
+      setEditCustomerForm({
+        name: activeCustomer.name || "",
+        phone: activeCustomer.phone || "",
+        email: activeCustomer.email || "",
+        city: activeCustomer.city || "",
+        temperature: activeCustomer.temperature || "WARM",
+      });
+      setIsEditingCustomer(false);
+    } else {
+      setIsEditingCustomer(false);
+    }
+  }, [activeCustomer]);
+
+  const handleSaveCustomerEdit = async () => {
+    if (!activeCustomer) return;
+    if (!editCustomerForm.name.trim()) {
+      toast.error("Nome do contato é obrigatório");
+      return;
+    }
+    if (!editCustomerForm.phone.trim()) {
+      toast.error("Telefone do contato é obrigatório");
+      return;
+    }
+
+    try {
+      await updateCustomer({
+        ...activeCustomer,
+        name: editCustomerForm.name.trim(),
+        phone: editCustomerForm.phone.trim(),
+        email: editCustomerForm.email.trim(),
+        city: editCustomerForm.city.trim(),
+        temperature: editCustomerForm.temperature,
+      });
+      setIsEditingCustomer(false);
+      toast.success("Contato atualizado com sucesso!");
+    } catch (error: any) {
+      toast.error(`Falha ao atualizar contato: ${error.message || error}`);
+    }
+  };
 
   function getMessageImageSrc(message: Message) {
     if (!message) return null;
@@ -1274,6 +1367,8 @@ export default function OmnichannelPage() {
       async () => {
         const baseUrl = getApiBaseUrl();
 
+        const normalizedPhone = normalizeBrazilPhone(newChatData.newPhone || "").phone || newChatData.newPhone;
+
         const startChatRes = await authorizedFetch(
           `${baseUrl}/api/omnichannel/start-chat`,
           {
@@ -1282,7 +1377,7 @@ export default function OmnichannelPage() {
             body: JSON.stringify({
               customerId: customerId || undefined,
               newName: newChatData.newName || "",
-              newPhone: newChatData.newPhone || "",
+              newPhone: normalizedPhone,
               accountId: finalAccountId,
               teamId: finalTeamId,
               teamName: finalTeamName,
@@ -2856,128 +2951,265 @@ export default function OmnichannelPage() {
       <div className="w-80 lg:w-96 border-l border-slate-200 hidden xl:flex flex-col shrink-0 bg-white shadow-sm overflow-y-auto">
         {activeCustomer ? (
           <div className="p-6 h-full flex flex-col">
-            <div className="text-center mb-6">
-              <div className="w-24 h-24 rounded-3xl bg-slate-100 flex items-center justify-center text-3xl font-bold text-slate-600 mx-auto mb-4 border-2 border-white shadow-lg ring-1 ring-slate-100 relative">
-                {activeCustomer?.name?.charAt(0) || activeCustomer?.phone?.charAt(0) || "?"}
-                <div className="absolute -bottom-2 -right-2 bg-emerald-500 text-white px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase border-2 border-white shadow-sm">
-                  Online
-                </div>
-              </div>
-              <h3 className="text-xl font-bold text-slate-800 truncate">
-                {activeCustomer?.name || activeCustomer?.phone || "Cliente"}
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xs font-black uppercase tracking-widest text-slate-400">
+                Cadastro de Lead
               </h3>
-              <p className="text-sm text-slate-500 mt-1">
-                {activeCustomer.city || "Localização não informada"}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 mb-8">
-              <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 text-center">
-                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">
-                  Temperatura
-                </p>
-                <div
-                  className={`text-xs font-bold uppercase flex items-center justify-center gap-2 ${activeCustomer.temperature === "HOT" ? "text-red-500" : "text-orange-500"}`}
+              {!isEditingCustomer && (
+                <button
+                  id="btn-edit-customer"
+                  onClick={() => setIsEditingCustomer(true)}
+                  className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-blue-600 hover:text-blue-800 transition-colors bg-blue-50 px-2.5 py-1.5 rounded-lg border border-blue-100"
                 >
-                  <TrendingUp className="w-3 h-3" />
-                  {activeCustomer.temperature === "HOT" ? "Quente" : "Morno"}
-                </div>
-              </div>
-              <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 text-center">
-                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">
-                  Origem
-                </p>
-                <p className="text-xs font-bold text-slate-700 uppercase">
-                  {activeCustomer.origin || "Direto"}
-                </p>
-              </div>
+                  <Pencil className="w-3 h-3" />
+                  Editar
+                </button>
+              )}
             </div>
 
-            <div className="space-y-6">
-              <section>
-                <div className="flex items-center gap-2 mb-3">
-                  <Info className="w-4 h-4 text-blue-500" />
-                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                    Contato
-                  </h4>
-                </div>
-                <div className="space-y-3">
-                  <div
-                    onClick={() => {
-                      navigator.clipboard.writeText(activeCustomer.phone);
-                      toast.success("Telefone copiado");
-                    }}
-                    className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-100 transition-all hover:bg-white hover:shadow-md cursor-pointer group"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-400 group-hover:text-blue-500 group-hover:border-blue-100 transition-all shadow-sm">
-                      <Phone className="w-4 h-4" />
-                    </div>
-                    <p className="text-xs font-bold text-slate-700">
-                      {activeCustomer.phone}
-                    </p>
-                    <Copy className="w-3 h-3 text-slate-300 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </div>
-                  <div
-                    onClick={() => {
-                      if (activeCustomer.email) {
-                        navigator.clipboard.writeText(activeCustomer.email);
-                        toast.success("E-mail copiado");
+            {isEditingCustomer ? (
+              <div className="space-y-4 flex-1 flex flex-col justify-between">
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                      Nome Completo
+                    </label>
+                    <input
+                      id="edit-cust-name"
+                      type="text"
+                      value={editCustomerForm.name}
+                      onChange={(e) =>
+                        setEditCustomerForm({
+                          ...editCustomerForm,
+                          name: e.target.value,
+                        })
                       }
-                    }}
-                    className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-100 transition-all hover:bg-white hover:shadow-md cursor-pointer group"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-400 group-hover:text-blue-500 group-hover:border-blue-100 transition-all shadow-sm">
-                      <Mail className="w-4 h-4" />
-                    </div>
-                    <p className="text-xs font-bold text-slate-700">
-                      {activeCustomer.email || "Não informado"}
-                    </p>
-                    {activeCustomer.email && (
-                      <Copy className="w-3 h-3 text-slate-300 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
-                    )}
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium text-slate-700"
+                      placeholder="Nome do cliente"
+                    />
                   </div>
-                </div>
-              </section>
 
-              <section>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <TagIcon className="w-4 h-4 text-emerald-500" />
-                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                      Tags
-                    </h4>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                      Telefone
+                    </label>
+                    <input
+                      id="edit-cust-phone"
+                      type="text"
+                      value={editCustomerForm.phone}
+                      onChange={(e) =>
+                        setEditCustomerForm({
+                          ...editCustomerForm,
+                          phone: e.target.value,
+                        })
+                      }
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium text-slate-700"
+                      placeholder="Ex: 5511999999999"
+                    />
                   </div>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {(activeCustomer.tags || []).map((tag) => (
-                    <span
-                      key={tag}
-                      className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-600 shadow-sm transition-all"
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                      E-mail
+                    </label>
+                    <input
+                      id="edit-cust-email"
+                      type="email"
+                      value={editCustomerForm.email}
+                      onChange={(e) =>
+                        setEditCustomerForm({
+                          ...editCustomerForm,
+                          email: e.target.value,
+                        })
+                      }
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium text-slate-700"
+                      placeholder="Ex: cliente@email.com"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                      Cidade / Localização
+                    </label>
+                    <input
+                      id="edit-cust-city"
+                      type="text"
+                      value={editCustomerForm.city}
+                      onChange={(e) =>
+                        setEditCustomerForm({
+                          ...editCustomerForm,
+                          city: e.target.value,
+                        })
+                      }
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium text-slate-700"
+                      placeholder="Ex: São Paulo - SP"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                      Temperatura do Lead
+                    </label>
+                    <select
+                      id="edit-cust-temp"
+                      value={editCustomerForm.temperature}
+                      onChange={(e) =>
+                        setEditCustomerForm({
+                          ...editCustomerForm,
+                          temperature: e.target.value as "WARM" | "HOT",
+                        })
+                      }
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium text-slate-700 bg-white"
                     >
-                      {tag}
-                    </span>
-                  ))}
+                      <option value="WARM">Morno</option>
+                      <option value="HOT">Quente</option>
+                    </select>
+                  </div>
                 </div>
-              </section>
 
-              <section>
-                <div className="flex items-center gap-2 mb-3">
-                  <Database className="w-4 h-4 text-slate-400" />
-                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                    Ações Adicionais
-                  </h4>
-                </div>
-                <div className="space-y-2">
+                <div className="flex gap-2 pt-4">
                   <button
-                    onClick={() => toast.info("Histórico de pedidos em breve")}
-                    className="w-full flex items-center justify-between p-3 bg-slate-50 hover:bg-slate-100 rounded-xl transition-all text-[10px] font-bold text-slate-600 uppercase tracking-widest border border-slate-100"
+                    id="btn-cancel-customer-edit"
+                    onClick={() => setIsEditingCustomer(false)}
+                    className="flex-1 px-4 py-2 text-xs font-bold text-slate-500 border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors uppercase tracking-wider"
                   >
-                    <span>Ver Últimos Pedidos</span>
-                    <ChevronRight className="w-3.5 h-3.5 opacity-40" />
+                    Cancelar
+                  </button>
+                  <button
+                    id="btn-save-customer-edit"
+                    onClick={handleSaveCustomerEdit}
+                    className="flex-1 px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md transition-colors uppercase tracking-wider"
+                  >
+                    Salvar
                   </button>
                 </div>
-              </section>
-            </div>
+              </div>
+            ) : (
+              <>
+                <div className="text-center mb-6">
+                  <div className="w-24 h-24 rounded-3xl bg-slate-100 flex items-center justify-center text-3xl font-bold text-slate-600 mx-auto mb-4 border-2 border-white shadow-lg ring-1 ring-slate-100 relative">
+                    {activeCustomer?.name?.charAt(0) || activeCustomer?.phone?.charAt(0) || "?"}
+                    <div className="absolute -bottom-2 -right-2 bg-emerald-500 text-white px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase border-2 border-white shadow-sm">
+                      Online
+                    </div>
+                  </div>
+                  <h3 className="text-xl font-bold text-slate-800 truncate">
+                    {activeCustomer?.name || activeCustomer?.phone || "Cliente"}
+                  </h3>
+                  <p className="text-sm text-slate-500 mt-1">
+                    {activeCustomer.city || "Localização não informada"}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 mb-8">
+                  <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 text-center">
+                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Temperatura
+                    </p>
+                    <div
+                      className={`text-xs font-bold uppercase flex items-center justify-center gap-2 ${activeCustomer.temperature === "HOT" ? "text-red-500" : "text-orange-500"}`}
+                    >
+                      <TrendingUp className="w-3 h-3" />
+                      {activeCustomer.temperature === "HOT" ? "Quente" : "Morno"}
+                    </div>
+                  </div>
+                  <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 text-center">
+                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">
+                      Origem
+                    </p>
+                    <p className="text-xs font-bold text-slate-700 uppercase">
+                      {activeCustomer.origin || "Direto"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-6">
+                  <section>
+                    <div className="flex items-center gap-2 mb-3">
+                      <Info className="w-4 h-4 text-blue-500" />
+                      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                        Contato
+                      </h4>
+                    </div>
+                    <div className="space-y-3">
+                      <div
+                        onClick={() => {
+                          navigator.clipboard.writeText(activeCustomer.phone);
+                          toast.success("Telefone copiado");
+                        }}
+                        className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-100 transition-all hover:bg-white hover:shadow-md cursor-pointer group"
+                      >
+                        <div className="w-8 h-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-400 group-hover:text-blue-500 group-hover:border-blue-100 transition-all shadow-sm">
+                          <Phone className="w-4 h-4" />
+                        </div>
+                        <p className="text-xs font-bold text-slate-700">
+                          {activeCustomer.phone}
+                        </p>
+                        <Copy className="w-3 h-3 text-slate-300 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
+                      </div>
+                      <div
+                        onClick={() => {
+                          if (activeCustomer.email) {
+                            navigator.clipboard.writeText(activeCustomer.email);
+                            toast.success("E-mail copiado");
+                          }
+                        }}
+                        className="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl border border-slate-100 transition-all hover:bg-white hover:shadow-md cursor-pointer group"
+                      >
+                        <div className="w-8 h-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-400 group-hover:text-blue-500 group-hover:border-blue-100 transition-all shadow-sm">
+                          <Mail className="w-4 h-4" />
+                        </div>
+                        <p className="text-xs font-bold text-slate-700">
+                          {activeCustomer.email || "Não informado"}
+                        </p>
+                        {activeCustomer.email && (
+                          <Copy className="w-3 h-3 text-slate-300 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
+                        )}
+                      </div>
+                    </div>
+                  </section>
+
+                  <section>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <TagIcon className="w-4 h-4 text-emerald-500" />
+                        <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                          Tags
+                        </h4>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(activeCustomer.tags || []).map((tag) => (
+                        <span
+                          key={tag}
+                          className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-600 shadow-sm transition-all"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section>
+                    <div className="flex items-center gap-2 mb-3">
+                      <Database className="w-4 h-4 text-slate-400" />
+                      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                        Ações Adicionais
+                      </h4>
+                    </div>
+                    <div className="space-y-2">
+                      <button
+                        onClick={() => toast.info("Histórico de pedidos em breve")}
+                        className="w-full flex items-center justify-between p-3 bg-slate-50 hover:bg-slate-100 rounded-xl transition-all text-[10px] font-bold text-slate-600 uppercase tracking-widest border border-slate-100"
+                      >
+                        <span>Ver Últimos Pedidos</span>
+                        <ChevronRight className="w-3.5 h-3.5 opacity-40" />
+                      </button>
+                    </div>
+                  </section>
+                </div>
+              </>
+            )}
           </div>
         ) : (
           <div className="p-12 text-center h-full flex flex-col items-center justify-center bg-slate-50/30">

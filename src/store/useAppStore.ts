@@ -35,6 +35,7 @@ import {
 import { toast } from 'sonner';
 import { renderSafeText } from '../utils/renderSafeText';
 import { getApiBaseUrl } from '../services/api';
+import { normalizeBrazilPhone } from '../utils/phoneUtils';
 
 interface AppearanceSettings {
   logoUrl: string;
@@ -362,59 +363,89 @@ export const useAppStore = create<AppState>()(
           })
           .subscribe();
 
-        // 5. SSE Fallback
+        // 5. SSE Fallback with auto-reconnection
         const baseUrl = getApiBaseUrl();
-        const eventSource = new EventSource(`${baseUrl}/api/events`);
-        eventSource.onmessage = (event) => {
-          try {
-            const { event: eventName, data } = JSON.parse(event.data);
-            if (eventName === 'message.received') {
-              const { customer, conversation, message } = data;
-              
-              set(state => {
-                // Upsert customer
-                const hasCustomer = state.customers.some(c => c.id === customer.id);
-                const updatedCustomers = hasCustomer 
-                  ? state.customers.map(c => c.id === customer.id ? { ...c, ...customer } : c)
-                  : [...state.customers, customer];
+        let eventSource: EventSource | null = null;
+        let reconnectTimeout: any = null;
+        let isClosed = false;
 
-                // Upsert conversation and move to top
-                const hasConv = state.conversations.some(c => c.id === conversation.id);
-                let updatedConversations;
-                if (hasConv) {
-                  updatedConversations = [
-                    conversation,
-                    ...state.conversations.filter(c => c.id !== conversation.id)
-                  ];
-                } else {
-                  updatedConversations = [conversation, ...state.conversations];
-                }
+        const connectSSE = () => {
+          if (isClosed) return;
 
-                // Upsert message
-                const hasMsg = state.messages.some(m => m.id === message.id);
-                const updatedMessages = hasMsg
-                  ? state.messages.map(m => m.id === message.id ? { ...m, ...message } : m)
-                  : [...state.messages, message];
-
-                return {
-                  customers: updatedCustomers,
-                  conversations: updatedConversations,
-                  messages: updatedMessages
-                };
-              });
-
-              if (message.sender_type === 'customer') {
-                toast.info(`Nova mensagem recebida de ${customer.name}`);
-              }
-            }
-          } catch (err) {
-            console.error('SSE Error:', err);
+          if (eventSource) {
+            eventSource.close();
           }
+
+          eventSource = new EventSource(`${baseUrl}/api/events`);
+
+          eventSource.onmessage = (event) => {
+            try {
+              const { event: eventName, data } = JSON.parse(event.data);
+              if (eventName === 'message.received') {
+                const { customer, conversation, message } = data;
+                
+                set(state => {
+                  // Upsert customer
+                  const hasCustomer = state.customers.some(c => c.id === customer.id);
+                  const updatedCustomers = hasCustomer 
+                    ? state.customers.map(c => c.id === customer.id ? { ...c, ...customer } : c)
+                    : [...state.customers, customer];
+
+                  // Upsert conversation and move to top
+                  const hasConv = state.conversations.some(c => c.id === conversation.id);
+                  let updatedConversations;
+                  if (hasConv) {
+                    updatedConversations = [
+                      conversation,
+                      ...state.conversations.filter(c => c.id !== conversation.id)
+                    ];
+                  } else {
+                    updatedConversations = [conversation, ...state.conversations];
+                  }
+
+                  // Upsert message
+                  const hasMsg = state.messages.some(m => m.id === message.id);
+                  const updatedMessages = hasMsg
+                    ? state.messages.map(m => m.id === message.id ? { ...m, ...message } : m)
+                    : [...state.messages, message];
+
+                  return {
+                    customers: updatedCustomers,
+                    conversations: updatedConversations,
+                    messages: updatedMessages
+                  };
+                });
+
+                if (message.sender_type === 'customer') {
+                  toast.info(`Nova mensagem recebida de ${customer.name}`);
+                }
+              }
+            } catch (err) {
+              console.error('SSE Error:', err);
+            }
+          };
+
+          eventSource.onerror = (err) => {
+            console.warn('Store SSE Connection error. Retrying in 5 seconds...', err);
+            if (eventSource) {
+              eventSource.close();
+            }
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = setTimeout(() => {
+              connectSSE();
+            }, 5000);
+          };
         };
 
+        connectSSE();
+
         return () => {
+          isClosed = true;
           supabase.removeAllChannels();
-          eventSource.close();
+          if (eventSource) {
+            eventSource.close();
+          }
+          clearTimeout(reconnectTimeout);
         };
       },
 
@@ -559,11 +590,8 @@ export const useAppStore = create<AppState>()(
       addCustomer: async (customer) => {
         set({ isSaving: true });
         try {
-          const phoneNormalized = String(customer.phone || "").replace(/\D/g, "");
-          let finalNormalized = phoneNormalized;
-          if ((finalNormalized.length === 10 || finalNormalized.length === 11) && !finalNormalized.startsWith("55")) {
-            finalNormalized = `55${finalNormalized}`;
-          }
+          const normResult = normalizeBrazilPhone(customer.phone || "");
+          const finalNormalized = normResult.phone || String(customer.phone || "").replace(/\D/g, "");
           
           const enrichedCustomer = {
             ...customer,
@@ -573,21 +601,35 @@ export const useAppStore = create<AppState>()(
           const newCust = await customerService.create(enrichedCustomer);
           set((state) => ({ customers: [...state.customers, newCust], isSaving: false }));
         } catch (err) {
-          set((state) => ({ customers: [...state.customers, customer], isSaving: false }));
+          const normResult = normalizeBrazilPhone(customer.phone || "");
+          const finalNormalized = normResult.phone || String(customer.phone || "").replace(/\D/g, "");
+          set((state) => ({ customers: [...state.customers, { ...customer, phone_normalized: finalNormalized }], isSaving: false }));
           toast.warning('Salvo localmente');
         }
       },
       updateCustomer: async (customer) => {
         set({ isSaving: true });
         try {
-          const updated = await customerService.update(customer.id, customer);
+          const normResult = normalizeBrazilPhone(customer.phone || "");
+          const finalNormalized = normResult.phone || String(customer.phone || "").replace(/\D/g, "");
+          const enrichedCust = {
+            ...customer,
+            phone_normalized: finalNormalized
+          };
+          const updated = await customerService.update(customer.id, enrichedCust);
           set((state) => ({
             customers: state.customers.map(c => c.id === customer.id ? updated : c),
             isSaving: false
           }));
         } catch (err) {
+          const normResult = normalizeBrazilPhone(customer.phone || "");
+          const finalNormalized = normResult.phone || String(customer.phone || "").replace(/\D/g, "");
+          const enrichedCust = {
+            ...customer,
+            phone_normalized: finalNormalized
+          };
           set((state) => ({
-            customers: state.customers.map(c => c.id === customer.id ? customer : c),
+            customers: state.customers.map(c => c.id === customer.id ? enrichedCust : c),
             isSaving: false
           }));
           toast.warning('Atualizado localmente');
@@ -658,11 +700,11 @@ export const useAppStore = create<AppState>()(
           if (!phoneNormalized && conv.customer_id) {
             const cust = get().customers.find(c => c.id === conv.customer_id);
             if (cust) {
-              phoneNormalized = cust.phone_normalized || String(cust.phone || "").replace(/\D/g, "");
-              if (phoneNormalized && (phoneNormalized.length === 10 || phoneNormalized.length === 11) && !phoneNormalized.startsWith("55")) {
-                phoneNormalized = `55${phoneNormalized}`;
-              }
+              phoneNormalized = cust.phone_normalized || normalizeBrazilPhone(cust.phone || "").phone;
             }
+          }
+          if (phoneNormalized) {
+            phoneNormalized = normalizeBrazilPhone(phoneNormalized).phone;
           }
 
           const enrichedConv = {
