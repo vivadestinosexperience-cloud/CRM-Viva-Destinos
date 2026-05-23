@@ -203,7 +203,7 @@ export default function OmnichannelPage() {
 
   const handleLinkTag = async (conversationId: string, tagId: string) => {
     try {
-      const tag = tags.find((t) => t.id === tagId);
+      const tag = safeTags.find((t) => t && t.id === tagId);
       if (!tag) return;
 
       const response = await conversationTagService.link(
@@ -218,7 +218,7 @@ export default function OmnichannelPage() {
         const updatedConvs = safeConversations.map((c) => {
           if (c.id === conversationId) {
             const currentTags = c.tags || [];
-            if (!currentTags.some((t) => t.id === tagId)) {
+            if (!currentTags.some((t) => t && t.id === tagId)) {
               return { ...c, tags: [...currentTags, tag] };
             }
           }
@@ -244,7 +244,7 @@ export default function OmnichannelPage() {
         const updatedConvs = safeConversations.map((c) => {
           if (c.id === conversationId) {
             const currentTags = c.tags || [];
-            return { ...c, tags: currentTags.filter((t) => t.id !== tagId) };
+            return { ...c, tags: currentTags.filter((t) => t && t.id !== tagId) };
           }
           return c;
         });
@@ -255,7 +255,7 @@ export default function OmnichannelPage() {
         if (leadDetails?.id === conversationId) {
           setLeadDetails({
             ...leadDetails,
-            tags: leadDetails.tags.filter((t: any) => t.id !== tagId),
+            tags: (leadDetails?.tags || []).filter((t: any) => t && t.id !== tagId),
           });
         }
 
@@ -1056,7 +1056,7 @@ export default function OmnichannelPage() {
       if (selectedTagIds.length > 0) {
         const convTags = conversation.tags || [];
         const hasMatch = selectedTagIds.every((id) =>
-          convTags.some((t: any) => t.id === id),
+          convTags.some((t: any) => t && t.id === id),
         );
         if (!hasMatch) return false;
       }
@@ -1172,7 +1172,7 @@ export default function OmnichannelPage() {
         const assignedTeamId =
           currentUser?.team_id || activeConversation?.team_id || "comercial";
         const assignedTeamName =
-          teams.find((t) => t.id === assignedTeamId)?.name || "Comercial";
+          safeTeams.find((t) => t && t.id === assignedTeamId)?.name || "Comercial";
 
         const res = await authorizedFetch(
           `${baseUrl}/api/omnichannel/conversations/${conversationId}`,
@@ -1214,7 +1214,7 @@ export default function OmnichannelPage() {
     await safeAction(
       async () => {
         const baseUrl = getApiBaseUrl();
-        const selectedTeam = teams.find((t) => t.id === transferData.teamId);
+        const selectedTeam = safeTeams.find((t) => t && t.id === transferData.teamId);
         const selectedUser = transferMembers.find(
           (m) => m.user_id === transferData.userId,
         );
@@ -1410,7 +1410,7 @@ export default function OmnichannelPage() {
           return data;
         })
         .then((data) => {
-          if (data.classification && activeConversation.customer_id) {
+          if (data.classification && activeConversation?.customer_id) {
             toast.success(`Lead classificado como: ${data.classification}`);
             setShowIAPanel(false);
           }
@@ -2360,9 +2360,9 @@ export default function OmnichannelPage() {
                 </span>
                 <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
                   Equipe:{" "}
-                  {teams.find(
+                  {safeTeams.find(
                     (t) =>
-                      t.id ===
+                      t && t.id ===
                       (activeConversation?.team_id ||
                         activeConversation?.queue_id),
                   )?.name || "Geral"}
