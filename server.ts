@@ -1309,7 +1309,14 @@ async function startServer() {
 
   let ai: GoogleGenAI | null = null;
   if (process.env.GEMINI_API_KEY) {
-    ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    ai = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build'
+        }
+      }
+    });
   }
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL || "";
@@ -5660,6 +5667,94 @@ const DEFAULT_TEAM = {
       if (error) throw error;
       return res.json({ success: true });
     } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  // --- IA Assistant / Gemini Integrated Services ---
+  app.post("/api/ai/suggestion", async (req, res) => {
+    try {
+      if (!ai) {
+        return res.status(500).json({
+          success: false,
+          error: "O serviço de Inteligência Artificial não está configurado. Configure a chave GEMINI_API_KEY no painel de segredos do Google AI Studio."
+        });
+      }
+      const { messages } = req.body;
+      if (!messages || typeof messages !== "string" || !messages.trim()) {
+        return res.status(400).json({ success: false, error: "Histórico de mensagens é obrigatório." });
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: `Histórico da Conversa:\n${messages}\n\nPor favor, sugira uma resposta curta, profissional, acolhedora e altamente persuasiva para o agente enviar ao cliente em seguida. Retorne APENAS o texto da mensagem sugerida, de forma direta e sem explicações extras, aspas ou prefixos.`,
+        config: {
+          systemInstruction: "Você é um assistente virtual experiente da Viva Destinos Experience. Ajude nossos consultores de viagens a fecharem mais vendas sugerindo respostas profissionais, empáticas e focadas em conversão.",
+        }
+      });
+
+      const suggestion = response.text?.trim() || "Não foi possível gerar uma sugestão.";
+      return res.json({ success: true, suggestion });
+    } catch (err: any) {
+      console.error("[AI Suggestion API] Error:", err);
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.post("/api/ai/classify", async (req, res) => {
+    try {
+      if (!ai) {
+        return res.status(500).json({
+          success: false,
+          error: "O serviço de Inteligência Artificial não está configurado. Configure a chave GEMINI_API_KEY no painel de segredos do Google AI Studio."
+        });
+      }
+      const { messages } = req.body;
+      if (!messages || typeof messages !== "string" || !messages.trim()) {
+        return res.status(400).json({ success: false, error: "Histórico de mensagens é obrigatório." });
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: `Histórico da Conversa:\n${messages}\n\nCom base na conversa acima, analise a intenção de compra do cliente e responda exclusivamente com uma destas três opções em maiúsculas: QUENTE, MORNO ou FRIO.`,
+        config: {
+          systemInstruction: "Você é um analista especialista em CRM de turismo na Viva Destinos Experience. Sua tarefa é analisar o sentimento e estágio do cliente.",
+        }
+      });
+
+      const classification = response.text?.trim() || "MORNO";
+      return res.json({ success: true, classification });
+    } catch (err: any) {
+      console.error("[AI Classify API] Error:", err);
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.post("/api/ai/summarize", async (req, res) => {
+    try {
+      if (!ai) {
+        return res.status(500).json({
+          success: false,
+          error: "O serviço de Inteligência Artificial não está configurado. Configure a chave GEMINI_API_KEY no painel de segredos do Google AI Studio."
+        });
+      }
+      const { messages } = req.body;
+      if (!messages || typeof messages !== "string" || !messages.trim()) {
+        return res.status(400).json({ success: false, error: "Histórico de mensagens é obrigatório." });
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: `Histórico do atendimento:\n${messages}\n\nPor favor, faça um resumo executivo claro, estruturado e focado em vendas sobre este atendimento. No resumo, inclua de forma resumida:\n- Intenção e interesse principal do cliente\n- Principais informações informadas (acompanhantes, destinos, datas preferidas, orçamento se houver)\n- Próximos passos necessários ou pontos pendentes do consultor.\n\nResponda em português brasileiro de forma direta e concisa.`,
+        config: {
+          systemInstruction: "Você é um supervisor sênior de CRM da Viva Destinos Experience. Seu papel é resumir atendimentos para facilitar o acompanhamento por consultores de turismo de forma extremamente útil.",
+        }
+      });
+
+      const summary = response.text?.trim() || "Não foi possível gerar um resumo.";
+      return res.json({ success: true, summary });
+    } catch (err: any) {
+      console.error("[AI Summarize API] Error:", err);
       return res.status(500).json({ success: false, error: getErrorMessage(err) });
     }
   });

@@ -1639,12 +1639,36 @@ export default function OmnichannelPage() {
     setIsSummarizing(true);
     await safeAction(
       async () => {
-        // Simulate AI summary delay
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        setAiSummary(
-          "O cliente deseja uma viagem para Porto de Galinhas em julho, para 2 adultos e 1 criança de 6 anos. Demonstrou interesse em resort com café da manhã e orçamento médio. Lead classificado como QUENTE.",
-        );
-        toast.success("Resumo gerado pelo Assistente IA");
+        const history = safeMessages
+          .map(
+            (m) =>
+              `${m.sender_type === "customer" ? "Cliente" : "Agente"}: ${m.content}`,
+          )
+          .join("\n");
+
+        if (!history.trim()) {
+          setAiSummary("Não há mensagens suficientes no histórico para gerar um resumo.");
+          toast.warning("Histórico vazio");
+          return;
+        }
+
+        const res = await authorizedFetch("/api/ai/summarize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: history }),
+        });
+
+        const data = await safeReadJson(res);
+        if (!res.ok) {
+          throw data;
+        }
+
+        if (data.summary) {
+          setAiSummary(data.summary);
+          toast.success("Resumo gerado pelo Assistente IA");
+        } else {
+          throw new Error("Resumo indisponível");
+        }
       },
       { label: "Erro ao gerar resumo" },
     );
