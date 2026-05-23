@@ -13,7 +13,8 @@ import {
   Settings, 
   Briefcase,
   Palette,
-  Tag as TagIcon
+  Tag as TagIcon,
+  Keyboard
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -77,6 +78,15 @@ export default function SettingsHub() {
       icon: TagIcon,
       color: 'bg-amber-500',
       path: '/app/ajustes/tags',
+      adminOnly: false
+    },
+    {
+      id: 'modelos',
+      name: 'Modelos de Mensagem',
+      description: 'Configure respostas rápidas ativadas no chat com o atalho \\.',
+      icon: Keyboard,
+      color: 'bg-indigo-500',
+      path: '/app/ajustes/modelos',
       adminOnly: false
     },
     {

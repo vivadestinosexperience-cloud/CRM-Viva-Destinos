@@ -102,8 +102,8 @@ export function LeadDetailsModal({ isOpen, onClose, details, onUnlinkTag, loadin
                        <Tag className="w-3.5 h-3.5" /> Etiquetas Atuais
                     </h3>
                     <div className="flex flex-wrap gap-2">
-                      {details?.tags?.length > 0 ? (
-                        details.tags.map((tag: any) => (
+                      {details?.tags && details.tags.filter((t: any) => t && t.id).length > 0 ? (
+                        details.tags.filter((tag: any) => tag && tag.id).map((tag: any) => (
                           <div 
                             key={tag.id}
                             className="group relative flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold shadow-sm transition-all hover:scale-105"

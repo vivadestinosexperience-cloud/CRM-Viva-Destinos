@@ -5664,6 +5664,158 @@ const DEFAULT_TEAM = {
     }
   });
 
+  // --- Message Templates / Quick Replies ---
+  const QUICK_REPLIES_FILE = path.join(process.cwd(), "quick_replies.json");
+  const DEFAULT_QUICK_REPLIES = [
+    { id: "1", shortcut: "ola", content: "Olá! Como posso ajudar você hoje?" },
+    { id: "2", shortcut: "bomdia", content: "Bom dia! Seja bem-vindo à Viva Destinos. Como podemos te ajudar?" },
+    { id: "3", shortcut: "boatarde", content: "Boa tarde! Seja bem-vindo à Viva Destinos. Como podemos te ajudar?" },
+    { id: "4", shortcut: "site", content: "Você pode acessar nosso site oficial em: https://vivadestinos.com.br" },
+    { id: "5", shortcut: "suporte", content: "Nosso suporte técnico está disponível das 9h às 18h de segunda a sexta-feira." }
+  ];
+
+  function loadFSQuickReplies() {
+    if (!fs.existsSync(QUICK_REPLIES_FILE)) {
+      try {
+        fs.writeFileSync(QUICK_REPLIES_FILE, JSON.stringify(DEFAULT_QUICK_REPLIES, null, 2), "utf8");
+      } catch (e) {
+        console.error("[Quick Replies] Error writing initial file:", e);
+      }
+      return DEFAULT_QUICK_REPLIES;
+    }
+    try {
+      const content = fs.readFileSync(QUICK_REPLIES_FILE, "utf8");
+      return JSON.parse(content);
+    } catch (e) {
+      console.error("[Quick Replies] Error reading file, using defaults:", e);
+      return DEFAULT_QUICK_REPLIES;
+    }
+  }
+
+  function saveFSQuickReplies(replies: any[]) {
+    try {
+      fs.writeFileSync(QUICK_REPLIES_FILE, JSON.stringify(replies, null, 2), "utf8");
+    } catch (e) {
+      console.error("[Quick Replies] Error writing file:", e);
+    }
+  }
+
+  app.get("/api/quick-replies", async (req, res) => {
+    try {
+      const { data, error } = await supabaseAdmin
+        .from("crm_quick_replies")
+        .select("*")
+        .order("shortcut", { ascending: true });
+
+      if (error) {
+        throw error;
+      }
+      return res.json({ success: true, quickReplies: data || [] });
+    } catch (err) {
+      console.warn("[Quick Replies API] No DB table or error. Falling back to local JSON file.");
+      const replies = loadFSQuickReplies();
+      return res.json({ success: true, quickReplies: replies });
+    }
+  });
+
+  app.post("/api/quick-replies", async (req, res) => {
+    try {
+      let { shortcut, content } = req.body;
+      if (!shortcut || !content) {
+        return res.status(400).json({ success: false, error: "Atalho e conteúdo são obrigatórios." });
+      }
+
+      shortcut = shortcut.replace(/[\\/ ]/g, "").toLowerCase().trim();
+
+      const newReply = {
+        shortcut,
+        content,
+        created_at: new Date().toISOString()
+      };
+
+      try {
+        const { data, error } = await supabaseAdmin
+          .from("crm_quick_replies")
+          .insert(newReply)
+          .select()
+          .single();
+
+        if (error) throw error;
+        return res.json({ success: true, quickReply: data });
+      } catch (dbErr) {
+        const replies = loadFSQuickReplies();
+        const fallbackReply = {
+          id: String(Date.now()),
+          shortcut,
+          content,
+          created_at: new Date().toISOString()
+        };
+        replies.push(fallbackReply);
+        saveFSQuickReplies(replies);
+        return res.json({ success: true, quickReply: fallbackReply });
+      }
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.patch("/api/quick-replies/:id", async (req, res) => {
+    const { id } = req.params;
+    try {
+      let { shortcut, content } = req.body;
+      if (shortcut) {
+        shortcut = shortcut.replace(/[\\/ ]/g, "").toLowerCase().trim();
+      }
+
+      try {
+        const { data, error } = await supabaseAdmin
+          .from("crm_quick_replies")
+          .update({ shortcut, content, updated_at: new Date().toISOString() })
+          .eq("id", id)
+          .select()
+          .single();
+
+        if (error) throw error;
+        return res.json({ success: true, quickReply: data });
+      } catch (dbErr) {
+        const replies = loadFSQuickReplies();
+        const index = replies.findIndex((r: any) => String(r.id) === String(id));
+        if (index !== -1) {
+          if (shortcut) replies[index].shortcut = shortcut;
+          if (content !== undefined) replies[index].content = content;
+          replies[index].updated_at = new Date().toISOString();
+          saveFSQuickReplies(replies);
+          return res.json({ success: true, quickReply: replies[index] });
+        }
+        return res.status(404).json({ success: false, error: "Modelo não encontrado." });
+      }
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
+  app.delete("/api/quick-replies/:id", async (req, res) => {
+    const { id } = req.params;
+    try {
+      try {
+        const { error } = await supabaseAdmin
+          .from("crm_quick_replies")
+          .delete()
+          .eq("id", id);
+
+        if (error) throw error;
+        return res.json({ success: true });
+      } catch (dbErr) {
+        const replies = loadFSQuickReplies();
+        const filtered = replies.filter((r: any) => String(r.id) !== String(id));
+        saveFSQuickReplies(filtered);
+        return res.json({ success: true });
+      }
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
   // --- Conversation Tags ---
   app.get("/api/omnichannel/conversations/:id/tags", async (req, res) => {
     const { id } = req.params;

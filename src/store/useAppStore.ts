@@ -381,43 +381,43 @@ export const useAppStore = create<AppState>()(
           eventSource.onmessage = (event) => {
             try {
               const { event: eventName, data } = JSON.parse(event.data);
-              if (eventName === 'message.received') {
+              if (eventName === 'message.received' && data && data.customer && data.conversation && data.message) {
                 const { customer, conversation, message } = data;
                 
                 set(state => {
-                  // Upsert customer
-                  const hasCustomer = state.customers.some(c => c.id === customer.id);
+                  // Upsert customer with safety checks
+                  const hasCustomer = Array.isArray(state.customers) && state.customers.some(c => c && customer && c.id === customer.id);
                   const updatedCustomers = hasCustomer 
-                    ? state.customers.map(c => c.id === customer.id ? { ...c, ...customer } : c)
-                    : [...state.customers, customer];
+                    ? state.customers.map(c => c && customer && c.id === customer.id ? { ...c, ...customer } : c)
+                    : [...(Array.isArray(state.customers) ? state.customers : []), customer].filter(c => c && c.id);
 
-                  // Upsert conversation and move to top
-                  const hasConv = state.conversations.some(c => c.id === conversation.id);
+                  // Upsert conversation and move to top with safety checks
+                  const hasConv = Array.isArray(state.conversations) && state.conversations.some(c => c && conversation && c.id === conversation.id);
                   let updatedConversations;
                   if (hasConv) {
                     updatedConversations = [
                       conversation,
-                      ...state.conversations.filter(c => c.id !== conversation.id)
+                      ...(Array.isArray(state.conversations) ? state.conversations : []).filter(c => c && conversation && c.id !== conversation.id)
                     ];
                   } else {
-                    updatedConversations = [conversation, ...state.conversations];
+                    updatedConversations = [conversation, ...(Array.isArray(state.conversations) ? state.conversations : [])];
                   }
 
-                  // Upsert message
-                  const hasMsg = state.messages.some(m => m.id === message.id);
+                  // Upsert message with safety checks
+                  const hasMsg = Array.isArray(state.messages) && state.messages.some(m => m && message && m.id === message.id);
                   const updatedMessages = hasMsg
-                    ? state.messages.map(m => m.id === message.id ? { ...m, ...message } : m)
-                    : [...state.messages, message];
+                    ? state.messages.map(m => m && message && m.id === message.id ? { ...m, ...message } : m)
+                    : [...(Array.isArray(state.messages) ? state.messages : []), message].filter(m => m && m.id);
 
                   return {
-                    customers: updatedCustomers,
-                    conversations: updatedConversations,
-                    messages: updatedMessages
+                    customers: updatedCustomers.filter(item => item !== null && item !== undefined),
+                    conversations: updatedConversations.filter(item => item !== null && item !== undefined),
+                    messages: updatedMessages.filter(item => item !== null && item !== undefined)
                   };
                 });
 
-                if (message.sender_type === 'customer') {
-                  toast.info(`Nova mensagem recebida de ${customer.name}`);
+                if (message && message.sender_type === 'customer' && customer) {
+                  toast.info(`Nova mensagem recebida de ${customer.name || 'Cliente'}`);
                 }
               }
             } catch (err) {

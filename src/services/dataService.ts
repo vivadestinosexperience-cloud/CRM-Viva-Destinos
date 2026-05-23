@@ -599,3 +599,59 @@ export const reportService = {
     };
   }
 };
+
+export const quickReplyService = {
+  async list() {
+    try {
+      const res = await authorizedFetch('/api/quick-replies');
+      const data = await safeReadJson(res);
+      if (!res.ok) throw new Error(data.error || 'Erro ao carregar modelos de mensagem');
+      return data.quickReplies || [];
+    } catch (err: any) {
+      console.error("[quickReplyService.list error]", err);
+      throw err;
+    }
+  },
+  async create(quickReply: { shortcut: string; content: string }) {
+    try {
+      const res = await authorizedFetch('/api/quick-replies', {
+        method: 'POST',
+        body: JSON.stringify(quickReply)
+      });
+      const data = await safeReadJson(res);
+      if (!res.ok) throw new Error(data.error || 'Erro ao criar modelo de mensagem');
+      return data.quickReply;
+    } catch (err: any) {
+      console.error("[quickReplyService.create error]", err);
+      throw err;
+    }
+  },
+  async update(id: string, updates: { shortcut?: string; content?: string }) {
+    try {
+      const res = await authorizedFetch(`/api/quick-replies/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(updates)
+      });
+      const data = await safeReadJson(res);
+      if (!res.ok) throw new Error(data.error || 'Erro ao atualizar modelo de mensagem');
+      return data.quickReply;
+    } catch (err: any) {
+      console.error("[quickReplyService.update error]", err);
+      throw err;
+    }
+  },
+  async remove(id: string) {
+    try {
+      const res = await authorizedFetch(`/api/quick-replies/${id}`, {
+        method: 'DELETE'
+      });
+      const data = await safeReadJson(res);
+      if (!res.ok) throw new Error(data.error || 'Erro ao excluir modelo de mensagem');
+      return data;
+    } catch (err: any) {
+      console.error("[quickReplyService.remove error]", err);
+      throw err;
+    }
+  }
+};
+

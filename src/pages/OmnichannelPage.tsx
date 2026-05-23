@@ -8,6 +8,7 @@ import {
   tagService,
   conversationTagService,
   conversationService,
+  quickReplyService,
 } from "../services/dataService";
 import {
   MessageSquare,
@@ -78,7 +79,7 @@ import { LeadDetailsModal } from "../components/LeadDetailsModal";
 import { FilterPanel } from "../components/FilterPanel";
 
 function safeArray(value: any): any[] {
-  return Array.isArray(value) ? value : [];
+  return Array.isArray(value) ? value.filter(item => item !== null && item !== undefined) : [];
 }
 
 function safeText(value: any, fallback: string = ""): string {
@@ -178,6 +179,15 @@ export default function OmnichannelPage() {
   const [leadDetails, setLeadDetails] = useState<any>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [showTagSelector, setShowTagSelector] = useState(false);
+  const [quickReplies, setQuickReplies] = useState<any[]>([]);
+  const [quickReplyTriggerState, setQuickReplyTriggerState] = useState<{ index: number; filter: string } | null>(null);
+  const [quickRepliesIndex, setQuickRepliesIndex] = useState(0);
+
+  useEffect(() => {
+    quickReplyService.list()
+      .then(setQuickReplies)
+      .catch(err => console.error("Error loading quick replies in omnichannel:", err));
+  }, []);
   const { tags, addTag, updateTag, deleteTag } = useAppStore();
 
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -286,13 +296,13 @@ export default function OmnichannelPage() {
     ].includes(status);
   };
 
-  const safeConversations = Array.isArray(conversations) ? conversations : [];
-  const safeMessages = Array.isArray(messages) ? messages : [];
-  const safeTags = Array.isArray(tags) ? tags : [];
-  const safeTeams = Array.isArray(teams) ? teams : [];
-  const safeUsers = Array.isArray(users) ? users : [];
-  const safeAccounts = Array.isArray(whatsAppAccounts) ? whatsAppAccounts : [];
-  const safeCustomers = Array.isArray(customers) ? customers : [];
+  const safeConversations = Array.isArray(conversations) ? conversations.filter(c => c && c.id) : [];
+  const safeMessages = Array.isArray(messages) ? messages.filter(m => m && m.id) : [];
+  const safeTags = Array.isArray(tags) ? tags.filter(t => t && t.id) : [];
+  const safeTeams = Array.isArray(teams) ? teams.filter(t => t && t.id) : [];
+  const safeUsers = Array.isArray(users) ? users.filter(u => u && u.id) : [];
+  const safeAccounts = Array.isArray(whatsAppAccounts) ? whatsAppAccounts.filter(a => a && a.id) : [];
+  const safeCustomers = Array.isArray(customers) ? customers.filter(c => c && c.id) : [];
 
   // Sync state if active conversation becomes ignored
   useEffect(() => {
@@ -791,6 +801,70 @@ export default function OmnichannelPage() {
       input.setSelectionRange(newPos, newPos);
     }, 0);
   };
+
+  const handleSelectQuickReply = (qr: any) => {
+    if (!messageInputRef.current) return;
+    const txt = newMessage;
+    const cursor = messageInputRef.current.selectionStart || 0;
+    
+    // Find backslash trigger term
+    const textBeforeCursor = txt.substring(0, cursor);
+    const lastSlashIndex = textBeforeCursor.lastIndexOf("\\");
+    if (lastSlashIndex === -1) return;
+    
+    const prefix = txt.substring(0, lastSlashIndex);
+    const suffix = txt.substring(cursor);
+    const insertedText = qr.content;
+    const newText = prefix + insertedText + suffix;
+
+    setNewMessage(newText);
+    
+    const newCursorPos = lastSlashIndex + insertedText.length;
+    setTimeout(() => {
+      if (messageInputRef.current) {
+        messageInputRef.current.focus();
+        messageInputRef.current.setSelectionRange(newCursorPos, newCursorPos);
+      }
+    }, 0);
+
+    setQuickReplyTriggerState(null);
+    setQuickRepliesIndex(0);
+  };
+
+  const handleNewMessageChange = (val: string) => {
+    setNewMessage(val);
+    
+    // Detect trigger for quick reply modal
+    setTimeout(() => {
+      if (!messageInputRef.current) return;
+      const cursor = messageInputRef.current.selectionStart || 0;
+      const textBeforeCursor = val.substring(0, cursor);
+      const lastSlashIndex = textBeforeCursor.lastIndexOf("\\");
+      
+      if (lastSlashIndex !== -1) {
+        const trailingPart = textBeforeCursor.substring(lastSlashIndex + 1);
+        // Ensure no spaces or further backslashes exist after it
+        if (!trailingPart.includes(" ") && !trailingPart.includes("\\")) {
+          setQuickReplyTriggerState({
+            index: lastSlashIndex,
+            filter: trailingPart.toLowerCase()
+          });
+          setQuickRepliesIndex(0);
+          return;
+        }
+      }
+      setQuickReplyTriggerState(null);
+    }, 0);
+  };
+
+  const matchingQuickReplies = useMemo(() => {
+    if (!quickReplyTriggerState) return [];
+    const filter = quickReplyTriggerState.filter;
+    return quickReplies.filter(qr => 
+      (qr.shortcut || "").toLowerCase().includes(filter) ||
+      (qr.content || "").toLowerCase().includes(filter)
+    );
+  }, [quickReplies, quickReplyTriggerState]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -2892,6 +2966,47 @@ export default function OmnichannelPage() {
                           </motion.div>
                         )}
                       </AnimatePresence>
+
+                      <AnimatePresence>
+                        {quickReplyTriggerState && matchingQuickReplies.length > 0 && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 15, scale: 0.95 }}
+                            animate={{ opacity: 1, y: -4, scale: 1 }}
+                            exit={{ opacity: 0, y: 15, scale: 0.95 }}
+                            className="absolute bottom-full left-4 right-4 mb-3 z-[150] shadow-2xl rounded-2xl border border-slate-100 bg-white overflow-hidden max-h-72 flex flex-col focus:outline-none"
+                          >
+                            <div className="bg-slate-50 px-4 py-2 text-[10px] font-black uppercase text-slate-400 tracking-wider flex items-center justify-between border-b border-slate-100">
+                              <span>Modelos de Mensagem (Use ↑ ↓ Enter)</span>
+                              <button
+                                type="button"
+                                onClick={() => setQuickReplyTriggerState(null)}
+                                className="text-slate-400 hover:text-slate-600 font-bold"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                            <div className="overflow-y-auto divide-y divide-slate-50 max-h-60">
+                              {matchingQuickReplies.map((qr, idx) => (
+                                <button
+                                  key={qr.id || idx}
+                                  type="button"
+                                  onClick={() => handleSelectQuickReply(qr)}
+                                  className={`w-full text-left px-4 py-3 flex flex-col gap-1 transition-all text-sm ${idx === quickRepliesIndex ? "bg-blue-600 text-white" : "hover:bg-slate-50 text-slate-700"}`}
+                                >
+                                  <div className="flex items-center gap-1.5 font-bold text-xs">
+                                    <span className={`px-1.5 py-0.5 rounded ${idx === quickRepliesIndex ? "bg-white/20 text-white" : "bg-blue-50 text-blue-600"}`}>
+                                      \{qr.shortcut}
+                                    </span>
+                                  </div>
+                                  <p className={`line-clamp-2 text-xs leading-relaxed ${idx === quickRepliesIndex ? "text-blue-100" : "text-slate-500"}`}>
+                                    {qr.content}
+                                  </p>
+                                </button>
+                              ))}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
 
                     <textarea
@@ -2904,8 +3019,31 @@ export default function OmnichannelPage() {
                       }
                       className="flex-1 bg-transparent border-none outline-none text-sm py-2 resize-none max-h-40 min-h-[40px] px-2 font-medium"
                       value={newMessage}
-                      onChange={(e) => setNewMessage(e.target.value)}
+                      onChange={(e) => handleNewMessageChange(e.target.value)}
                       onKeyDown={(e) => {
+                        if (quickReplyTriggerState && matchingQuickReplies.length > 0) {
+                          if (e.key === "ArrowDown") {
+                            e.preventDefault();
+                            setQuickRepliesIndex((prev) => (prev + 1) % matchingQuickReplies.length);
+                            return;
+                          }
+                          if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            setQuickRepliesIndex((prev) => (prev - 1 + matchingQuickReplies.length) % matchingQuickReplies.length);
+                            return;
+                          }
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleSelectQuickReply(matchingQuickReplies[quickRepliesIndex]);
+                            return;
+                          }
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            setQuickReplyTriggerState(null);
+                            return;
+                          }
+                        }
+
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
                           handleSendMessage(e);
@@ -3973,7 +4111,7 @@ export default function OmnichannelPage() {
         onClose={() => setShowLeadDetails(false)}
         details={leadDetails}
         loading={loadingDetails}
-        onUnlinkTag={(tagId) => handleUnlinkTag(leadDetails.id, tagId)}
+        onUnlinkTag={(tagId) => handleUnlinkTag(leadDetails?.id, tagId)}
       />
 
       <FilterPanel
