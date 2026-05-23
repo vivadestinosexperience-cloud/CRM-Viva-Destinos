@@ -2762,15 +2762,17 @@ export default function OmnichannelPage() {
                     </button>
 
                     {aiSummary ? (
-                      <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-sm italic text-slate-600 leading-relaxed relative ring-1 ring-blue-100 ring-offset-2 ring-offset-transparent">
-                        "{aiSummary}"
-                        <div className="mt-4 flex gap-2">
+                      <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 relative ring-1 ring-blue-100 flex flex-col gap-3">
+                        <div className="max-h-[180px] overflow-y-auto pr-1 text-slate-700 text-xs font-medium leading-relaxed whitespace-pre-wrap">
+                          {aiSummary}
+                        </div>
+                        <div className="flex gap-2 pt-2 border-t border-slate-100">
                           <button
                             onClick={() => {
                               setNewMessage(aiSummary);
                               setShowIAPanel(false);
                             }}
-                            className="flex-1 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-100 transition-transform active:scale-95"
+                            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-100 transition-all active:scale-95"
                           >
                             Citar no Chat
                           </button>
@@ -2781,7 +2783,7 @@ export default function OmnichannelPage() {
                               );
                               setShowIAPanel(false);
                             }}
-                            className="flex-1 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-bold shadow-sm"
+                            className="flex-1 py-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-600 rounded-xl text-xs font-bold shadow-sm transition-all"
                           >
                             Salvar Nota
                           </button>

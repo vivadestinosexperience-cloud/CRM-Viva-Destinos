@@ -5755,9 +5755,9 @@ const DEFAULT_TEAM = {
       const client = getGeminiClient();
       const response = await client.models.generateContent({
         model: "gemini-3.5-flash",
-        contents: `Histórico do atendimento:\n${messages}\n\nPor favor, faça um resumo executivo claro, estruturado e focado em vendas sobre este atendimento. No resumo, inclua de forma resumida:\n- Intenção e interesse principal do cliente\n- Principais informações informadas (acompanhantes, destinos, datas preferidas, orçamento se houver)\n- Próximos passos necessários ou pontos pendentes do consultor.\n\nResponda em português brasileiro de forma direta e concisa.`,
+        contents: `Histórico do Atendimento:\n${messages}\n\nCom base nas mensagens acima, faça um resumo ULTRACONCISO do pedido ou acordo do cliente. Foque apenas no essencial da solicitação em no máximo 2 ou 3 tópicos super curtos e diretos (ex: destino, viajantes, periodo se houver). Evite explicações longas ou saudações.`,
         config: {
-          systemInstruction: "Você é um supervisor sênior de CRM da Viva Destinos Experience. Seu papel é resumir atendimentos para facilitar o acompanhamento por consultores de turismo de forma extremamente útil.",
+          systemInstruction: "Você é um assistente virtual experiente em CRM de turismo. Seu papel é resumir o essencial das conversas de atendimento de forma extremamente direta, concisa e enxuta, sem rodeios ou parágrafos longos, focado puramente nos dados vitais do lead.",
         }
       });
 
