@@ -378,9 +378,6 @@ export default function OmnichannelPage() {
     setAiSummary(null);
     setShowIAPanel(false);
 
-    // Load fresh messages
-    loadMessages(conversation.id);
-
     // Mark as read locally and via API
     const baseUrl = getApiBaseUrl();
     authorizedFetch(
@@ -412,6 +409,23 @@ export default function OmnichannelPage() {
     }
   }, [activeConversationId]);
 
+  // Ref-based stable handlers for SSE connections
+  const activeConversationIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  const latestLoadConversations = useRef(loadConversations);
+  const latestLoadMessages = useRef(loadMessages);
+
+  useEffect(() => {
+    latestLoadConversations.current = loadConversations;
+  }, [loadConversations]);
+
+  useEffect(() => {
+    latestLoadMessages.current = loadMessages;
+  }, [loadMessages]);
+
   // Real-time updates (SSE + Polling fallback)
   useEffect(() => {
     const baseUrl = getApiBaseUrl();
@@ -424,9 +438,10 @@ export default function OmnichannelPage() {
           data.event === "message.received" ||
           data.event === "conversation.updated"
         ) {
-          loadConversations(true);
-          if (activeConversationId) {
-            loadMessages(activeConversationId, true);
+          latestLoadConversations.current(true);
+          const activeId = activeConversationIdRef.current;
+          if (activeId) {
+            latestLoadMessages.current(activeId, true);
           }
         }
       } catch (e) {
@@ -439,17 +454,18 @@ export default function OmnichannelPage() {
     };
 
     const interval = setInterval(() => {
-      loadConversations(true);
-      if (activeConversationId) {
-        loadMessages(activeConversationId, true);
+      latestLoadConversations.current(true);
+      const activeId = activeConversationIdRef.current;
+      if (activeId) {
+        latestLoadMessages.current(activeId, true);
       }
-    }, 5000);
+    }, 10000);
 
     return () => {
       eventSource.close();
       clearInterval(interval);
     };
-  }, [activeConversationId]);
+  }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
@@ -1064,7 +1080,7 @@ export default function OmnichannelPage() {
         const searchLower = searchTerm.toLowerCase();
         const cust =
           conversation.customer ||
-          customers.find((c) => c.id === conversation.customer_id);
+          safeCustomers.find((c) => c.id === conversation.customer_id);
         const name = (
           cust?.name ||
           (conversation as any).customer_name ||
