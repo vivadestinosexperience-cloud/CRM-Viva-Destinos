@@ -1732,6 +1732,22 @@ const DEFAULT_TEAM = {
     return result;
   }
 
+  function mapCampaignDbToApi(campaign: any) {
+    if (!campaign) return null;
+    return {
+      ...campaign,
+      content: campaign.message_text || campaign.content,
+      recipients_count: campaign.total_recipients ?? campaign.recipients_count ?? 0,
+      pending_count: campaign.total_pending ?? campaign.pending_count ?? 0,
+      sending_count: campaign.total_sending ?? campaign.sending_count ?? 0,
+      sent_count: campaign.total_sent ?? campaign.sent_count ?? 0,
+      failed_count: campaign.total_failed ?? campaign.failed_count ?? 0,
+      skipped_count: campaign.total_skipped ?? campaign.skipped_count ?? 0,
+      min_interval: campaign.delay_seconds ?? campaign.min_interval ?? 8,
+      max_interval: campaign.delay_seconds ?? campaign.max_interval ?? 8,
+    };
+  }
+
   async function refreshCampaignStats(campaignId: string) {
     const { data: recipients } = await supabaseAdmin
       .from(TABLES.campaign_recipients)
@@ -1747,10 +1763,19 @@ const DEFAULT_TEAM = {
       skipped_count: recipients?.filter(r => r.status === "SKIPPED").length || 0
     };
 
+    const dbCounts = {
+      total_recipients: counts.recipients_count,
+      total_pending: counts.pending_count,
+      total_sending: counts.sending_count,
+      total_sent: counts.sent_count,
+      total_failed: counts.failed_count,
+      total_skipped: counts.skipped_count,
+    };
+
     await supabaseAdmin
       .from(TABLES.campaigns)
       .update({
-        ...counts,
+        ...dbCounts,
         updated_at: new Date().toISOString()
       })
       .eq("id", campaignId);
@@ -5125,7 +5150,8 @@ const DEFAULT_TEAM = {
         .select('*')
         .order('created_at', { ascending: false });
       if (error) throw error;
-      return res.json({ success: true, campaigns: data });
+      const mapped = (data || []).map(c => mapCampaignDbToApi(c));
+      return res.json({ success: true, campaigns: mapped });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
     }
@@ -5205,19 +5231,19 @@ const DEFAULT_TEAM = {
 
       const { data: campaign, error: cErr } = await supabaseAdmin.from(TABLES.campaigns).insert({
         name,
-        whatsapp_account_id,
-        content,
+        description: `WhatsApp Account ID: ${whatsapp_account_id}`,
+        message_text: content,
         message_type: message_type || 'text',
         media_url,
         media_file_name,
         media_mime_type,
         status: 'READY',
-        recipients_count: contacts.length,
-        pending_count: contacts.length,
+        total_recipients: contacts.length,
+        total_pending: contacts.length,
         batch_size: batch_size || 5,
-        min_interval: min_interval || 5,
-        max_interval: max_interval || 10,
-        created_by: user.id
+        delay_seconds: min_interval || 8,
+        created_by: user.id,
+        created_by_name: user.name || 'Agente'
       }).select().single();
 
       if (cErr) throw cErr;
@@ -5243,7 +5269,7 @@ const DEFAULT_TEAM = {
         data: { message: `Campanha criada por ${user.name}` }
       });
 
-      return res.json({ success: true, campaign });
+      return res.json({ success: true, campaign: mapCampaignDbToApi(campaign) });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
     }
@@ -5253,7 +5279,7 @@ const DEFAULT_TEAM = {
     try {
       const { data, error } = await supabaseAdmin.from(TABLES.campaigns).select('*').eq('id', req.params.id).single();
       if (error) throw error;
-      return res.json({ success: true, campaign: data });
+      return res.json({ success: true, campaign: mapCampaignDbToApi(data) });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
     }
@@ -5571,7 +5597,7 @@ const DEFAULT_TEAM = {
 
       return res.json({
         success: true,
-        campaign,
+        campaign: mapCampaignDbToApi(campaign),
         stats,
         nextPendingRecipients: nextRecipients || [],
         lastFailedRecipients: lastFailed || [],

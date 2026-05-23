@@ -194,12 +194,170 @@ export default function CampaignsPage() {
       const { campaignService } = await import('../services/dataService');
       const res = await campaignService.optimize(formData.manualListText);
       if (res.success) {
-        setFormData({ ...formData, validatedList: res.valid });
+        const combinedList: any[] = [];
+        
+        if (Array.isArray(res.valid)) {
+          res.valid.forEach((v: any) => {
+            combinedList.push({
+              name: v.name || "Cliente",
+              phone: v.phone,
+              phone_normalized: v.phone_normalized,
+              valid: true,
+              reason: ""
+            });
+          });
+        }
+        
+        if (Array.isArray(res.invalid)) {
+          res.invalid.forEach((v: any) => {
+            let name = "Inválido";
+            let phone = v.line || "";
+            if (v.line && typeof v.line === "string") {
+              if (v.line.includes(';')) {
+                const parts = v.line.split(';');
+                name = parts[0]?.trim() || "Inválido";
+                phone = parts[1]?.trim() || v.line;
+              } else if (v.line.includes(',')) {
+                const parts = v.line.split(',');
+                name = parts[0]?.trim() || "Inválido";
+                phone = parts[1]?.trim() || v.line;
+              }
+            }
+            combinedList.push({
+              name,
+              phone,
+              phone_normalized: "",
+              valid: false,
+              reason: v.reason || "Formato inválido"
+            });
+          });
+        }
+        
+        if (Array.isArray(res.duplicates)) {
+          res.duplicates.forEach((v: any) => {
+            let name = "Duplicado";
+            let phone = v.line || "";
+            if (v.line && typeof v.line === "string") {
+              if (v.line.includes(';')) {
+                const parts = v.line.split(';');
+                name = parts[0]?.trim() || "Duplicado";
+                phone = parts[1]?.trim() || v.line;
+              } else if (v.line.includes(',')) {
+                const parts = v.line.split(',');
+                name = parts[0]?.trim() || "Duplicado";
+                phone = parts[1]?.trim() || v.line;
+              }
+            }
+            combinedList.push({
+              name,
+              phone,
+              phone_normalized: v.phone_normalized || "",
+              valid: false,
+              reason: "Duplicado"
+            });
+          });
+        }
+
+        setFormData({ ...formData, validatedList: combinedList });
         toast.success(`Validado: ${res.total_valid} ok, ${res.total_invalid} inválidos, ${res.total_duplicates} duplicados.`);
       } else {
         throw new Error(res.error);
       }
     }, { label: 'Erro ao validar lista' });
+  };
+
+  const handleNextStep = async () => {
+    if (step === 2 && formData.audienceType === 'manual_list') {
+      if (formData.manualListText.trim() && formData.validatedList.filter(v => v.valid).length === 0) {
+        toast.info("Validando lista de contatos...");
+        try {
+          const { campaignService } = await import('../services/dataService');
+          const res = await campaignService.optimize(formData.manualListText);
+          if (res.success) {
+            const combinedList: any[] = [];
+            
+            if (Array.isArray(res.valid)) {
+              res.valid.forEach((v: any) => {
+                combinedList.push({
+                  name: v.name || "Cliente",
+                  phone: v.phone,
+                  phone_normalized: v.phone_normalized,
+                  valid: true,
+                  reason: ""
+                });
+              });
+            }
+            
+            if (Array.isArray(res.invalid)) {
+              res.invalid.forEach((v: any) => {
+                let name = "Inválido";
+                let phone = v.line || "";
+                if (v.line && typeof v.line === "string") {
+                  if (v.line.includes(';')) {
+                    const parts = v.line.split(';');
+                    name = parts[0]?.trim() || "Inválido";
+                    phone = parts[1]?.trim() || v.line;
+                  } else if (v.line.includes(',')) {
+                    const parts = v.line.split(',');
+                    name = parts[0]?.trim() || "Inválido";
+                    phone = parts[1]?.trim() || v.line;
+                  }
+                }
+                combinedList.push({
+                  name,
+                  phone,
+                  phone_normalized: "",
+                  valid: false,
+                  reason: v.reason || "Formato inválido"
+                });
+              });
+            }
+            
+            if (Array.isArray(res.duplicates)) {
+              res.duplicates.forEach((v: any) => {
+                let name = "Duplicado";
+                let phone = v.line || "";
+                if (v.line && typeof v.line === "string") {
+                  if (v.line.includes(';')) {
+                    const parts = v.line.split(';');
+                    name = parts[0]?.trim() || "Duplicado";
+                    phone = parts[1]?.trim() || v.line;
+                  } else if (v.line.includes(',')) {
+                    const parts = v.line.split(',');
+                    name = parts[0]?.trim() || "Duplicado";
+                    phone = parts[1]?.trim() || v.line;
+                  }
+                }
+                combinedList.push({
+                  name,
+                  phone,
+                  phone_normalized: v.phone_normalized || "",
+                  valid: false,
+                  reason: "Duplicado"
+                });
+              });
+            }
+
+            setFormData(prev => ({ ...prev, validatedList: combinedList }));
+            const validCount = combinedList.filter(v => v.valid).length;
+            if (validCount === 0) {
+              toast.error("Nenhum contato válido encontrado após validação.");
+              return;
+            }
+            toast.success(`Validado automaticamente: ${res.total_valid} ok.`);
+          } else {
+            throw new Error(res.error);
+          }
+        } catch (err: any) {
+          toast.error("Erro ao validar lista automaticamente: " + err.message);
+          return;
+        }
+      } else if (!formData.manualListText.trim()) {
+        toast.error("Por favor, cole sua lista de contatos ou mude para audiência do CRM.");
+        return;
+      }
+    }
+    setStep(step + 1);
   };
 
   const handleCreate = async () => {
@@ -221,7 +379,7 @@ export default function CampaignsPage() {
            });
          });
       } else {
-        formData.validatedList.forEach(v => {
+        formData.validatedList.filter(v => v.valid).forEach(v => {
           contacts.push({
             name: v.name,
             phone: v.phone,
@@ -870,7 +1028,7 @@ export default function CampaignsPage() {
                    <div className="flex items-center gap-4">
                       {step < 3 ? (
                          <button 
-                           onClick={() => setStep(step + 1)}
+                           onClick={handleNextStep}
                            disabled={step === 1 && !formData.name}
                            className="px-10 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100 hover:scale-105 active:scale-95 transition-all flex items-center gap-3 disabled:opacity-50 disabled:scale-100"
                          >

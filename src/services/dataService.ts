@@ -495,9 +495,52 @@ export const campaignService = {
   },
   async update(id: string, updates: any) {
     try {
-      const { data, error } = await supabase.from('crm_campaigns').update(updates).eq('id', id).select().single();
+      const mappedUpdates: any = {};
+      const validDbKeys = [
+        'name', 'description', 'channel', 'status', 'message_type', 
+        'media_url', 'media_file_name', 'media_mime_type', 'started_at', 
+        'paused_at', 'finished_at', 'created_by', 'created_by_name', 
+        'batch_size', 'max_attempts', 'last_processed_at', 'last_error'
+      ];
+      
+      for (const key of validDbKeys) {
+        if (key in updates) {
+          mappedUpdates[key] = updates[key];
+        }
+      }
+      
+      if ('content' in updates) mappedUpdates.message_text = updates.content;
+      if ('message_text' in updates) mappedUpdates.message_text = updates.message_text;
+      if ('recipients_count' in updates) mappedUpdates.total_recipients = updates.recipients_count;
+      if ('total_recipients' in updates) mappedUpdates.total_recipients = updates.total_recipients;
+      if ('pending_count' in updates) mappedUpdates.total_pending = updates.pending_count;
+      if ('total_pending' in updates) mappedUpdates.total_pending = updates.total_pending;
+      if ('sending_count' in updates) mappedUpdates.total_sending = updates.sending_count;
+      if ('total_sending' in updates) mappedUpdates.total_sending = updates.total_sending;
+      if ('sent_count' in updates) mappedUpdates.total_sent = updates.sent_count;
+      if ('total_sent' in updates) mappedUpdates.total_sent = updates.total_sent;
+      if ('failed_count' in updates) mappedUpdates.total_failed = updates.failed_count;
+      if ('total_failed' in updates) mappedUpdates.total_failed = updates.total_failed;
+      if ('skipped_count' in updates) mappedUpdates.total_skipped = updates.skipped_count;
+      if ('total_skipped' in updates) mappedUpdates.total_skipped = updates.total_skipped;
+      if ('min_interval' in updates) mappedUpdates.delay_seconds = updates.min_interval;
+      if ('delay_seconds' in updates) mappedUpdates.delay_seconds = updates.delay_seconds;
+      
+      const { data, error } = await supabase.from('crm_campaigns').update(mappedUpdates).eq('id', id).select().single();
       if (error) throw error;
-      return data;
+      
+      return {
+        ...data,
+        content: data.message_text || data.content,
+        recipients_count: data.total_recipients ?? data.recipients_count ?? 0,
+        pending_count: data.total_pending ?? data.pending_count ?? 0,
+        sending_count: data.total_sending ?? data.sending_count ?? 0,
+        sent_count: data.total_sent ?? data.sent_count ?? 0,
+        failed_count: data.total_failed ?? data.failed_count ?? 0,
+        skipped_count: data.total_skipped ?? data.skipped_count ?? 0,
+        min_interval: data.delay_seconds ?? data.min_interval ?? 8,
+        max_interval: data.delay_seconds ?? data.max_interval ?? 8,
+      };
     } catch (err: any) {
       handleError(err, 'campaignService.update');
       throw err;
