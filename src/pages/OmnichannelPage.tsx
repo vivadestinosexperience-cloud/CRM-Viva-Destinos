@@ -1527,10 +1527,13 @@ export default function OmnichannelPage() {
   const handleAISuggestion = async () => {
     if (!activeConversation) return;
     const history = safeMessages
-      .map(
-        (m) =>
-          `${m.sender_type === "customer" ? "Cliente" : "Agente"}: ${m.content}`,
-      )
+      .map((m) => {
+        const isClient = m.sender_type === "customer";
+        const sender = isClient ? "Cliente" : "Agente";
+        const text = (m as any).display_content || renderSafeText(m.content, "") || m.caption || "";
+        return `${sender}: ${text}`;
+      })
+      .filter(line => line.trim().length > 0)
       .join("\n");
 
     toast.promise(
@@ -1561,10 +1564,13 @@ export default function OmnichannelPage() {
   const handleAIClassify = async () => {
     if (!activeConversation) return;
     const history = safeMessages
-      .map(
-        (m) =>
-          `${m.sender_type === "customer" ? "Cliente" : "Agente"}: ${m.content}`,
-      )
+      .map((m) => {
+        const isClient = m.sender_type === "customer";
+        const sender = isClient ? "Cliente" : "Agente";
+        const text = (m as any).display_content || renderSafeText(m.content, "") || m.caption || "";
+        return `${sender}: ${text}`;
+      })
+      .filter(line => line.trim().length > 0)
       .join("\n");
 
     toast.promise(
@@ -1640,10 +1646,13 @@ export default function OmnichannelPage() {
     await safeAction(
       async () => {
         const history = safeMessages
-          .map(
-            (m) =>
-              `${m.sender_type === "customer" ? "Cliente" : "Agente"}: ${m.content}`,
-          )
+          .map((m) => {
+            const isClient = m.sender_type === "customer";
+            const sender = isClient ? "Cliente" : "Agente";
+            const text = (m as any).display_content || renderSafeText(m.content, "") || m.caption || "";
+            return `${sender}: ${text}`;
+          })
+          .filter(line => line.trim().length > 0)
           .join("\n");
 
         if (!history.trim()) {

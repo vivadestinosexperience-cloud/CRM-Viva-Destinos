@@ -5672,20 +5672,33 @@ const DEFAULT_TEAM = {
   });
 
   // --- IA Assistant / Gemini Integrated Services ---
+  function getGeminiClient() {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) {
+      throw new Error("A chave GEMINI_API_KEY do Google AI Studio não foi encontrada no ambiente. Certifique-se de preencher essa variável no painel de Segredos/Configurações.");
+    }
+    return new GoogleGenAI({
+      apiKey: key,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build'
+        }
+      }
+    });
+  }
+
   app.post("/api/ai/suggestion", async (req, res) => {
     try {
-      if (!ai) {
-        return res.status(500).json({
-          success: false,
-          error: "O serviço de Inteligência Artificial não está configurado. Configure a chave GEMINI_API_KEY no painel de segredos do Google AI Studio."
-        });
-      }
       const { messages } = req.body;
       if (!messages || typeof messages !== "string" || !messages.trim()) {
         return res.status(400).json({ success: false, error: "Histórico de mensagens é obrigatório." });
       }
 
-      const response = await ai.models.generateContent({
+      console.log(`[AI Suggestion API] Request received. History length: ${messages.length} chars.`);
+      console.log(`[AI Suggestion API] Snippet: "${messages.substring(0, 150)}..."`);
+
+      const client = getGeminiClient();
+      const response = await client.models.generateContent({
         model: "gemini-3.5-flash",
         contents: `Histórico da Conversa:\n${messages}\n\nPor favor, sugira uma resposta curta, profissional, acolhedora e altamente persuasiva para o agente enviar ao cliente em seguida. Retorne APENAS o texto da mensagem sugerida, de forma direta e sem explicações extras, aspas ou prefixos.`,
         config: {
@@ -5694,6 +5707,7 @@ const DEFAULT_TEAM = {
       });
 
       const suggestion = response.text?.trim() || "Não foi possível gerar uma sugestão.";
+      console.log(`[AI Suggestion API] Result generated: "${suggestion.substring(0, 100)}..."`);
       return res.json({ success: true, suggestion });
     } catch (err: any) {
       console.error("[AI Suggestion API] Error:", err);
@@ -5703,18 +5717,15 @@ const DEFAULT_TEAM = {
 
   app.post("/api/ai/classify", async (req, res) => {
     try {
-      if (!ai) {
-        return res.status(500).json({
-          success: false,
-          error: "O serviço de Inteligência Artificial não está configurado. Configure a chave GEMINI_API_KEY no painel de segredos do Google AI Studio."
-        });
-      }
       const { messages } = req.body;
       if (!messages || typeof messages !== "string" || !messages.trim()) {
         return res.status(400).json({ success: false, error: "Histórico de mensagens é obrigatório." });
       }
 
-      const response = await ai.models.generateContent({
+      console.log(`[AI Classify API] Request received. History length: ${messages.length} chars.`);
+
+      const client = getGeminiClient();
+      const response = await client.models.generateContent({
         model: "gemini-3.5-flash",
         contents: `Histórico da Conversa:\n${messages}\n\nCom base na conversa acima, analise a intenção de compra do cliente e responda exclusivamente com uma destas três opções em maiúsculas: QUENTE, MORNO ou FRIO.`,
         config: {
@@ -5723,6 +5734,7 @@ const DEFAULT_TEAM = {
       });
 
       const classification = response.text?.trim() || "MORNO";
+      console.log(`[AI Classify API] Result: "${classification}"`);
       return res.json({ success: true, classification });
     } catch (err: any) {
       console.error("[AI Classify API] Error:", err);
@@ -5732,18 +5744,16 @@ const DEFAULT_TEAM = {
 
   app.post("/api/ai/summarize", async (req, res) => {
     try {
-      if (!ai) {
-        return res.status(500).json({
-          success: false,
-          error: "O serviço de Inteligência Artificial não está configurado. Configure a chave GEMINI_API_KEY no painel de segredos do Google AI Studio."
-        });
-      }
       const { messages } = req.body;
       if (!messages || typeof messages !== "string" || !messages.trim()) {
         return res.status(400).json({ success: false, error: "Histórico de mensagens é obrigatório." });
       }
 
-      const response = await ai.models.generateContent({
+      console.log(`[AI Summarize API] Request received. History length: ${messages.length} chars.`);
+      console.log(`[AI Summarize API] Input history content:\n${messages}\n--- End Input ---`);
+
+      const client = getGeminiClient();
+      const response = await client.models.generateContent({
         model: "gemini-3.5-flash",
         contents: `Histórico do atendimento:\n${messages}\n\nPor favor, faça um resumo executivo claro, estruturado e focado em vendas sobre este atendimento. No resumo, inclua de forma resumida:\n- Intenção e interesse principal do cliente\n- Principais informações informadas (acompanhantes, destinos, datas preferidas, orçamento se houver)\n- Próximos passos necessários ou pontos pendentes do consultor.\n\nResponda em português brasileiro de forma direta e concisa.`,
         config: {
@@ -5752,6 +5762,7 @@ const DEFAULT_TEAM = {
       });
 
       const summary = response.text?.trim() || "Não foi possível gerar um resumo.";
+      console.log(`[AI Summarize API] Output Summary:\n${summary}\n--- End Output ---`);
       return res.json({ success: true, summary });
     } catch (err: any) {
       console.error("[AI Summarize API] Error:", err);
