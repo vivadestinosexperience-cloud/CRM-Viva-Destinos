@@ -769,6 +769,30 @@ function normalizeBrazilPhone(input: any) {
   return digits;
 }
 
+function getEquivalentBrazilPhones(phone: string): string[] {
+  let digits = String(phone || "").replace(/\D/g, "");
+  if (!digits) return [phone];
+
+  if ((digits.length === 10 || digits.length === 11) && !digits.startsWith("55")) {
+    digits = `55${digits}`;
+  }
+
+  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
+    const ddd = digits.substring(2, 4);
+    const dddNum = parseInt(ddd, 10);
+    if (dddNum >= 11 && dddNum <= 99) {
+      if (digits.length === 12) {
+        const with9 = `55${ddd}9${digits.substring(4)}`;
+        return [digits, with9];
+      } else {
+        const without9 = `55${ddd}${digits.substring(5)}`;
+        return [digits, without9];
+      }
+    }
+  }
+  return [phone, digits];
+}
+
 function isValidUUID(id: string): boolean {
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   return uuidRegex.test(id || "");
@@ -1456,14 +1480,18 @@ const DEFAULT_TEAM = {
 };
 
   async function findOrCreateCustomerByPhone(phone: string, name: string) {
-    let { data: customer, error: fetchErr } = await supabaseAdmin.from(TABLES.customers).select('*').eq('phone_normalized', phone).maybeSingle();
+    const phones = getEquivalentBrazilPhones(phone);
+    let { data: customers, error: fetchErr } = await supabaseAdmin.from(TABLES.customers).select('*').in('phone_normalized', phones);
     if (fetchErr) throw fetchErr;
 
+    let customer = customers && customers.length > 0 ? customers[0] : null;
+
     if (!customer) {
+      const preferredPhone = phones.find(p => p.length === 13) || phone;
       const { data: newCust, error: custErr } = await supabaseAdmin.from(TABLES.customers).insert({
         name: name || 'Cliente',
-        phone: phone,
-        phone_normalized: phone,
+        phone: preferredPhone,
+        phone_normalized: preferredPhone,
         origin: 'WhatsApp Z-API'
       }).select().single();
       if (custErr) throw custErr;
@@ -1477,15 +1505,19 @@ const DEFAULT_TEAM = {
   }
 
   async function findOrCreateConversationByPhone(phone: string, customer: any, options: any = {}) {
-    let { data: conversation, error: convFetchErr } = await supabaseAdmin.from(TABLES.conversations).select('*').eq('customer_phone_normalized', phone).maybeSingle();
+    const phones = getEquivalentBrazilPhones(phone);
+    let { data: conversations, error: convFetchErr } = await supabaseAdmin.from(TABLES.conversations).select('*').in('customer_phone_normalized', phones);
     if (convFetchErr) throw convFetchErr;
+
+    let conversation = conversations && conversations.length > 0 ? conversations[0] : null;
 
     const unreadCount = options.unread_count !== undefined ? options.unread_count : 1;
 
     if (!conversation) {
+      const preferredPhone = phones.find(p => p.length === 13) || phone;
       const { data: newConv, error: convErr } = await supabaseAdmin.from(TABLES.conversations).insert({
         customer_id: customer.id,
-        customer_phone_normalized: phone,
+        customer_phone_normalized: preferredPhone,
         status: options.status || 'NEW',
         assigned_user_id: null,
         assigned_user_name: null,
@@ -2849,9 +2881,55 @@ const DEFAULT_TEAM = {
         queue_name: c.queue_name || c.team_name || DEFAULT_TEAM.name
       }));
 
+      // Group/deduplicate conversations on-the-fly by equivalent Brazil phone
+      const uniqueConversationsMap = new Map<string, any>();
+
+      for (const c of mapped) {
+        let phoneKey = c.customer_phone_normalized || "";
+        const equivs = getEquivalentBrazilPhones(phoneKey);
+        // Normalize the key to the preferred 13-digit format
+        const standardizedKey = equivs.find(p => p.length === 13) || phoneKey;
+
+        if (!uniqueConversationsMap.has(standardizedKey)) {
+          uniqueConversationsMap.set(standardizedKey, { ...c });
+        } else {
+          const existing = uniqueConversationsMap.get(standardizedKey);
+          const existingTime = new Date(existing.last_message_at || 0).getTime();
+          const incomingTime = new Date(c.last_message_at || 0).getTime();
+          
+          if (incomingTime > existingTime) {
+            existing.last_message = c.last_message;
+            existing.last_message_at = c.last_message_at;
+            existing.id = c.id;
+            existing.status = c.status;
+            existing.assigned_user_id = c.assigned_user_id;
+            existing.assigned_user_name = c.assigned_user_name;
+            if (c.customer) {
+              existing.customer = c.customer;
+            }
+          }
+          
+          // Combine unread count
+          existing.unread_count = (existing.unread_count || 0) + (c.unread_count || 0);
+          
+          // Merge tags
+          const existingTags = existing.tags || [];
+          const incomingTags = c.tags || [];
+          const mergedTags = [...existingTags];
+          for (const it of incomingTags) {
+            if (!mergedTags.some(t => t.id === it.id)) {
+              mergedTags.push(it);
+            }
+          }
+          existing.tags = mergedTags;
+        }
+      }
+
+      const deduplicatedConversations = Array.from(uniqueConversationsMap.values());
+
       return res.json({
         success: true,
-        conversations: mapped
+        conversations: deduplicatedConversations
       });
 
     } catch (err: any) {
@@ -3228,9 +3306,26 @@ const DEFAULT_TEAM = {
     }
 
     try {
+      const { data: mainConv } = await supabaseAdmin.from(TABLES.conversations)
+        .select('customer_phone_normalized')
+        .eq('id', id)
+        .maybeSingle();
+
+      let conversationIds = [id];
+      if (mainConv && mainConv.customer_phone_normalized) {
+        const equivalentPhones = getEquivalentBrazilPhones(mainConv.customer_phone_normalized);
+        const { data: allRelatedConvs } = await supabaseAdmin.from(TABLES.conversations)
+          .select('id')
+          .in('customer_phone_normalized', equivalentPhones);
+        
+        if (allRelatedConvs && allRelatedConvs.length > 0) {
+          conversationIds = allRelatedConvs.map(c => c.id);
+        }
+      }
+
       const { data: msgs, error } = await supabaseAdmin.from(TABLES.messages)
         .select('*')
-        .eq('conversation_id', id)
+        .in('conversation_id', conversationIds)
         .order('created_at', { ascending: true });
 
       if (error) throw error;
