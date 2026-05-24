@@ -209,6 +209,7 @@ export default function OmnichannelPage() {
   const lastConversationIdRef = useRef<string | null>(null);
   const lastMessagesCountRef = useRef<number>(0);
   const lastMessageIdRef = useRef<string | null>(null);
+  const loadFinishedForIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (activeConversationId) {
@@ -216,25 +217,39 @@ export default function OmnichannelPage() {
       const lastMsg = currentMessages[currentMessages.length - 1];
       const lastMsgId = lastMsg?.id || null;
 
+      // Case 1: Switched to a different conversation
       if (lastConversationIdRef.current !== activeConversationId) {
-        // Just switched conversation or opened the first one: scroll instantly ("auto")
         lastConversationIdRef.current = activeConversationId;
         lastMessagesCountRef.current = currentMessages.length;
         lastMessageIdRef.current = lastMsgId;
+        
+        // If loaded already, scroll instantly, otherwise wait for loadingMessages to turn false
+        if (!loadingMessages) {
+          scrollToBottom("auto");
+          loadFinishedForIdRef.current = activeConversationId;
+        } else {
+          loadFinishedForIdRef.current = null;
+        }
+      } 
+      // Case 2: Just finished loading a conversation (loadingMessages turned from true to false)
+      else if (!loadingMessages && loadFinishedForIdRef.current !== activeConversationId) {
+        loadFinishedForIdRef.current = activeConversationId;
+        lastMessagesCountRef.current = currentMessages.length;
+        lastMessageIdRef.current = lastMsgId;
         scrollToBottom("auto");
-      } else if (
-        currentMessages.length > lastMessagesCountRef.current ||
-        (lastMsgId !== null && lastMsgId !== lastMessageIdRef.current)
+      }
+      // Case 3: Brand new messages sent or received inside the same active conversation
+      else if (
+        !loadingMessages &&
+        (currentMessages.length > lastMessagesCountRef.current ||
+         (lastMsgId !== null && lastMsgId !== lastMessageIdRef.current))
       ) {
-        // New message sent or received or last message updated: scroll smoothly ("smooth")
         lastMessagesCountRef.current = currentMessages.length;
         lastMessageIdRef.current = lastMsgId;
         scrollToBottom("smooth");
-      } else {
-        // Count and content remain identical: synchronize refs without scrolling
-        if (currentMessages.length > 0 && lastMessagesCountRef.current === 0) {
-          scrollToBottom("auto");
-        }
+      } 
+      // Case 4: Synchronize refs otherwise
+      else {
         lastMessagesCountRef.current = currentMessages.length;
         lastMessageIdRef.current = lastMsgId;
       }
@@ -242,8 +257,9 @@ export default function OmnichannelPage() {
       lastConversationIdRef.current = null;
       lastMessagesCountRef.current = 0;
       lastMessageIdRef.current = null;
+      loadFinishedForIdRef.current = null;
     }
-  }, [messages, activeConversationId]);
+  }, [messages, activeConversationId, loadingMessages]);
 
   const handleLoadDetails = async (conversationId: string) => {
     setLoadingDetails(true);
