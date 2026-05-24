@@ -4964,6 +4964,68 @@ const DEFAULT_TEAM = {
     }
   });
 
+  app.post("/api/admin/reset-production-data", async (req, res) => {
+    try {
+      // 1. Delete campaign events
+      try {
+        await supabaseAdmin.from('crm_campaign_events').delete().not('id', 'is', null);
+      } catch (e) { console.error("Error clearing crm_campaign_events:", e); }
+
+      // 2. Delete campaign recipients
+      try {
+        await supabaseAdmin.from('crm_campaign_recipients').delete().not('id', 'is', null);
+      } catch (e) { console.error("Error clearing crm_campaign_recipients:", e); }
+
+      // 3. Delete campaigns
+      try {
+        await supabaseAdmin.from('crm_campaigns').delete().not('id', 'is', null);
+      } catch (e) { console.error("Error clearing crm_campaigns:", e); }
+
+      // 4. Delete conversation tags
+      try {
+        await supabaseAdmin.from('crm_conversation_tags').delete().not('id', 'is', null);
+      } catch (e) { console.error("Error clearing crm_conversation_tags:", e); }
+
+      // 5. Delete messages
+      try {
+        await supabaseAdmin.from('crm_messages').delete().not('id', 'is', null);
+      } catch (e) { console.error("Error clearing crm_messages:", e); }
+
+      // 6. Delete notes
+      try {
+        await supabaseAdmin.from('conversation_notes').delete().not('id', 'is', null);
+      } catch (e) { console.error("Error clearing conversation_notes:", e); }
+      try {
+        await supabaseAdmin.from('crm_conversation_notes').delete().not('id', 'is', null);
+      } catch (e) { console.error("Error clearing crm_conversation_notes:", e); }
+
+      // 7. Delete conversations
+      try {
+        await supabaseAdmin.from('crm_conversations').delete().not('id', 'is', null);
+      } catch (e) { console.error("Error clearing crm_conversations:", e); }
+
+      // 8. Delete customers
+      try {
+        await supabaseAdmin.from('crm_customers').delete().not('id', 'is', null);
+      } catch (e) { console.error("Error clearing crm_customers:", e); }
+
+      // 9. Delete Webhook logs
+      try {
+        await supabaseAdmin.from('zapi_webhook_logs').delete().not('id', 'is', null);
+      } catch (e) { console.error("Error clearing zapi_webhook_logs:", e); }
+      try {
+        await supabaseAdmin.from('crm_webhook_logs').delete().not('id', 'is', null);
+      } catch (e) { console.error("Error clearing crm_webhook_logs:", e); }
+
+      return res.json({ 
+        success: true, 
+        message: "Banco de dados redefinido com sucesso! Todas as conversas, clientes, mensagens da fila, campanhas de marketing e logs de teste foram excluídos no banco de dados para o modo de Produção." 
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: getErrorMessage(err) });
+    }
+  });
+
   // --- Presence Routes ---
   app.post("/api/me/presence/heartbeat", async (req, res) => {
     try {
@@ -5855,7 +5917,15 @@ const DEFAULT_TEAM = {
     }
   }
 
+  let useDatabaseForQuickReplies = true;
+  let hasLoggedQuickRepliesFallback = false;
+
   app.get("/api/quick-replies", async (req, res) => {
+    if (!useDatabaseForQuickReplies) {
+      const replies = loadFSQuickReplies();
+      return res.json({ success: true, quickReplies: replies });
+    }
+
     try {
       const { data, error } = await supabaseAdmin
         .from("crm_quick_replies")
@@ -5866,8 +5936,12 @@ const DEFAULT_TEAM = {
         throw error;
       }
       return res.json({ success: true, quickReplies: data || [] });
-    } catch (err) {
-      console.warn("[Quick Replies API] No DB table or error. Falling back to local JSON file.");
+    } catch (err: any) {
+      useDatabaseForQuickReplies = false;
+      if (!hasLoggedQuickRepliesFallback) {
+        console.info("[Quick Replies API] Database table 'crm_quick_replies' is not available. Saving/loading templates locally using file storage system.");
+        hasLoggedQuickRepliesFallback = true;
+      }
       const replies = loadFSQuickReplies();
       return res.json({ success: true, quickReplies: replies });
     }
@@ -5889,6 +5963,9 @@ const DEFAULT_TEAM = {
       };
 
       try {
+        if (!useDatabaseForQuickReplies) {
+          throw new Error("SqlDatabaseNotAvailable");
+        }
         const { data, error } = await supabaseAdmin
           .from("crm_quick_replies")
           .insert(newReply)
@@ -5898,6 +5975,7 @@ const DEFAULT_TEAM = {
         if (error) throw error;
         return res.json({ success: true, quickReply: data });
       } catch (dbErr) {
+        useDatabaseForQuickReplies = false;
         const replies = loadFSQuickReplies();
         const fallbackReply = {
           id: String(Date.now()),
@@ -5923,6 +6001,9 @@ const DEFAULT_TEAM = {
       }
 
       try {
+        if (!useDatabaseForQuickReplies) {
+          throw new Error("SqlDatabaseNotAvailable");
+        }
         const { data, error } = await supabaseAdmin
           .from("crm_quick_replies")
           .update({ shortcut, content, updated_at: new Date().toISOString() })
@@ -5953,6 +6034,9 @@ const DEFAULT_TEAM = {
     const { id } = req.params;
     try {
       try {
+        if (!useDatabaseForQuickReplies) {
+          throw new Error("SqlDatabaseNotAvailable");
+        }
         const { error } = await supabaseAdmin
           .from("crm_quick_replies")
           .delete()

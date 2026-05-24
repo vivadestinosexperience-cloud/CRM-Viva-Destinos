@@ -48,6 +48,7 @@ export default function MainLayout() {
     { name: 'Atendimentos', icon: MessageSquare, path: '/app/atendimentos' },
     { name: 'Campanhas', icon: Zap, path: '/app/campanhas' },
     { name: 'Clientes', icon: Users, path: '/app/clientes' },
+    { name: 'Painéis (CRM)', icon: Briefcase, path: '/app/paineis' },
     { name: 'Relatórios', icon: BarChart3, path: '/app/relatorios/atendimentos' },
     { 
       name: 'Configurações', 

@@ -700,18 +700,17 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
               <div className="flex items-center gap-3">
                 <button
                   onClick={async () => {
-                    if (!confirm('Deseja marcar como IGNORED conversas de grupos que já caíram no CRM?')) return;
                     try {
                       const res = await authorizedFetch('/api/admin/cleanup-group-conversations', { method: 'POST' });
                       const data = await safeReadJson(res);
                       if (data.success) {
-                        alert(data.message);
+                        toast.success(data.message);
                         fetchDiagnostic();
                       } else {
-                        alert('Erro: ' + data.error);
+                        toast.error('Erro: ' + data.error);
                       }
                     } catch (err) {
-                      alert('Erro na limpeza.');
+                      toast.error('Erro na limpeza.');
                     }
                   }}
                   className="px-4 py-2 bg-orange-50 text-orange-600 rounded-full text-[9px] font-black uppercase hover:bg-orange-100 transition-all border border-orange-100"

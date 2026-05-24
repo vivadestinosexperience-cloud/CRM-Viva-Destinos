@@ -143,8 +143,6 @@ export default function TeamsSettingsPage() {
       return;
     }
 
-    if (!window.confirm(`Tem certeza que deseja excluir a equipe "${team.name}"?`)) return;
-
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();
       const res = await authorizedFetch(`${baseUrl}/api/teams/${team.id}`, { method: 'DELETE' });
@@ -204,8 +202,6 @@ export default function TeamsSettingsPage() {
 
   const handleRemoveMember = async (userId: string) => {
     if (!selectedTeam) return;
-    
-    if (!window.confirm("Remover este usuário da equipe?")) return;
 
     await safeAction(async () => {
       const baseUrl = getApiBaseUrl();

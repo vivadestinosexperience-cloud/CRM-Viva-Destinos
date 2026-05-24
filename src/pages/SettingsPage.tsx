@@ -14,6 +14,7 @@ import AccountSettingsPage from './settings/AccountSettingsPage';
 import AppearanceSettingsPage from './settings/AppearanceSettingsPage';
 import TagsSettingsPage from './settings/TagsSettingsPage';
 import MessageTemplatesSettingsPage from './settings/MessageTemplatesSettingsPage';
+import ProductionResetSettingsPage from './settings/ProductionResetSettingsPage';
 
 export default function SettingsPage() {
   return (
@@ -30,6 +31,7 @@ export default function SettingsPage() {
         <Route path="tags" element={<TagsSettingsPage />} />
         <Route path="modelos" element={<MessageTemplatesSettingsPage />} />
         <Route path="aparencia" element={<AppearanceSettingsPage />} />
+        <Route path="limpeza" element={<ProductionResetSettingsPage />} />
         <Route path="*" element={<Navigate to="." replace />} />
       </Routes>
     </div>

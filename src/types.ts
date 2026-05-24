@@ -358,3 +358,49 @@ export interface Reservation {
   paymentStatus: 'PENDING' | 'PARTIAL' | 'TOTAL';
   status: 'PRE' | 'CONFIRMED' | 'WAITING_PAYMENT' | 'TRAVELING' | 'FINISHED' | 'CANCELLED';
 }
+
+// Kanban CRM types
+export interface KanbanStage {
+  id: string;
+  name: string;
+  color?: string;
+  order: number;
+}
+
+export interface KanbanBoard {
+  id: string;
+  name: string;
+  description: string;
+  stages: KanbanStage[];
+  is_pinned?: boolean;
+  allowed_users?: string[]; // IDs of users who can see this board. Empty/undefined means everyone.
+  created_at: string;
+}
+
+export interface KanbanCardNote {
+  id: string;
+  card_id: string;
+  content: string;
+  created_by_name: string;
+  created_at: string;
+}
+
+export interface KanbanCard {
+  id: string;
+  board_id: string;
+  stage_id: string;
+  title: string;
+  code: string;
+  description?: string;
+  conversation_id?: string; // Links to Conversation id
+  customer_id?: string;
+  responsible_id?: string;
+  due_date?: string;
+  tags?: string[];
+  value?: number;
+  campaign?: string;
+  created_at: string;
+  updated_at: string;
+  notes?: KanbanCardNote[];
+}
+

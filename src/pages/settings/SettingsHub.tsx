@@ -14,7 +14,8 @@ import {
   Briefcase,
   Palette,
   Tag as TagIcon,
-  Keyboard
+  Keyboard,
+  Trash2
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -97,6 +98,15 @@ export default function SettingsHub() {
       color: 'bg-pink-500',
       path: '/app/ajustes/aparencia',
       adminOnly: false
+    },
+    {
+      id: 'limpeza',
+      name: 'Limpeza de Produção',
+      description: 'Zere atendimentos, mensagens, campanhas de teste e Cards para iniciar em produção do zero.',
+      icon: Trash2,
+      color: 'bg-rose-600',
+      path: '/app/ajustes/limpeza',
+      adminOnly: true
     }
   ].filter(card => !card.adminOnly || isAdmin);
 

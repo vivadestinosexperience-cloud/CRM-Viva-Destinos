@@ -1,18 +1,10 @@
 import { supabase } from '../integrations/supabase/client';
 
 export function getApiBaseUrl() {
-  // Em desenvolvimento ou se estivermos rodando no editor do AI Studio,
-  // ou em qualquer ambiente de preview do AI Studio (.run.app ou .aistudio.google),
-  // preferimos caminhos relativos para evitar erros de CORS ou apontar para o servidor errado/antigo.
-  if (
-    import.meta.env.DEV || 
-    (typeof window !== "undefined" && (
-      window.location.hostname === "localhost" ||
-      window.location.hostname === "127.0.0.1" ||
-      window.location.hostname.includes("run.app") ||
-      window.location.hostname.includes("aistudio")
-    ))
-  ) {
+  // Para aplicações full-stack onde o front-end e o back-end rodam juntos na mesma porta e container,
+  // ou em qualquer ambiente de preview/produção unificado, caminhos relativos na Web de volta ao servidor de origem
+  // previnem qualquer erro de CORS, portas incorretas, ou falhas de DNS ("Failed to fetch").
+  if (typeof window !== "undefined") {
     return "";
   }
 

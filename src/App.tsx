@@ -10,6 +10,7 @@ import LoginPage from './pages/LoginPage';
 import MainLayout from './layouts/MainLayout';
 import OmnichannelPage from './pages/OmnichannelPage';
 import CRMPage from './pages/CRMPage';
+import KanbanPage from './pages/KanbanPage';
 import CampaignsPage from './pages/CampaignsPage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
@@ -19,6 +20,7 @@ import { authService } from './services/authService';
 import Logo from './components/Logo';
 import { useAppStore } from './store/useAppStore';
 import PresenceHeartbeat from './components/PresenceHeartbeat';
+import KanbanAutoSync from './components/KanbanAutoSync';
 
 import { Toaster } from 'sonner';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -117,6 +119,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       {isAuthenticated && <PresenceHeartbeat />}
+      {isAuthenticated && <KanbanAutoSync />}
       <BrowserRouter>
         <Toaster position="top-right" richColors closeButton />
         <Routes>
@@ -133,6 +136,8 @@ export default function App() {
             <Route path="atendimentos/:conversationId" element={<OmnichannelPage />} />
             <Route path="campanhas" element={<CampaignsPage />} />
             <Route path="clientes/*" element={<CRMPage />} />
+            <Route path="paineis" element={<KanbanPage />} />
+            <Route path="paineis/:boardId" element={<KanbanPage />} />
             <Route path="relatorios/atendimentos" element={<ReportsPage />} />
             <Route path="ajustes/*" element={<SettingsPage />} />
             <Route path="meu-perfil" element={<UserProfilePage />} />

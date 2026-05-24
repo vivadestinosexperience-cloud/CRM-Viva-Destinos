@@ -96,6 +96,7 @@ import { getContrastTextColor } from "../utils/colorUtils";
 import { TagManagementModal } from "../components/TagManagementModal";
 import { LeadDetailsModal } from "../components/LeadDetailsModal";
 import { FilterPanel } from "../components/FilterPanel";
+import { getBoards, getCards, createCard, updateCard } from "../services/kanbanService";
 
 function safeArray(value: any): any[] {
   return Array.isArray(value) ? value.filter(item => item !== null && item !== undefined) : [];
@@ -138,7 +139,7 @@ export default function OmnichannelPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
-  >(null);
+  >(conversationId || null);
   const [activeTab, setActiveTab] = useState<
     "novos" | "meus" | "concluidos" | "todos"
   >("novos");
@@ -501,6 +502,7 @@ export default function OmnichannelPage() {
   const [spreadsheetId, setSpreadsheetId] = useState(getStoredSpreadsheetId());
   const [isEditingSheetId, setIsEditingSheetId] = useState(false);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
+  const [authDomainError, setAuthDomainError] = useState(false);
   
   // Custom field definitions & conversation-specific values
   const [customFieldDefs, setCustomFieldDefs] = useState<CustomFieldDefinition[]>([]);
@@ -508,6 +510,15 @@ export default function OmnichannelPage() {
   const [showAddFieldForm, setShowAddFieldForm] = useState(false);
   const [newFieldName, setNewFieldName] = useState("");
   const [newFieldType, setNewFieldType] = useState<"text" | "number" | "boolean" | "select">("text");
+
+  // Kanban CRM linkage states
+  const [allKanbanBoards, setAllKanbanBoards] = useState<any[]>([]);
+  const [allKanbanCards, setAllKanbanCards] = useState<any[]>([]);
+  const [linkedKanbanCard, setLinkedKanbanCard] = useState<any | null>(null);
+  const [showLinkKanbanForm, setShowLinkKanbanForm] = useState(false);
+  const [selectedKanbanBoardId, setSelectedKanbanBoardId] = useState("");
+  const [selectedKanbanStageId, setSelectedKanbanStageId] = useState("");
+  const [linkKanbanCardTitle, setLinkKanbanCardTitle] = useState("");
 
   // Load custom field definitions once on mount
   useEffect(() => {
@@ -541,6 +552,7 @@ export default function OmnichannelPage() {
   // Google Sheets Login & Logout handlers
   const handleGoogleLogin = async () => {
     try {
+      setAuthDomainError(false);
       const result = await googleSignIn();
       if (result) {
         setGUser(result.user);
@@ -548,7 +560,19 @@ export default function OmnichannelPage() {
         toast.success(`Google Sheets conectado com sucesso!`);
       }
     } catch (err: any) {
-      toast.error(`Falha ao conectar Google: ${err.message || "Erro inesperado"}`);
+      console.error("Erro completo ao conectar:", err);
+      const errMsg = err.message || "";
+      const errCode = err.code || "";
+      const isDomainError = 
+        errMsg.includes("auth/unauthorized-domain") || 
+        errCode.includes("unauthorized-domain") ||
+        errMsg.includes("unauthorized domain") ||
+        errMsg.includes("unauthorized-client");
+        
+      if (isDomainError) {
+        setAuthDomainError(true);
+      }
+      toast.error(`Falha ao conectar Google: ${errMsg || "Erro inesperado"}`);
     }
   };
 
@@ -639,9 +663,13 @@ export default function OmnichannelPage() {
     saveCustomFieldValues(activeConversation.id, newValues);
 
     if (gToken) {
-      const res = await syncConversationToSheet(gToken, spreadsheetId, activeConversation, customFieldDefs);
-      if (res) {
-        console.log(`[Google Sheets] Sincronização automática para o campo "${fieldId}" concluída.`);
+      try {
+        const res = await syncConversationToSheet(gToken, spreadsheetId, activeConversation, customFieldDefs);
+        if (res) {
+          console.log(`[Google Sheets] Sincronização automática para o campo "${fieldId}" concluída.`);
+        }
+      } catch (err: any) {
+        console.warn("[Google Sheets] Sincronização automática falhou:", err);
       }
     }
   };
@@ -656,11 +684,15 @@ export default function OmnichannelPage() {
       return;
     }
     toast.loading("Sincronizando atendimento...", { id: "sync-single" });
-    const success = await syncConversationToSheet(gToken, spreadsheetId, activeConversation, customFieldDefs);
-    if (success) {
-      toast.success("Atendimento sincronizado com sucesso na planilha!", { id: "sync-single" });
-    } else {
-      toast.error("Erro ao sincronizar na planilha. Verifique as permissões de escrita.", { id: "sync-single" });
+    try {
+      const success = await syncConversationToSheet(gToken, spreadsheetId, activeConversation, customFieldDefs);
+      if (success) {
+        toast.success("Atendimento sincronizado com sucesso na planilha!", { id: "sync-single" });
+      } else {
+        toast.error("Erro ao sincronizar na planilha. Verifique se a planilha tem a estrutura correta.", { id: "sync-single" });
+      }
+    } catch (err: any) {
+      toast.error(`Falha na sincronização: ${err.message}`, { id: "sync-single" });
     }
   };
 
@@ -715,6 +747,8 @@ export default function OmnichannelPage() {
             if (success) {
               console.log(`[Google Sheets] Tempo Real - Sincronizado: "${conv.customer?.name || "Cliente"}"`);
             }
+          }).catch((err) => {
+            console.warn("[Google Sheets] Tempo Real autoSync erro:", err);
           });
         }
       }
@@ -743,6 +777,38 @@ export default function OmnichannelPage() {
       setMessages([]);
     }
   }, [activeConversationId]);
+
+  // Auto-switch tab to make the active conversation visible in the sidebar list when it changes
+  const lastParsedActiveConvId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeConversationId || conversations.length === 0) return;
+    
+    if (lastParsedActiveConvId.current === activeConversationId) return;
+    lastParsedActiveConvId.current = activeConversationId;
+
+    const activeConv = conversations.find((c) => c.id === activeConversationId);
+    if (!activeConv) return;
+
+    const isClosed = [
+      "CLOSED",
+      "RESOLVED",
+      "CONCLUIDO",
+      "CONCLUÍDO",
+      "FINALIZADO",
+    ].includes(String(activeConv.status || "").toUpperCase());
+    
+    const assignedUserId = activeConv.assigned_user_id;
+
+    if (isClosed) {
+      setActiveTab("concluidos");
+    } else if (assignedUserId && assignedUserId === currentUser?.id) {
+      setActiveTab("meus");
+    } else if (assignedUserId) {
+      setActiveTab("todos");
+    } else {
+      setActiveTab("novos");
+    }
+  }, [activeConversationId, conversations, currentUser]);
 
   // Synchronize state with route param
   useEffect(() => {
@@ -889,6 +955,40 @@ export default function OmnichannelPage() {
   const currentAccount = safeAccounts.find(
     (a) => a.id === activeConversation?.whatsapp_account_id,
   );
+
+  // Load and refresh Kanban linkage
+  const refreshKanbanLinkage = () => {
+    const listBoards = getBoards();
+    const listCards = getCards();
+    setAllKanbanBoards(listBoards);
+    setAllKanbanCards(listCards);
+
+    if (activeConversationId) {
+      const match = listCards.find(c => c.conversation_id === activeConversationId);
+      setLinkedKanbanCard(match || null);
+      if (match) {
+        setSelectedKanbanBoardId(match.board_id);
+        setSelectedKanbanStageId(match.stage_id);
+      } else {
+        const firstBoard = listBoards[0];
+        setSelectedKanbanBoardId(firstBoard?.id || "");
+        setSelectedKanbanStageId(firstBoard?.stages[0]?.id || "");
+        setLinkKanbanCardTitle(activeCustomer?.name || "");
+      }
+    } else {
+      setLinkedKanbanCard(null);
+    }
+  };
+
+  useEffect(() => {
+    refreshKanbanLinkage();
+  }, [activeConversationId, activeCustomer]);
+
+  useEffect(() => {
+    const handleUpdate = () => refreshKanbanLinkage();
+    window.addEventListener('viva_crm_kanban_updated', handleUpdate);
+    return () => window.removeEventListener('viva_crm_kanban_updated', handleUpdate);
+  }, [activeConversationId, activeCustomer]);
 
   // Dynamically mark active conversation as read when new messages or updates arrive, if it's assigned to the current agent
   useEffect(() => {
@@ -3919,6 +4019,201 @@ export default function OmnichannelPage() {
                     </div>
                   </section>
 
+                  {/* KANBAN / CRM LINKAGE SECTION */}
+                  <section className="border-t border-slate-100 pt-5 mt-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <LayoutGrid className="w-4 h-4 text-indigo-500" />
+                        <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                          Vínculo CRM Kanban
+                        </h4>
+                      </div>
+                      
+                      {!linkedKanbanCard && (
+                        <button
+                          onClick={() => {
+                            if (allKanbanBoards.length > 0) {
+                              const b = allKanbanBoards[0];
+                              setSelectedKanbanBoardId(b.id);
+                              setSelectedKanbanStageId(b.stages[0]?.id || "");
+                            }
+                            setLinkKanbanCardTitle(activeCustomer?.name || "");
+                            setShowLinkKanbanForm(!showLinkKanbanForm);
+                          }}
+                          className="text-[10px] font-black text-indigo-600 uppercase tracking-wider hover:text-indigo-800 transition-colors flex items-center gap-1 cursor-pointer"
+                        >
+                          {showLinkKanbanForm ? "Cancelar" : "+ Vincular Card"}
+                        </button>
+                      )}
+                    </div>
+
+                    {linkedKanbanCard ? (
+                      (() => {
+                        const board = allKanbanBoards.find(b => b.id === linkedKanbanCard.board_id);
+                        const stage = board?.stages.find((s: any) => s.id === linkedKanbanCard.stage_id);
+                        return (
+                          <div className="p-3.5 bg-indigo-50/50 border border-indigo-100 rounded-2xl space-y-3 shadow-sm">
+                            <div className="space-y-1">
+                              <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-widest">{board?.name || "PAINEL"}</span>
+                              <h5 className="text-xs font-black text-slate-800 flex items-center justify-between gap-1 mt-0.5">
+                                <span className="truncate">{linkedKanbanCard.title}</span>
+                                <span className="font-mono text-[9px] bg-white border border-indigo-200 text-indigo-700 px-1 rounded uppercase tracking-wider shrink-0">{linkedKanbanCard.code}</span>
+                              </h5>
+                              
+                              {/* Stage badge helper */}
+                              <div className="inline-block mt-1">
+                                <span className="px-2 py-0.5 bg-indigo-105 bg-indigo-100 text-indigo-800 rounded-lg text-[9px] font-extrabold uppercase tracking-wide border border-indigo-150">
+                                  {stage?.name || "FASE ACTIVE"}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Phase change trigger inline dropdown */}
+                            <div className="pt-2 border-t border-slate-200 hover:border-slate-300 transition-all space-y-1.5">
+                              <span className="text-[9px] font-black text-indigo-500 uppercase tracking-wider">Mudar a fase de atendimento:</span>
+                              <select
+                                value={linkedKanbanCard.stage_id}
+                                onChange={(e) => {
+                                  const updatedCard = {
+                                    ...linkedKanbanCard,
+                                    stage_id: e.target.value
+                                  };
+                                  updateCard(updatedCard);
+                                  toast.success("Fase de atendimento CRM atualizada!");
+                                  refreshKanbanLinkage();
+                                }}
+                                className="w-full px-2.5 py-1.5 text-xs border border-indigo-200 bg-white rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500 font-medium text-slate-705 cursor-pointer"
+                              >
+                                {board?.stages.map((stg: any) => (
+                                  <option key={stg.id} value={stg.id}>{stg.name}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            {/* Anchor button links to Kanban view */}
+                            <button
+                              onClick={() => {
+                                navigate(`/app/paineis/${linkedKanbanCard.board_id}?openCardId=${linkedKanbanCard.id}`);
+                              }}
+                              className="w-full flex items-center justify-center gap-1.5 p-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] rounded-xl uppercase tracking-wider transition-all shadow-sm hover:shadow-md cursor-pointer"
+                            >
+                              <span>Ver Histórico & CRM</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })()
+                    ) : showLinkKanbanForm ? (
+                      <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-3 shadow-inner animate-in duration-200">
+                        <span className="text-[10px] font-black text-indigo-600 uppercase tracking-wider block">Preencha os dados do CRM</span>
+                        
+                        {/* Selector para o painel */}
+                        <div>
+                          <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Escolha o Painel</label>
+                          <select
+                            value={selectedKanbanBoardId}
+                            onChange={(e) => {
+                              setSelectedKanbanBoardId(e.target.value);
+                              const board = allKanbanBoards.find(b => b.id === e.target.value);
+                              setSelectedKanbanStageId(board?.stages[0]?.id || "");
+                            }}
+                            className="w-full px-2.5 py-1.5 text-xs border border-slate-200 bg-white rounded-lg focus:ring-1 focus:ring-indigo-500 text-slate-650 font-semibold"
+                          >
+                            {allKanbanBoards.map(b => (
+                              <option key={b.id} value={b.id}>{b.name}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Selector para a fase do painel */}
+                        <div>
+                          <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Escolha a Etapa</label>
+                          <select
+                            value={selectedKanbanStageId}
+                            onChange={(e) => setSelectedKanbanStageId(e.target.value)}
+                            className="w-full px-2.5 py-1.5 text-xs border border-slate-200 bg-white rounded-lg focus:ring-1 focus:ring-indigo-500 text-slate-650 font-semibold"
+                          >
+                            {allKanbanBoards.find(b => b.id === selectedKanbanBoardId)?.stages.map((stg: any) => (
+                              <option key={stg.id} value={stg.id}>{stg.name}</option>
+                            )) || <option value="">Sem etapas</option>}
+                          </select>
+                        </div>
+
+                        {/* Custom Card Title */}
+                        <div>
+                          <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Título do Card (Lead/Cliente)</label>
+                          <input
+                            type="text"
+                            value={linkKanbanCardTitle}
+                            onChange={(e) => setLinkKanbanCardTitle(e.target.value)}
+                            placeholder="Nome do card ou cliente"
+                            className="w-full px-2.5 py-1.5 text-xs border border-slate-200 bg-white rounded-lg focus:ring-1 focus:ring-indigo-500 font-medium text-slate-700"
+                          />
+                        </div>
+
+                        {/* Submit Row */}
+                        <div className="flex gap-2 justify-end pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setShowLinkKanbanForm(false)}
+                            className="px-2 py-1 text-[10px] text-slate-500 hover:bg-slate-100 rounded-md uppercase font-bold transition-all cursor-pointer"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!linkKanbanCardTitle.trim()) {
+                                toast.error("Por favor, preencha o título do card.");
+                                return;
+                              }
+                              if (!selectedKanbanStageId) {
+                                toast.error("Dificuldade ao selecionar fase de destino.");
+                                return;
+                              }
+                              
+                              const newCardObj = createCard({
+                                board_id: selectedKanbanBoardId,
+                                stage_id: selectedKanbanStageId,
+                                title: linkKanbanCardTitle.trim(),
+                                description: `Iniciado através do atendimento ativo de ${activeCustomer?.name || 'Cliente'}.`,
+                                conversation_id: activeConversationId || undefined,
+                                customer_id: activeCustomer?.id || undefined,
+                                responsible_id: currentUser?.id || undefined,
+                                tags: activeCustomer?.tags || []
+                              });
+
+                              toast.success(`Card "${newCardObj.title}" criado e vinculado ao CRM!`);
+                              setShowLinkKanbanForm(false);
+                              refreshKanbanLinkage();
+                            }}
+                            className="px-2.5 py-1 text-[10px] text-white bg-indigo-600 hover:bg-indigo-700 rounded-md uppercase font-bold transition-all cursor-pointer shadow-sm"
+                          >
+                            Criar Card
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-4 bg-slate-50 border border-dashed rounded-2xl select-none">
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-2">Sem vínculo no CRM</p>
+                        <button
+                          onClick={() => {
+                            if (allKanbanBoards.length > 0) {
+                              const b = allKanbanBoards[0];
+                              setSelectedKanbanBoardId(b.id);
+                              setSelectedKanbanStageId(b.stages[0]?.id || "");
+                            }
+                            setLinkKanbanCardTitle(activeCustomer?.name || "");
+                            setShowLinkKanbanForm(true);
+                          }}
+                          className="px-3 py-1.5 bg-white border text-[9px] font-black uppercase text-indigo-600 border-indigo-150 hover:bg-indigo-50 rounded-xl transition-all shadow-sm cursor-pointer"
+                        >
+                          Vincular a um Painel
+                        </button>
+                      </div>
+                    )}
+                  </section>
+
                   {/* GOOGLE SHEETS & CUSTOM FIELDS */}
                   <section className="border-t border-slate-100 pt-5 mt-4">
                     <div className="flex items-center justify-between mb-3">
@@ -4055,6 +4350,45 @@ export default function OmnichannelPage() {
                           </svg>
                           Conectar Conta Google
                         </button>
+
+                        {authDomainError && (
+                          <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-left space-y-2">
+                            <div className="flex items-center gap-1.5 text-amber-800 font-bold text-xs">
+                              <AlertCircle className="w-4 h-4 shrink-0" />
+                              <span>Domínio Não Autorizado</span>
+                            </div>
+                            <p className="text-[10px] text-amber-700 leading-normal">
+                              Este erro (<code className="font-mono bg-amber-100 px-1 py-0.5 rounded text-[9px]">auth/unauthorized-domain</code>) indica que o domínio deste ambiente de testes não está liberado no Firebase do seu projeto.
+                            </p>
+                            <div className="bg-white border border-amber-200 p-2 rounded-lg space-y-1.5">
+                              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider block">Domínio Atual:</span>
+                              <div className="flex items-center justify-between gap-2 overflow-x-hidden">
+                                <span className="font-mono text-[9px] text-slate-600 truncate p-1 bg-slate-50 rounded border flex-1 leading-none select-all font-semibold">
+                                  {window.location.hostname}
+                                </span>
+                                <button
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(window.location.hostname);
+                                    toast.success("Domínio copiado para a área de transferência!");
+                                  }}
+                                  className="p-1 px-2 bg-amber-600 hover:bg-amber-700 text-white text-[9px] rounded font-bold transition flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                  Copiar
+                                </button>
+                              </div>
+                            </div>
+                            <div className="text-[9px] text-amber-800 space-y-1 pl-1">
+                              <p className="font-bold">Como resolver no Firebase Console:</p>
+                              <ol className="list-decimal pl-3 space-y-1">
+                                <li>Acesse o <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="underline font-bold text-amber-900">Console do Firebase</a> e abra seu projeto</li>
+                                <li>Vá em <span className="font-bold">Authentication</span> &gt; aba <span className="font-bold">Settings</span> &gt; <span className="font-bold">Authorized Domains</span></li>
+                                <li>Clique em <span className="font-bold">Add Domain</span>, cole o domínio acima e salve</li>
+                                <li>Após salvar, clique novamente em "Conectar Conta Google"</li>
+                              </ol>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="space-y-3">

@@ -89,7 +89,6 @@ export default function MessageTemplatesSettingsPage() {
   };
 
   const handleDelete = async (id: string, shortcut: string) => {
-    if (!confirm(`Tem certeza que deseja excluir o modelo \\${shortcut}?`)) return;
     try {
       await quickReplyService.remove(id);
       setQuickReplies(prev => prev.filter(item => item.id !== id));

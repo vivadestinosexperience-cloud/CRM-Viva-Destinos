@@ -33,6 +33,18 @@ export interface CustomFieldValues {
 let cachedAccessToken: string | null = null;
 let isSigningIn = false;
 
+// Safe column letter converter (Handles more than 26 columns seamlessly)
+const getColLetter = (index: number): string => {
+  let temp = index;
+  let letter = "";
+  while (temp > 0) {
+    let modulo = (temp - 1) % 26;
+    letter = String.fromCharCode(65 + modulo) + letter;
+    temp = Math.floor((temp - modulo) / 26);
+  }
+  return letter;
+};
+
 // Get Default Spreadsheet ID from user's URL
 export const DEFAULT_SPREADSHEET_ID = "1Q2HObL0s5X9tlXBUldAOBcoZ-tXPVvFhxDOSCIQbOaY";
 
@@ -49,15 +61,21 @@ export const initGoogleAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
-  // If we already have a cached token, invoke success right away
+  // Try to restore token from sessionStorage immediately
+  const restoredToken = sessionStorage.getItem("crm_google_oauth_token");
+  if (restoredToken) {
+    cachedAccessToken = restoredToken;
+  }
+
   if (cachedAccessToken && auth.currentUser) {
     if (onAuthSuccess) onAuthSuccess(auth.currentUser, cachedAccessToken);
   }
 
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+      const token = await getAccessToken();
+      if (token) {
+        if (onAuthSuccess) onAuthSuccess(user, token);
       } else {
         // If we don't have cached token but user is signed in, we might need to re-login
         if (onAuthFailure) onAuthFailure();
@@ -155,6 +173,19 @@ export const saveCustomFieldValues = (conversationId: string, values: CustomFiel
 
 const BASE_SHEETS_URL = "https://sheets.googleapis.com/v4/spreadsheets";
 
+const apiFetch = async (url: string, options: RequestInit): Promise<Response> => {
+  try {
+    const res = await fetch(url, options);
+    return res;
+  } catch (err: any) {
+    console.error("[Google Sheets API Error] Network or CORS failure:", err);
+    throw new Error(
+      "Falha de conexão com o Google (CORS ou Sessão Expirada). " +
+      "Por favor, renove sua autenticação clicando em 'Conectar com o Google' nas configurações da planilha."
+    );
+  }
+};
+
 // Get standard headers and dynamic custom ones
 const buildHeaderRow = (customDefs: CustomFieldDefinition[]): string[] => {
   return [
@@ -231,7 +262,7 @@ export const ensureHeadersAndFetchRows = async (
     const headers = buildHeaderRow(customDefs);
     
     // Fetch current rows from Sheet
-    const response = await fetch(
+    const response = await apiFetch(
       `${BASE_SHEETS_URL}/${spreadsheetId}/values/A1:Z5000`,
       {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -240,8 +271,13 @@ export const ensureHeadersAndFetchRows = async (
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.warn("Failed to fetch sheet values:", errorText);
-      return null;
+      console.error("Failed to fetch sheet values. Check API enablement and sheet ID.", response.status, errorText);
+      let parsedError = errorText;
+      try {
+        const parsed = JSON.parse(errorText);
+        parsedError = parsed?.error?.message || errorText;
+      } catch (e) {}
+      throw new Error(`Erro na API Google Sheets: ${parsedError}`);
     }
 
     const data = await response.json();
@@ -249,7 +285,7 @@ export const ensureHeadersAndFetchRows = async (
 
     // If sheet is totally empty or does not have headers, initialize it!
     if (currentRows.length === 0) {
-      await fetch(
+      await apiFetch(
         `${BASE_SHEETS_URL}/${spreadsheetId}/values/A1:update?valueInputOption=USER_ENTERED`,
         {
           method: "PUT",
@@ -278,7 +314,8 @@ export const ensureHeadersAndFetchRows = async (
           updatedHeaders.push(mh);
         });
 
-        await fetch(
+        const targetCol = getColLetter(updatedHeaders.length);
+        await apiFetch(
           `${BASE_SHEETS_URL}/${spreadsheetId}/values/A1:update?valueInputOption=USER_ENTERED`,
           {
             method: "PUT",
@@ -287,7 +324,7 @@ export const ensureHeadersAndFetchRows = async (
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              range: `A1:${String.fromCharCode(65 + updatedHeaders.length - 1)}1`,
+              range: `A1:${targetCol}1`,
               majorDimension: "ROWS",
               values: [updatedHeaders],
             }),
@@ -298,9 +335,9 @@ export const ensureHeadersAndFetchRows = async (
     }
 
     return currentRows;
-  } catch (err) {
+  } catch (err: any) {
     console.error("Error ensuring headers on Google Sheets:", err);
-    return null;
+    throw new Error(err?.message || "Erro ao conectar com Google Sheets.");
   }
 };
 
@@ -332,8 +369,9 @@ export const syncConversationToSheet = async (
 
     if (existingRowIndex !== -1) {
       // Row exists -> Update cells up to the row length
-      const range = `A${existingRowIndex}:${String.fromCharCode(64 + rowData.length)}${existingRowIndex}`;
-      const response = await fetch(
+      const targetCol = getColLetter(rowData.length);
+      const range = `A${existingRowIndex}:${targetCol}${existingRowIndex}`;
+      const response = await apiFetch(
         `${BASE_SHEETS_URL}/${spreadsheetId}/values/${range}?valueInputOption=USER_ENTERED`,
         {
           method: "PUT",
@@ -352,7 +390,7 @@ export const syncConversationToSheet = async (
     } else {
       // Row does not exist -> Append row
       const range = "A1";
-      const response = await fetch(
+      const response = await apiFetch(
         `${BASE_SHEETS_URL}/${spreadsheetId}/values/${range}:append?valueInputOption=USER_ENTERED`,
         {
           method: "POST",
@@ -369,9 +407,9 @@ export const syncConversationToSheet = async (
       );
       return response.ok;
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error("Error syncing conversation to Google Sheets:", err);
-    return false;
+    throw new Error(err?.message || "Falha ao sincronizar atendimento.");
   }
 };
 
@@ -409,24 +447,39 @@ export const syncAllConversationsToSheet = async (
       const existingRowIndex = existingIdsMap.get(conv.id);
 
       if (existingRowIndex) {
-        // Update existing row
-        const range = `A${existingRowIndex}:${String.fromCharCode(64 + rowData.length)}${existingRowIndex}`;
-        await fetch(
-          `${BASE_SHEETS_URL}/${spreadsheetId}/values/${range}?valueInputOption=USER_ENTERED`,
-          {
-            method: "PUT",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              range,
-              majorDimension: "ROWS",
-              values: [rowData],
-            }),
+        // Update existing row (wrapped in try...catch to ensure robust execution across other rows)
+        try {
+          const targetCol = getColLetter(rowData.length);
+          const range = `A${existingRowIndex}:${targetCol}${existingRowIndex}`;
+          const res = await apiFetch(
+            `${BASE_SHEETS_URL}/${spreadsheetId}/values/${range}?valueInputOption=USER_ENTERED`,
+            {
+              method: "PUT",
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                range,
+                majorDimension: "ROWS",
+                values: [rowData],
+              }),
+            }
+          );
+          if (res.ok) {
+            updatedCount++;
+          } else {
+            const errorText = await res.text();
+            console.warn(`[Google Sheets] Failed to update row ${existingRowIndex} for conversation ${conv.id}:`, errorText);
+            // Fallback: if PUT fails, we can add it to append list or just continue to avoid failure
+            rowsToAppend.push(rowData);
+            appendedCount++;
           }
-        );
-        updatedCount++;
+        } catch (rowErr) {
+          console.error(`[Google Sheets] Networking/API error for row ${existingRowIndex}:`, rowErr);
+          rowsToAppend.push(rowData);
+          appendedCount++;
+        }
       } else {
         // Append row
         rowsToAppend.push(rowData);
@@ -435,7 +488,7 @@ export const syncAllConversationsToSheet = async (
     }
 
     if (rowsToAppend.length > 0) {
-      await fetch(
+      await apiFetch(
         `${BASE_SHEETS_URL}/${spreadsheetId}/values/A1:append?valueInputOption=USER_ENTERED`,
         {
           method: "POST",
@@ -453,8 +506,8 @@ export const syncAllConversationsToSheet = async (
     }
 
     return { success: true, count: updatedCount + appendedCount };
-  } catch (err) {
+  } catch (err: any) {
     console.error("Error syncAllConversationsToSheet:", err);
-    return { success: false, count: 0 };
+    throw new Error(err?.message || "Erro desconhecido ao sincronizar lote.");
   }
 };
