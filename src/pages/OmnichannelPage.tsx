@@ -183,6 +183,10 @@ export default function OmnichannelPage() {
   const [quickReplyTriggerState, setQuickReplyTriggerState] = useState<{ index: number; filter: string } | null>(null);
   const [quickRepliesIndex, setQuickRepliesIndex] = useState(0);
 
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState<string>("");
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+
   useEffect(() => {
     quickReplyService.list()
       .then(setQuickReplies)
@@ -191,6 +195,55 @@ export default function OmnichannelPage() {
   const { tags, addTag, updateTag, deleteTag } = useAppStore();
 
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Helper to scroll messages body to bottom
+  const scrollToBottom = (behavior: "auto" | "smooth" = "auto") => {
+    // Standard delay ensures React has fully rendered new messages in the DOM including images/files.
+    setTimeout(() => {
+      if (chatEndRef.current) {
+        chatEndRef.current.scrollIntoView({ behavior, block: "end" });
+      }
+    }, 150);
+  };
+
+  const lastConversationIdRef = useRef<string | null>(null);
+  const lastMessagesCountRef = useRef<number>(0);
+  const lastMessageIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (activeConversationId) {
+      const currentMessages = messages || [];
+      const lastMsg = currentMessages[currentMessages.length - 1];
+      const lastMsgId = lastMsg?.id || null;
+
+      if (lastConversationIdRef.current !== activeConversationId) {
+        // Just switched conversation or opened the first one: scroll instantly ("auto")
+        lastConversationIdRef.current = activeConversationId;
+        lastMessagesCountRef.current = currentMessages.length;
+        lastMessageIdRef.current = lastMsgId;
+        scrollToBottom("auto");
+      } else if (
+        currentMessages.length > lastMessagesCountRef.current ||
+        (lastMsgId !== null && lastMsgId !== lastMessageIdRef.current)
+      ) {
+        // New message sent or received or last message updated: scroll smoothly ("smooth")
+        lastMessagesCountRef.current = currentMessages.length;
+        lastMessageIdRef.current = lastMsgId;
+        scrollToBottom("smooth");
+      } else {
+        // Count and content remain identical: synchronize refs without scrolling
+        if (currentMessages.length > 0 && lastMessagesCountRef.current === 0) {
+          scrollToBottom("auto");
+        }
+        lastMessagesCountRef.current = currentMessages.length;
+        lastMessageIdRef.current = lastMsgId;
+      }
+    } else {
+      lastConversationIdRef.current = null;
+      lastMessagesCountRef.current = 0;
+      lastMessageIdRef.current = null;
+    }
+  }, [messages, activeConversationId]);
 
   const handleLoadDetails = async (conversationId: string) => {
     setLoadingDetails(true);
@@ -390,16 +443,18 @@ export default function OmnichannelPage() {
     setAiSummary(null);
     setShowIAPanel(false);
 
-    // Mark as read locally and via API
-    const baseUrl = getApiBaseUrl();
-    authorizedFetch(
-      `${baseUrl}/api/omnichannel/conversations/${conversation.id}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unread_count: 0 }),
-      },
-    ).catch((err) => console.warn("Erro ao marcar como lida:", err));
+    // Mark as read locally and via API only if the conversation has been assumed (assigned_user_id exists)
+    if (conversation.assigned_user_id) {
+      const baseUrl = getApiBaseUrl();
+      authorizedFetch(
+        `${baseUrl}/api/omnichannel/conversations/${conversation.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ unread_count: 0 }),
+        },
+      ).catch((err) => console.warn("Erro ao marcar como lida:", err));
+    }
   };
 
   // Initial load
@@ -613,6 +668,15 @@ export default function OmnichannelPage() {
 
   function renderMessageContent(message: Message) {
     if (!message) return null;
+
+    if (message.status === "deleted") {
+      return (
+        <p className="text-sm italic text-slate-400 flex items-center gap-1.5 select-none">
+          <Trash2 className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+          Esta mensagem foi apagada
+        </p>
+      );
+    }
 
     const type =
       (message as any).normalized_message_type ||
@@ -1352,6 +1416,7 @@ export default function OmnichannelPage() {
               status: "OPEN",
               team_id: assignedTeamId,
               team_name: assignedTeamName,
+              unread_count: 0,
             }),
           },
         );
@@ -1973,6 +2038,63 @@ export default function OmnichannelPage() {
         toast.success("Mensagem reenviada com sucesso");
       },
       { label: "Erro ao reenviar mensagem" },
+    );
+  };
+
+  const handleEditMessage = async (messageId: string) => {
+    if (!editingMessageText.trim() || !activeConversationId) return;
+
+    await safeAction(
+      async () => {
+        const baseUrl = getApiBaseUrl();
+        const res = await authorizedFetch(
+          `${baseUrl}/api/omnichannel/conversations/${activeConversationId}/messages/${messageId}/edit`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: editingMessageText,
+            }),
+          },
+        );
+
+        const data = await safeReadJson(res);
+        if (!res.ok) throw data;
+
+        await loadMessages(activeConversationId, true);
+        setEditingMessageId(null);
+        setEditingMessageText("");
+        toast.success("Mensagem editada com sucesso!");
+      },
+      { label: "Erro ao editar mensagem" },
+    );
+  };
+
+  const handleDeleteMessage = async (messageId: string, deleteForEveryone: boolean) => {
+    if (!activeConversationId) return;
+
+    await safeAction(
+      async () => {
+        const baseUrl = getApiBaseUrl();
+        const res = await authorizedFetch(
+          `${baseUrl}/api/omnichannel/conversations/${activeConversationId}/messages/${messageId}/delete`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              owner: deleteForEveryone,
+            }),
+          },
+        );
+
+        const data = await safeReadJson(res);
+        if (!res.ok) throw data;
+
+        await loadMessages(activeConversationId, true);
+        setDeletingMessageId(null);
+        toast.success("Mensagem apagada com sucesso!");
+      },
+      { label: "Erro ao apagar mensagem" },
     );
   };
 
@@ -2655,7 +2777,7 @@ export default function OmnichannelPage() {
                         {isMine ? "GA" : activeCustomer?.name?.charAt(0)}
                       </div>
 
-                      <div className="space-y-1">
+                      <div className="space-y-1 relative group">
                         <div
                           className={`text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-0.5 px-1 ${isMine ? "text-right" : "text-left"}`}
                         >
@@ -2665,10 +2787,116 @@ export default function OmnichannelPage() {
                               ? msg.sender_name || "Agente"
                               : activeCustomer?.name || "Cliente"}
                         </div>
+
+                        {/* Hover Actions: Edit and Delete */}
+                        {msg.status !== "deleted" && (
+                          <div
+                            className={`absolute top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all flex items-center gap-1 bg-white border border-slate-100 rounded-xl shadow-lg p-1.5 z-25 ${
+                              isMine ? "left-0 -translate-x-[110%]" : "right-0 translate-x-[110%]"
+                            }`}
+                          >
+                            {isMine && msg.message_type === "text" && (
+                              <button
+                                onClick={() => {
+                                  setEditingMessageId(msg.id);
+                                  setEditingMessageText(msg.content);
+                                  setDeletingMessageId(null);
+                                }}
+                                className="p-1 hover:bg-slate-50 rounded-lg text-slate-500 hover:text-blue-600 transition-colors"
+                                title="Editar mensagem"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                setDeletingMessageId(msg.id);
+                                setEditingMessageId(null);
+                              }}
+                              className="p-1 hover:bg-slate-50 rounded-lg text-slate-500 hover:text-red-500 transition-colors"
+                              title="Apagar mensagem"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
+
                         <div
                           className={`px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed transition-all ${isMine ? (isInternal ? "bg-amber-100 text-amber-900 border-amber-200 rounded-tr-none" : "bg-blue-600 text-white rounded-tr-none") : "bg-white text-slate-700 rounded-tl-none border border-slate-100"} ${status === "failed" ? "border-red-300 bg-red-50 text-red-600" : ""}`}
                         >
-                          {renderMessageContent(msg)}
+                          {deletingMessageId === msg.id ? (
+                            <div className="space-y-3 py-1 min-w-[210px]">
+                              <p className={`text-xs font-bold leading-normal select-none ${isMine ? "text-white" : "text-slate-800"}`}>
+                                Como deseja apagar esta mensagem?
+                              </p>
+                              <div className="flex flex-col gap-1.5">
+                                {isMine && (
+                                  <button
+                                    onClick={() => handleDeleteMessage(msg.id, true)}
+                                    className={`w-full text-left px-3 py-1.5 rounded-xl text-xs font-bold leading-none select-none transition-all ${
+                                      isMine
+                                        ? "bg-white/10 hover:bg-white/20 text-white border border-white/20"
+                                        : "bg-slate-50 hover:bg-slate-100 text-slate-800 border border-slate-200"
+                                    }`}
+                                  >
+                                    Apagar para todos (WhatsApp)
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => handleDeleteMessage(msg.id, false)}
+                                  className={`w-full text-left px-3 py-1.5 rounded-xl text-xs font-bold leading-none select-none transition-all ${
+                                    isMine
+                                      ? "bg-white/10 hover:bg-white/20 text-white border border-white/20"
+                                      : "bg-slate-50 hover:bg-slate-100 text-slate-800 border border-slate-200"
+                                  }`}
+                                >
+                                  Apagar para mim (Apenas CRM)
+                                </button>
+                                <button
+                                  onClick={() => setDeletingMessageId(null)}
+                                  className={`w-full text-center py-1 rounded text-xs font-black uppercase select-none transition-all ${
+                                    isMine ? "text-white/80 hover:text-white" : "text-slate-400 hover:text-slate-600"
+                                  }`}
+                                >
+                                  Cancelar
+                                </button>
+                              </div>
+                            </div>
+                          ) : editingMessageId === msg.id ? (
+                            <div className="space-y-2 py-1 min-w-[210px]">
+                              <textarea
+                                value={editingMessageText}
+                                onChange={(e) => setEditingMessageText(e.target.value)}
+                                className="w-full bg-white/15 text-white placeholder-white/50 border border-white/25 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-white/30 resize-none font-sans"
+                                rows={2}
+                                style={!isMine ? { backgroundColor: '#f8fafc', color: '#1e293b', borderColor: '#cbd5e1' } : undefined}
+                              />
+                              <div className="flex justify-end gap-1.5">
+                                <button
+                                  onClick={() => setEditingMessageId(null)}
+                                  className={`px-2 py-1 text-xs rounded-xl font-bold border transition-colors ${
+                                    isMine
+                                      ? "bg-transparent border-white/25 hover:bg-white/15 text-white"
+                                      : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
+                                  }`}
+                                >
+                                  Cancelar
+                                </button>
+                                <button
+                                  onClick={() => handleEditMessage(msg.id)}
+                                  className={`px-3 py-1 text-xs rounded-xl font-bold transition-colors ${
+                                    isMine
+                                      ? "bg-white text-blue-600 hover:bg-blue-50"
+                                      : "bg-blue-600 text-white hover:bg-blue-700"
+                                  }`}
+                                >
+                                  Salvar
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            renderMessageContent(msg)
+                          )}
 
                           <div
                             className={`flex items-center gap-1.5 mt-1 opacity-50 ${isMine ? "justify-end" : "justify-start"}`}

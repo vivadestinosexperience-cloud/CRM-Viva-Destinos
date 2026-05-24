@@ -6659,6 +6659,139 @@ const DEFAULT_TEAM = {
     }
   });
 
+  // Omnichannel: Delete message (for everyone or for me)
+  app.post("/api/omnichannel/conversations/:id/messages/:messageId/delete", async (req, res) => {
+    try {
+      const currentUser = await getAuthenticatedUser(req);
+      const conversationId = req.params.id;
+      const messageDbId = req.params.messageId;
+      const owner = req.body.owner !== false; // defaults to true (delete for everyone)
+
+      // Fetch message from DB
+      const { data: msg, error: msgError } = await supabaseAdmin
+        .from("crm_messages")
+        .select("*")
+        .eq("id", messageDbId)
+        .single();
+
+      if (msgError || !msg) {
+        return res.status(404).json({ success: false, error: "Mensagem não encontrada." });
+      }
+
+      let zapiResponse = null;
+      if (msg.external_message_id && !msg.external_message_id.startsWith("sent-")) {
+        try {
+          const phone = normalizeBrazilPhone(msg.customer_phone_normalized || msg.to_phone);
+          // Call Z-API to delete
+          zapiResponse = await callZapi("/delete-message", {
+            phone,
+            messageId: msg.external_message_id,
+            owner
+          });
+        } catch (zapiErr: any) {
+          console.error("[ZAPI DELETE ERROR] Failed to delete message from WhatsApp:", zapiErr);
+          // If Z-API tells us that the message is too old or already deleted, we should still allow deleting from the CRM
+        }
+      }
+
+      // Update database status
+      const { data: updatedMsg, error: updateError } = await supabaseAdmin
+        .from("crm_messages")
+        .update({
+          status: "deleted",
+          raw_payload: { ...(msg.raw_payload || {}), deletion_zapi_response: zapiResponse, deleted_by: currentUser.name }
+        })
+        .eq("id", messageDbId)
+        .select("*")
+        .single();
+
+      if (updateError) throw updateError;
+
+      // Broadcast to update other CRM client UIs in real-time
+      if (typeof broadcastEvent === "function") {
+        broadcastEvent("message.received", {
+          conversationId,
+          message: updatedMsg
+        });
+      }
+
+      return res.json({ success: true, data: updatedMsg });
+    } catch (err: any) {
+      console.error("[DELETE MESSAGE ROUTE ERROR]", err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Omnichannel: Edit text message
+  app.post("/api/omnichannel/conversations/:id/messages/:messageId/edit", async (req, res) => {
+    try {
+      const currentUser = await getAuthenticatedUser(req);
+      const conversationId = req.params.id;
+      const messageDbId = req.params.messageId;
+      const newText = String(req.body.text || "").trim();
+
+      if (!newText) {
+        return res.status(400).json({ success: false, error: "O conteúdo da mensagem não pode ser vazio." });
+      }
+
+      // Fetch message from DB
+      const { data: msg, error: msgError } = await supabaseAdmin
+        .from("crm_messages")
+        .select("*")
+        .eq("id", messageDbId)
+        .single();
+
+      if (msgError || !msg) {
+        return res.status(404).json({ success: false, error: "Mensagem não encontrada." });
+      }
+
+      let zapiResponse = null;
+      if (msg.external_message_id && !msg.external_message_id.startsWith("sent-")) {
+        try {
+          const phone = normalizeBrazilPhone(msg.customer_phone_normalized || msg.to_phone);
+          // Call Z-API to edit
+          zapiResponse = await callZapi("/edit-text-message", {
+            phone,
+            messageId: msg.external_message_id,
+            text: newText
+          });
+        } catch (zapiErr: any) {
+          console.error("[ZAPI EDIT ERROR] Failed to edit message on WhatsApp:", zapiErr);
+          return res.status(400).json({ 
+            success: false, 
+            error: "Falha de edição no WhatsApp. Verifique se o tempo limite de edição da mensagem expirou (15 minutos)." 
+          });
+        }
+      }
+
+      // Update database status
+      const { data: updatedMsg, error: updateError } = await supabaseAdmin
+        .from("crm_messages")
+        .update({
+          content: newText,
+          raw_payload: { ...(msg.raw_payload || {}), edit_zapi_response: zapiResponse, edited_by: currentUser.name }
+        })
+        .eq("id", messageDbId)
+        .select("*")
+        .single();
+
+      if (updateError) throw updateError;
+
+      // Broadcast to update other CRM client UIs in real-time
+      if (typeof broadcastEvent === "function") {
+        broadcastEvent("message.received", {
+          conversationId,
+          message: updatedMsg
+        });
+      }
+
+      return res.json({ success: true, data: updatedMsg });
+    } catch (err: any) {
+      console.error("[EDIT MESSAGE ROUTE ERROR]", err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   app.get("/api/channels", async (req, res) => {
     try {
       const list = await loadChannelsDBOrFile();

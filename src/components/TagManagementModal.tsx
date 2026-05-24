@@ -22,29 +22,51 @@ const COLORS = [
 export function TagManagementModal({ isOpen, onClose, tags, onAdd, onUpdate, onDelete }: TagManagementModalProps) {
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editFormData, setEditFormData] = useState<{ id: string; name: string; color: string } | null>(null);
   const [formData, setFormData] = useState({ name: '', color: '#3b82f6' });
 
   if (!isOpen) return null;
 
   const handleAdd = async () => {
-    if (!formData.name) return toast.error('Nome da etiqueta é obrigatório');
+    if (!formData.name.trim()) return toast.error('Nome da etiqueta é obrigatório');
     try {
-      await onAdd(formData);
+      await onAdd({
+        name: formData.name.trim(),
+        color: formData.color
+      });
       setFormData({ name: '', color: '#3b82f6' });
       setIsAdding(false);
-      toast.success('Etiqueta criada');
+      toast.success('Etiqueta criada com sucesso');
     } catch (err) {
       toast.error('Erro ao criar etiqueta');
     }
   };
 
-  const handleUpdate = async (tag: TagType) => {
+  const handleSaveEdit = async () => {
+    if (!editFormData || !editFormData.name.trim()) {
+      return toast.error('Nome da etiqueta é obrigatório');
+    }
     try {
-      await onUpdate(tag);
+      await onUpdate({
+        id: editFormData.id,
+        name: editFormData.name.trim(),
+        color: editFormData.color,
+        active: true
+      });
       setEditingId(null);
-      toast.success('Etiqueta atualizada');
+      setEditFormData(null);
+      toast.success('Etiqueta atualizada com sucesso');
     } catch (err) {
       toast.error('Erro ao atualizar etiqueta');
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await onDelete(id);
+      toast.success('Etiqueta excluída com sucesso');
+    } catch (err) {
+      toast.error('Erro ao excluir etiqueta');
     }
   };
 
@@ -70,41 +92,92 @@ export function TagManagementModal({ isOpen, onClose, tags, onAdd, onUpdate, onD
           <div className="p-6 max-h-[60vh] overflow-y-auto">
             <div className="space-y-3">
               {tags.map(tag => (
-                <div key={tag.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
+                <div key={tag.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 transition-all">
                   {editingId === tag.id ? (
-                    <div className="flex-1 flex gap-2">
-                      <input 
-                        type="text" 
-                        value={tag.name} 
-                        onChange={(e) => {
-                          const newName = e.target.value;
-                          // This is bad for immutable state but for local editing it's fine if we handle it
-                          // but better to use a temporary editing state
-                        }}
-                        className="flex-1 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-sm"
-                        autoFocus
-                      />
-                      {/* Selection of color could be here too */}
+                    <div className="space-y-3">
+                      <div className="flex gap-2">
+                        <input 
+                          type="text" 
+                          value={editFormData?.name || ''} 
+                          onChange={(e) => setEditFormData(prev => prev ? { ...prev, name: e.target.value } : null)}
+                          className="flex-1 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-sm font-semibold outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Nome da etiqueta"
+                          autoFocus
+                        />
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={handleSaveEdit}
+                            className="p-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors shadow-sm"
+                            title="Salvar"
+                          >
+                            <Check className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => {
+                              setEditingId(null);
+                              setEditFormData(null);
+                            }}
+                            className="p-1.5 bg-slate-200 hover:bg-slate-300 text-slate-600 rounded-lg transition-colors"
+                            title="Cancelar"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      
+                      {/* Seleção de cores interna no editor inline */}
+                      <div>
+                        <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block mb-1">Selecione uma cor:</span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {COLORS.map(c => (
+                            <button 
+                              key={c}
+                              type="button"
+                              onClick={() => setEditFormData(prev => prev ? { ...prev, color: c } : null)}
+                              className={`w-5 h-5 rounded-full border transition-all ${editFormData?.color === c ? 'border-slate-800 scale-110 shadow-sm' : 'border-white hover:scale-105'}`}
+                              style={{ backgroundColor: c }}
+                            />
+                          ))}
+                          <input 
+                            type="color" 
+                            value={editFormData?.color || '#3b82f6'}
+                            onChange={(e) => setEditFormData(prev => prev ? { ...prev, color: e.target.value } : null)}
+                            className="w-5 h-5 rounded-full border border-white shadow-sm cursor-pointer shrink-0"
+                          />
+                        </div>
+                      </div>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-3">
-                      <div 
-                        className="w-4 h-4 rounded-full border border-black/10" 
-                        style={{ backgroundColor: tag.color }} 
-                      />
-                      <span className="font-bold text-slate-700 text-sm">{tag.name}</span>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-3">
+                        <div 
+                          className="w-4 h-4 rounded-full border border-black/10 shrink-0" 
+                          style={{ backgroundColor: tag.color }} 
+                        />
+                        <span className="font-bold text-slate-700 text-sm">{tag.name}</span>
+                      </div>
+                      
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button 
+                          onClick={() => {
+                            setEditingId(tag.id);
+                            setEditFormData({ id: tag.id, name: tag.name, color: tag.color });
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                          title="Editar"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => handleDelete(tag.id)}
+                          className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                          title="Excluir"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   )}
-
-                  <div className="flex items-center gap-1">
-                    <button 
-                      onClick={() => onDelete(tag.id)}
-                      className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                      title="Excluir"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
                 </div>
               ))}
 
@@ -132,6 +205,7 @@ export function TagManagementModal({ isOpen, onClose, tags, onAdd, onUpdate, onD
                       {COLORS.map(c => (
                         <button 
                           key={c}
+                          type="button"
                           onClick={() => setFormData({...formData, color: c})}
                           className={`w-8 h-8 rounded-full border-2 transition-all ${formData.color === c ? 'border-blue-600 scale-110 shadow-md' : 'border-white hover:scale-105'}`}
                           style={{ backgroundColor: c }}
@@ -148,12 +222,14 @@ export function TagManagementModal({ isOpen, onClose, tags, onAdd, onUpdate, onD
 
                   <div className="flex gap-2 pt-2">
                     <button 
+                      type="button"
                       onClick={() => setIsAdding(false)}
                       className="flex-1 py-2 text-xs font-bold text-slate-500 hover:bg-slate-200 rounded-xl transition-all"
                     >
                       Cancelar
                     </button>
                     <button 
+                      type="button"
                       onClick={handleAdd}
                       className="flex-1 py-2 text-xs font-bold bg-blue-600 text-white rounded-xl shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all"
                     >
@@ -163,6 +239,7 @@ export function TagManagementModal({ isOpen, onClose, tags, onAdd, onUpdate, onD
                 </div>
               ) : (
                 <button 
+                  type="button"
                   onClick={() => setIsAdding(true)}
                   className="w-full py-3 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 transition-all flex items-center justify-center gap-2 text-sm font-bold"
                 >
@@ -175,6 +252,7 @@ export function TagManagementModal({ isOpen, onClose, tags, onAdd, onUpdate, onD
 
           <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end">
             <button 
+              type="button"
               onClick={onClose}
               className="px-6 py-2.5 bg-slate-800 text-white rounded-xl font-bold shadow-lg shadow-slate-200 hover:bg-slate-900 transition-all text-sm"
             >
