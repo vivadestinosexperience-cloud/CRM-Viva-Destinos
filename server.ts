@@ -1962,7 +1962,10 @@ const DEFAULT_TEAM = {
 
           processedCount++;
 
-          const delaySeconds = campaign.delay_seconds || campaign.min_interval || 8;
+          const minDelay = Number(campaign.min_interval || campaign.delay_seconds || 5);
+          const maxDelay = Math.max(minDelay, Number(campaign.max_interval || campaign.delay_seconds || 10));
+          const delaySeconds = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+          console.log(`[CAMPAIGN] Sleeping for humanized ${delaySeconds}s (range: ${minDelay}s-${maxDelay}s) after sending message to ${recipient.phone_normalized}`);
           await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
         } catch (error: any) {
           const attempts = (recipient.attempts || 0) + 1;

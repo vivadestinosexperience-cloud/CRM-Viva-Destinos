@@ -342,8 +342,8 @@ export default function OmnichannelPage() {
         });
         setConversations(ordered);
 
-        // Auto-select first conversation if requested
-        if (!activeConversationId && ordered.length > 0) {
+        // Auto-select first conversation if requested (foreground load only, and if no conversation is currently active)
+        if (!silent && !activeConversationIdRef.current && ordered.length > 0) {
           const firstNew = ordered.find(
             (c) => !c.assigned_user_id && !isClosedConversation(c),
           );

@@ -42,7 +42,8 @@ import {
   MoreHorizontal,
   RotateCcw,
   Terminal,
-  Zap
+  Zap,
+  Settings
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAppStore } from '../store/useAppStore';
@@ -835,6 +836,51 @@ export default function CampaignsPage() {
                                   </button>
                                ))}
                             </div>
+                         </div>
+
+                         <div className="p-6 bg-slate-50 border border-slate-100 rounded-[2rem] space-y-4">
+                            <div className="flex items-center gap-2">
+                               <Settings className="w-4 h-4 text-indigo-600" />
+                               <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Configurações Avançadas de Disparo</h4>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                               <div className="space-y-2">
+                                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Delay Mínimo (segundos)</label>
+                                  <input 
+                                    type="number" 
+                                    min={1}
+                                    max={300}
+                                    className="w-full px-5 py-3 bg-white border border-slate-150 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-500/10 font-bold text-center"
+                                    value={formData.minInterval}
+                                    onChange={e => setFormData({ ...formData, minInterval: Math.max(1, parseInt(e.target.value) || 1) })}
+                                  />
+                               </div>
+                               <div className="space-y-2">
+                                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Delay Máximo (segundos)</label>
+                                  <input 
+                                    type="number" 
+                                    min={1}
+                                    max={300}
+                                    className="w-full px-5 py-3 bg-white border border-slate-150 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-500/10 font-bold text-center"
+                                    value={formData.maxInterval}
+                                    onChange={e => setFormData({ ...formData, maxInterval: Math.max(1, parseInt(e.target.value) || 1) })}
+                                  />
+                               </div>
+                               <div className="space-y-2">
+                                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tamanho do Lote</label>
+                                  <input 
+                                    type="number" 
+                                    min={1}
+                                    max={100}
+                                    className="w-full px-5 py-3 bg-white border border-slate-150 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-500/10 font-bold text-center"
+                                    value={formData.batchSize}
+                                    onChange={e => setFormData({ ...formData, batchSize: Math.max(1, parseInt(e.target.value) || 1) })}
+                                  />
+                               </div>
+                            </div>
+                            <p className="text-[10px] text-slate-400 leading-normal ml-1">
+                               💡 O sistema aguardará um tempo aleatório entre o delay mínimo e máximo após enviar cada mensagem. Isso simula o comportamento humano e evita bloqueios pela Z-API.
+                            </p>
                          </div>
                       </div>
                    )}

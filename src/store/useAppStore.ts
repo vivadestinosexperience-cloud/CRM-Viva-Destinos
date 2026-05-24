@@ -339,14 +339,26 @@ export const useAppStore = create<AppState>()(
           })
           .subscribe();
 
-        // 4. Listen to Campaigns
+        // 4. Listen to Campaigns with DB property translation mapped to frontend attributes
         const campaignChannel = supabase
           .channel('campaigns-realtime')
           .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_campaigns' }, (payload) => {
             const { eventType, new: newRecord, old: oldRecord } = payload;
             if (eventType === 'INSERT' || eventType === 'UPDATE') {
               set(state => {
-                const camp = newRecord as Campaign;
+                const raw = newRecord as any;
+                const camp: Campaign = {
+                  ...raw,
+                  content: raw.message_text || raw.content,
+                  recipients_count: raw.total_recipients ?? raw.recipients_count ?? 0,
+                  pending_count: raw.total_pending ?? raw.pending_count ?? 0,
+                  sending_count: raw.total_sending ?? raw.sending_count ?? 0,
+                  sent_count: raw.total_sent ?? raw.sent_count ?? 0,
+                  failed_count: raw.total_failed ?? raw.failed_count ?? 0,
+                  skipped_count: raw.total_skipped ?? raw.skipped_count ?? 0,
+                  min_interval: raw.delay_seconds ?? raw.min_interval ?? 8,
+                  max_interval: raw.delay_seconds ?? raw.max_interval ?? 8,
+                };
                 const matchIndex = state.campaigns.findIndex(c => c.id === camp.id);
                 if (matchIndex > -1) {
                   const updated = [...state.campaigns];
