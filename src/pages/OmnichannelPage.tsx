@@ -388,13 +388,60 @@ export default function OmnichannelPage() {
     ].includes(status);
   };
 
-  const safeConversations = Array.isArray(conversations) ? conversations.filter(c => c && c.id) : [];
   const safeMessages = Array.isArray(messages) ? messages.filter(m => m && m.id) : [];
   const safeTags = Array.isArray(tags) ? tags.filter(t => t && t.id) : [];
   const safeTeams = Array.isArray(teams) ? teams.filter(t => t && t.id) : [];
   const safeUsers = Array.isArray(users) ? users.filter(u => u && u.id) : [];
   const safeAccounts = Array.isArray(whatsAppAccounts) ? whatsAppAccounts.filter(a => a && a.id) : [];
   const safeCustomers = Array.isArray(customers) ? customers.filter(c => c && c.id) : [];
+
+  const safeConversations = useMemo(() => {
+    const rawList = Array.isArray(conversations) ? conversations.filter(c => c && c.id) : [];
+    const uniqueMap = new Map<string, Conversation>();
+    for (const c of rawList) {
+      let p = c.customer_phone_normalized || "";
+      if (!p) {
+        const cust = c.customer || safeCustomers.find((cust) => cust.id === c.customer_id);
+        p = cust?.phone_normalized || cust?.phone || "";
+      }
+      p = String(p).replace(/\D/g, "");
+      
+      const normResult = normalizeBrazilPhone(p);
+      const key = normResult.valid ? normResult.phone : p;
+      
+      if (!key) {
+        uniqueMap.set(c.id, c);
+      } else if (!uniqueMap.has(key)) {
+        uniqueMap.set(key, c);
+      } else {
+        const existing = uniqueMap.get(key)!;
+        const existingTime = new Date(existing.last_message_at || existing.updated_at || existing.created_at || 0).getTime();
+        const incomingTime = new Date(c.last_message_at || c.updated_at || c.created_at || 0).getTime();
+        
+        const mergedTags = [...(existing.tags || [])];
+        for (const tg of (c.tags || [])) {
+          if (tg && tg.id && !mergedTags.some(t => t && t.id === tg.id)) {
+            mergedTags.push(tg);
+          }
+        }
+        
+        if (incomingTime > existingTime) {
+          uniqueMap.set(key, {
+            ...c,
+            unread_count: (existing.unread_count || 0) + (c.unread_count || 0),
+            tags: mergedTags
+          });
+        } else {
+          uniqueMap.set(key, {
+            ...existing,
+            unread_count: (existing.unread_count || 0) + (c.unread_count || 0),
+            tags: mergedTags
+          });
+        }
+      }
+    }
+    return Array.from(uniqueMap.values());
+  }, [conversations, safeCustomers]);
 
   // Sync state if active conversation becomes ignored
   useEffect(() => {
@@ -537,7 +584,18 @@ export default function OmnichannelPage() {
         setGToken(null);
       }
     );
-    return () => unsubscribe();
+
+    const handleExpired = () => {
+      setGUser(null);
+      setGToken(null);
+    };
+
+    window.addEventListener("google-auth-expired", handleExpired);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener("google-auth-expired", handleExpired);
+    };
   }, []);
 
   // Handle active custom values whenever active conversation changes
@@ -954,7 +1012,7 @@ export default function OmnichannelPage() {
   const activeChatMessages = safeMessages;
   const currentAccount = safeAccounts.find(
     (a) => a.id === activeConversation?.whatsapp_account_id,
-  );
+  ) || safeAccounts.find((a) => a.is_active) || safeAccounts[0];
 
   // Load and refresh Kanban linkage
   const refreshKanbanLinkage = () => {
@@ -3511,7 +3569,7 @@ export default function OmnichannelPage() {
 
                   <form
                     onSubmit={handleSendMessage}
-                    className={`flex items-end gap-3 p-3 rounded-2xl focus-within:ring-2 transition-all shadow-sm border ${isInternalMode ? "bg-amber-50/50 border-amber-200 focus-within:ring-amber-500" : "bg-slate-50 border-slate-200 focus-within:ring-blue-500"}`}
+                    className={`relative flex items-end gap-3.5 p-4 rounded-3xl focus-within:ring-2 transition-all shadow-md border ${isInternalMode ? "bg-amber-50/50 border-amber-200 focus-within:ring-amber-500" : "bg-slate-50 border-slate-200 focus-within:ring-blue-500"}`}
                   >
                     <div className="flex items-center gap-1 relative">
                       <button
@@ -3657,48 +3715,48 @@ export default function OmnichannelPage() {
                           </motion.div>
                         )}
                       </AnimatePresence>
-
-                      <AnimatePresence>
-                        {quickReplyTriggerState && matchingQuickReplies.length > 0 && (
-                          <motion.div
-                            initial={{ opacity: 0, y: 15, scale: 0.95 }}
-                            animate={{ opacity: 1, y: -4, scale: 1 }}
-                            exit={{ opacity: 0, y: 15, scale: 0.95 }}
-                            className="absolute bottom-full left-4 right-4 mb-3 z-[150] shadow-2xl rounded-2xl border border-slate-100 bg-white overflow-hidden max-h-72 flex flex-col focus:outline-none"
-                          >
-                            <div className="bg-slate-50 px-4 py-2 text-[10px] font-black uppercase text-slate-400 tracking-wider flex items-center justify-between border-b border-slate-100">
-                              <span>Modelos de Mensagem (Use ↑ ↓ Enter)</span>
-                              <button
-                                type="button"
-                                onClick={() => setQuickReplyTriggerState(null)}
-                                className="text-slate-400 hover:text-slate-600 font-bold"
-                              >
-                                ✕
-                              </button>
-                            </div>
-                            <div className="overflow-y-auto divide-y divide-slate-50 max-h-60">
-                              {matchingQuickReplies.map((qr, idx) => (
-                                <button
-                                  key={qr.id || idx}
-                                  type="button"
-                                  onClick={() => handleSelectQuickReply(qr)}
-                                  className={`w-full text-left px-4 py-3 flex flex-col gap-1 transition-all text-sm ${idx === quickRepliesIndex ? "bg-blue-600 text-white" : "hover:bg-slate-50 text-slate-700"}`}
-                                >
-                                  <div className="flex items-center gap-1.5 font-bold text-xs">
-                                    <span className={`px-1.5 py-0.5 rounded ${idx === quickRepliesIndex ? "bg-white/20 text-white" : "bg-blue-50 text-blue-600"}`}>
-                                      \{qr.shortcut}
-                                    </span>
-                                  </div>
-                                  <p className={`line-clamp-2 text-xs leading-relaxed ${idx === quickRepliesIndex ? "text-blue-100" : "text-slate-500"}`}>
-                                    {qr.content}
-                                  </p>
-                                </button>
-                              ))}
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
                     </div>
+
+                    <AnimatePresence>
+                      {quickReplyTriggerState && matchingQuickReplies.length > 0 && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 15, scale: 0.95 }}
+                          animate={{ opacity: 1, y: -4, scale: 1 }}
+                          exit={{ opacity: 0, y: 15, scale: 0.95 }}
+                          className="absolute bottom-full left-4 right-4 mb-3 z-[150] shadow-2xl rounded-2xl border border-slate-100 bg-white overflow-hidden max-h-96 flex flex-col focus:outline-none"
+                        >
+                          <div className="bg-slate-50 px-4 py-2.5 text-[10px] font-black uppercase text-slate-400 tracking-wider flex items-center justify-between border-b border-slate-100">
+                            <span>Modelos de Mensagem (Use ↑ ↓ Enter)</span>
+                            <button
+                              type="button"
+                              onClick={() => setQuickReplyTriggerState(null)}
+                              className="text-slate-400 hover:text-slate-600 font-bold"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                          <div className="overflow-y-auto divide-y divide-slate-50 max-h-80">
+                            {matchingQuickReplies.map((qr, idx) => (
+                              <button
+                                key={qr.id || idx}
+                                type="button"
+                                onClick={() => handleSelectQuickReply(qr)}
+                                className={`w-full text-left px-5 py-3.5 flex flex-col gap-1 transition-all text-sm ${idx === quickRepliesIndex ? "bg-blue-600 text-white" : "hover:bg-slate-50 text-slate-700"}`}
+                              >
+                                <div className="flex items-center gap-1.5 font-bold text-xs">
+                                  <span className={`px-1.5 py-0.5 rounded ${idx === quickRepliesIndex ? "bg-white/20 text-white" : "bg-blue-50 text-blue-600"}`}>
+                                    \{qr.shortcut}
+                                  </span>
+                                </div>
+                                <p className={`text-xs leading-relaxed ${idx === quickRepliesIndex ? "text-blue-100" : "text-slate-500"}`}>
+                                  {qr.content}
+                                </p>
+                              </button>
+                            ))}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
 
                     <textarea
                       ref={messageInputRef}
@@ -3708,7 +3766,7 @@ export default function OmnichannelPage() {
                           ? "Adicionar nota interna ao atendimento..."
                           : "Escreva sua mensagem..."
                       }
-                      className="flex-1 bg-transparent border-none outline-none text-sm py-2 resize-none max-h-40 min-h-[40px] px-2 font-medium"
+                      className="flex-1 bg-transparent border-none outline-none text-sm md:text-base py-3.5 resize-none max-h-48 min-h-[48px] px-3 font-medium text-slate-800 placeholder-slate-400 leading-relaxed"
                       value={newMessage}
                       onChange={(e) => handleNewMessageChange(e.target.value)}
                       onKeyDown={(e) => {

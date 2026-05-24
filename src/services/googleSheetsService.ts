@@ -174,14 +174,67 @@ export const saveCustomFieldValues = (conversationId: string, values: CustomFiel
 const BASE_SHEETS_URL = "https://sheets.googleapis.com/v4/spreadsheets";
 
 const apiFetch = async (url: string, options: RequestInit): Promise<Response> => {
+  const tokenInHeader = (options.headers as any)?.["Authorization"] || "";
+  const actualToken = typeof tokenInHeader === "string" ? tokenInHeader.replace("Bearer ", "").trim() : "";
+
+  if (actualToken && !cachedAccessToken) {
+    cachedAccessToken = actualToken;
+  }
+
   try {
     const res = await fetch(url, options);
+    
+    // Check for expired or invalid authentication (Unauthorized 401)
+    if (res.status === 401) {
+      cachedAccessToken = null;
+      sessionStorage.removeItem("crm_google_oauth_token");
+      
+      // Attempt to dispatch event to sync frontend state in real-time
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("google-auth-expired"));
+      }
+
+      const clone = res.clone();
+      let apiMessage = "";
+      try {
+        const text = await clone.text();
+        const parsed = JSON.parse(text);
+        apiMessage = parsed?.error?.message || text;
+      } catch (e) {}
+
+      console.warn("[Google Sheets API] 401 Unauthorized:", apiMessage);
+      throw new Error(
+        "Sua sessão do Google expirou ou é inválida. Como o token de acesso do Google dura apenas 1 hora por segurança, " +
+        "por favor clique no botão 'Conectar Conta Google' no menu lateral para renovar sua conexão."
+      );
+    }
+    
+    // Check for permission issues (Forbidden 403)
+    if (res.status === 403) {
+      const clone = res.clone();
+      let apiMessage = "";
+      try {
+        const text = await clone.text();
+        const parsed = JSON.parse(text);
+        apiMessage = parsed?.error?.message || text;
+      } catch (e) {}
+
+      console.warn("[Google Sheets API] 403 Forbidden:", apiMessage);
+      throw new Error(
+        "Erro de Permissão (403): Sua conta conectada do Google não possui permissão para editar esta planilha específica. " +
+        "Certifique-se de que a planilha inserida existe e está compartilhada com sua conta ou é de sua propriedade."
+      );
+    }
+
     return res;
   } catch (err: any) {
+    if (err.message && (err.message.includes("Sua sessão do Google expirou") || err.message.includes("Erro de Permissão"))) {
+      throw err;
+    }
     console.error("[Google Sheets API Error] Network or CORS failure:", err);
     throw new Error(
       "Falha de conexão com o Google (CORS ou Sessão Expirada). " +
-      "Por favor, renove sua autenticação clicando em 'Conectar com o Google' nas configurações da planilha."
+      "Por favor, renove sua autenticação clicando em 'Conectar com o Google' na lateral de atendimento."
     );
   }
 };
@@ -336,7 +389,11 @@ export const ensureHeadersAndFetchRows = async (
 
     return currentRows;
   } catch (err: any) {
-    console.error("Error ensuring headers on Google Sheets:", err);
+    if (err?.message && (err.message.includes("Sua sessão do Google expirou") || err.message.includes("expirada"))) {
+      console.warn("Google Sheets Sync paused: Google Session Expired");
+    } else {
+      console.error("Error ensuring headers on Google Sheets:", err);
+    }
     throw new Error(err?.message || "Erro ao conectar com Google Sheets.");
   }
 };
@@ -408,7 +465,11 @@ export const syncConversationToSheet = async (
       return response.ok;
     }
   } catch (err: any) {
-    console.error("Error syncing conversation to Google Sheets:", err);
+    if (err?.message && (err.message.includes("Sua sessão do Google expirou") || err.message.includes("expirada"))) {
+      console.warn("Google Sheets Sync paused: Google Session Expired in conversation sync");
+    } else {
+      console.error("Error syncing conversation to Google Sheets:", err);
+    }
     throw new Error(err?.message || "Falha ao sincronizar atendimento.");
   }
 };
@@ -507,7 +568,11 @@ export const syncAllConversationsToSheet = async (
 
     return { success: true, count: updatedCount + appendedCount };
   } catch (err: any) {
-    console.error("Error syncAllConversationsToSheet:", err);
+    if (err?.message && (err.message.includes("Sua sessão do Google expirou") || err.message.includes("expirada"))) {
+      console.warn("Google Sheets Sync paused: Google Session Expired in batch sync");
+    } else {
+      console.error("Error syncAllConversationsToSheet:", err);
+    }
     throw new Error(err?.message || "Erro desconhecido ao sincronizar lote.");
   }
 };

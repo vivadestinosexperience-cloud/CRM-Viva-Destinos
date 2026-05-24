@@ -1,9 +1,6 @@
 import { supabase } from '../integrations/supabase/client';
 
 export function getApiBaseUrl() {
-  // Para aplicações full-stack onde o front-end e o back-end rodam juntos na mesma porta e container,
-  // ou em qualquer ambiente de preview/produção unificado, caminhos relativos na Web de volta ao servidor de origem
-  // previnem qualquer erro de CORS, portas incorretas, ou falhas de DNS ("Failed to fetch").
   if (typeof window !== "undefined") {
     return "";
   }
@@ -74,10 +71,29 @@ export async function authorizedFetch(url: string, options: RequestInit = {}) {
     console.log(`[authorizedFetch] ${options.method || 'GET'} ${finalUrl}`);
   }
 
-  const response = await fetch(finalUrl, {
+  const response = await fetchWithRetry(finalUrl, {
     ...options,
     headers
   });
 
   return response;
+}
+
+async function fetchWithRetry(url: string, options: RequestInit, retries = 3, delays = [1500, 3000, 5000]): Promise<Response> {
+  let lastError: any = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      return response;
+    } catch (err: any) {
+      lastError = err;
+      const isNetworkError = err instanceof TypeError || (err.message && String(err.message).toLowerCase().includes("failed to fetch"));
+      if (!isNetworkError || attempt === retries) {
+        throw err;
+      }
+      console.warn(`[authorizedFetch] Falha de conexão na tentativa ${attempt + 1}. O servidor pode estar iniciando no Render. Retentando em ${delays[attempt]}ms...`, err);
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+    }
+  }
+  throw lastError;
 }

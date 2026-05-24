@@ -6905,9 +6905,34 @@ const DEFAULT_TEAM = {
       const list = await loadChannelsDBOrFile();
       const active = list.find((c: any) => c.is_active);
       if (active) {
+        try {
+          const raw = await getZapiStatusRaw();
+          const normalized = normalizeZapiStatus(raw);
+          const currentStatus = normalized.connected ? "CONNECTED" : "DISCONNECTED";
+          if (active.status !== currentStatus) {
+            active.status = currentStatus;
+            if (normalized.phone) {
+              active.connected_phone = normalized.phone;
+            }
+            await saveChannelToDBOrFile(active);
+          }
+        } catch (zapiErr) {
+          console.log("[ACTIVE CHANNEL ZAPI SYNC SKIP / NOT CONFIG]:", zapiErr instanceof Error ? zapiErr.name : zapiErr);
+        }
         return res.json({ success: true, channel: active });
       } else {
         // Fallback das env
+        let envStatus = "DISCONNECTED";
+        let envPhone = "";
+        try {
+          const raw = await getZapiStatusRaw();
+          const normalized = normalizeZapiStatus(raw);
+          envStatus = normalized.connected ? "CONNECTED" : "DISCONNECTED";
+          envPhone = normalized.phone || "";
+        } catch (zapiErr) {
+          console.log("[ENV FALLBACK STATUS SYNC SKIP / NOT CONFIG]:", zapiErr instanceof Error ? zapiErr.name : zapiErr);
+        }
+
         const envConfig = {
           id: "env-fallback",
           name: "Canal Padrão (Ambiente)",
@@ -6916,7 +6941,8 @@ const DEFAULT_TEAM = {
           instance_token: process.env.ZAPI_INSTANCE_TOKEN || "",
           client_token: process.env.ZAPI_CLIENT_TOKEN || "",
           is_active: true,
-          status: "DISCONNECTED"
+          status: envStatus,
+          connected_phone: envPhone
         };
         return res.json({ success: true, channel: envConfig });
       }
