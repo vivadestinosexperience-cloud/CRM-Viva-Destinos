@@ -613,11 +613,19 @@ export default function CampaignsPage() {
                               >
                                  <Eye className="w-4 h-4" />
                               </button>
-                               {campaign.status === 'READY' || campaign.status === 'PAUSED' ? (
+                               {campaign.status === 'READY' ? (
                                   <button 
                                     onClick={() => handleStartSending(campaign)}
                                     className="p-3 bg-indigo-600 text-white rounded-xl hover:scale-105 active:scale-95 transition-all shadow-lg shadow-indigo-100"
                                     title="Iniciar Envio"
+                                  >
+                                    <Play className="w-4 h-4 fill-current" />
+                                  </button>
+                               ) : campaign.status === 'PAUSED' ? (
+                                  <button 
+                                    onClick={() => resumeCampaign(campaign.id)}
+                                    className="p-3 bg-indigo-600 text-white rounded-xl hover:scale-105 active:scale-95 transition-all shadow-lg shadow-indigo-100"
+                                    title="Retomar Envio"
                                   >
                                     <Play className="w-4 h-4 fill-current" />
                                   </button>

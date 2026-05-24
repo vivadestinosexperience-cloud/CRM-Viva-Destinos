@@ -803,7 +803,7 @@ export const useAppStore = create<AppState>()(
         try {
           await campaignService.resume(id);
           set((state) => ({
-            campaigns: state.campaigns.map(c => c.id === id ? { ...c, status: 'SENDING' } : c)
+            campaigns: state.campaigns.map(c => c.id === id ? { ...c, status: 'RUNNING' } : c)
           }));
           toast.info('Campanha retomada');
         } catch (err) {
