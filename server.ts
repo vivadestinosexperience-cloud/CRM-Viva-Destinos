@@ -5229,6 +5229,10 @@ const DEFAULT_TEAM = {
         return res.status(400).json({ success: false, error: "Dados incompletos para criação da campanha" });
       }
 
+      if (contacts.length === 0) {
+        return res.status(400).json({ success: false, error: "A lista de contatos não pode estar vazia." });
+      }
+
       const { data: campaign, error: cErr } = await supabaseAdmin.from(TABLES.campaigns).insert({
         name,
         description: `WhatsApp Account ID: ${whatsapp_account_id}`,
@@ -5253,21 +5257,22 @@ const DEFAULT_TEAM = {
         name: c.name,
         phone: c.phone,
         phone_normalized: c.phone_normalized,
-        variables: c.variables || {},
         status: 'PENDING'
       }));
 
       const chunkSize = 500;
       for (let i = 0; i < recipients.length; i += chunkSize) {
         const chunk = recipients.slice(i, i + chunkSize);
-        await supabaseAdmin.from(TABLES.campaign_recipients).insert(chunk);
+        const { error: insErr } = await supabaseAdmin.from(TABLES.campaign_recipients).insert(chunk);
+        if (insErr) throw insErr;
       }
 
-      await supabaseAdmin.from(TABLES.campaign_events).insert({
+      const { error: eventErr } = await supabaseAdmin.from(TABLES.campaign_events).insert({
         campaign_id: campaign.id,
         event_type: 'campaign.created',
-        data: { message: `Campanha criada por ${user.name}` }
+        message: `Campanha criada por ${user.name}`
       });
+      if (eventErr) console.error("[CAMPAIGN EVENT CREATE BUILD ERROR]", eventErr);
 
       return res.json({ success: true, campaign: mapCampaignDbToApi(campaign) });
     } catch (error: any) {
