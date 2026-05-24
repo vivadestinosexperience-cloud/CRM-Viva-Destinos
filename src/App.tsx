@@ -130,6 +130,7 @@ export default function App() {
           >
             <Route index element={<Navigate to="atendimentos" />} />
             <Route path="atendimentos" element={<OmnichannelPage />} />
+            <Route path="atendimentos/:conversationId" element={<OmnichannelPage />} />
             <Route path="campanhas" element={<CampaignsPage />} />
             <Route path="clientes/*" element={<CRMPage />} />
             <Route path="relatorios/atendimentos" element={<ReportsPage />} />

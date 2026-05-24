@@ -3367,10 +3367,25 @@ const DEFAULT_TEAM = {
 
       // Filter and Normalize
       const filteredAndNormalized = (msgs || []).filter((m: any) => {
+        if (!m) return false;
         if (m.ignored) return false;
         if (m.origin === "group" || m.origin === "group_or_channel") return false;
 
-        const payload = m.raw_payload || {};
+        let payload: any = {};
+        if (m.raw_payload) {
+          if (typeof m.raw_payload === 'object') {
+            payload = m.raw_payload;
+          } else if (typeof m.raw_payload === 'string') {
+            try {
+              payload = JSON.parse(m.raw_payload);
+            } catch (e) {
+              payload = {};
+            }
+          }
+        }
+
+        if (!payload) payload = {};
+
         if (payload.isGroup === true) return false;
         const phone = String(payload.phone || "").toLowerCase();
         if (phone.includes("-group") || phone.includes("@g.us") || phone.startsWith("120363")) return false;
@@ -6057,7 +6072,7 @@ const DEFAULT_TEAM = {
         .eq('conversation_id', id)
         .order('created_at', { ascending: true })
         .limit(1)
-        .single();
+        .maybeSingle();
 
       // 2. Get last interaction
       const { data: lastMsg } = await supabaseAdmin
@@ -6066,7 +6081,7 @@ const DEFAULT_TEAM = {
         .eq('conversation_id', id)
         .order('created_at', { ascending: false })
         .limit(1)
-        .single();
+        .maybeSingle();
 
       // 3. Get total messages count
       const { count: totalMessages } = await supabaseAdmin

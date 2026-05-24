@@ -59,10 +59,29 @@ import {
   ArrowLeft,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { useParams, useNavigate } from "react-router-dom";
 import EmojiPicker, { EmojiClickData } from "emoji-picker-react";
 import { Conversation, Message, Customer, Team } from "../types";
 import { supabase } from "../integrations/supabase/client";
 import { useAppStore } from "../store/useAppStore";
+import {
+  initGoogleAuth,
+  googleSignIn,
+  googleSignOut,
+  getAccessToken,
+  getStoredSpreadsheetId,
+  setStoredSpreadsheetId,
+  getCustomFieldDefs,
+  saveCustomFieldDefs,
+  getCustomFieldValues,
+  saveCustomFieldValues,
+  syncConversationToSheet,
+  syncAllConversationsToSheet,
+  getCleanStatusLabel,
+  CustomFieldDefinition,
+  CustomFieldValues,
+} from "../services/googleSheetsService";
+import { User as FirebaseUser } from "firebase/auth";
 import { authorizedFetch, safeReadJson, getApiBaseUrl } from "../services/api";
 import { toast } from "sonner";
 import { getErrorMessage, renderSafeText } from "../utils/renderSafeText";
@@ -111,6 +130,9 @@ export default function OmnichannelPage() {
     updateInternalNote,
     deleteInternalNote,
   } = useAppStore();
+
+  const { conversationId } = useParams();
+  const navigate = useNavigate();
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -411,8 +433,8 @@ export default function OmnichannelPage() {
         });
         setConversations(ordered);
 
-        // Auto-select first conversation if requested (foreground load only, and if no conversation is currently active)
-        if (!silent && !activeConversationIdRef.current && ordered.length > 0) {
+        // Auto-select first conversation if requested (foreground load only, and if no conversation is currently active and no route param is present)
+        if (!silent && !activeConversationIdRef.current && !conversationId && ordered.length > 0) {
           const firstNew = ordered.find(
             (c) => !c.assigned_user_id && !isClosedConversation(c),
           );
@@ -459,8 +481,8 @@ export default function OmnichannelPage() {
     setAiSummary(null);
     setShowIAPanel(false);
 
-    // Mark as read locally and via API only if the conversation has been assumed (assigned_user_id exists)
-    if (conversation.assigned_user_id) {
+    // Mark as read locally and via API only if the conversation has been assumed by the current user
+    if (conversation.assigned_user_id && conversation.assigned_user_id === currentUser?.id) {
       const baseUrl = getApiBaseUrl();
       authorizedFetch(
         `${baseUrl}/api/omnichannel/conversations/${conversation.id}`,
@@ -472,6 +494,236 @@ export default function OmnichannelPage() {
       ).catch((err) => console.warn("Erro ao marcar como lida:", err));
     }
   };
+
+  // Google Sheets configuration & states
+  const [gUser, setGUser] = useState<FirebaseUser | null>(null);
+  const [gToken, setGToken] = useState<string | null>(null);
+  const [spreadsheetId, setSpreadsheetId] = useState(getStoredSpreadsheetId());
+  const [isEditingSheetId, setIsEditingSheetId] = useState(false);
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
+  
+  // Custom field definitions & conversation-specific values
+  const [customFieldDefs, setCustomFieldDefs] = useState<CustomFieldDefinition[]>([]);
+  const [activeCustomValues, setActiveCustomValues] = useState<CustomFieldValues>({});
+  const [showAddFieldForm, setShowAddFieldForm] = useState(false);
+  const [newFieldName, setNewFieldName] = useState("");
+  const [newFieldType, setNewFieldType] = useState<"text" | "number" | "boolean" | "select">("text");
+
+  // Load custom field definitions once on mount
+  useEffect(() => {
+    setCustomFieldDefs(getCustomFieldDefs());
+  }, []);
+
+  // Initialize Google OAuth state
+  useEffect(() => {
+    const unsubscribe = initGoogleAuth(
+      (user, token) => {
+        setGUser(user);
+        setGToken(token);
+      },
+      () => {
+        setGUser(null);
+        setGToken(null);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  // Handle active custom values whenever active conversation changes
+  useEffect(() => {
+    if (activeConversationId) {
+      setActiveCustomValues(getCustomFieldValues(activeConversationId));
+    } else {
+      setActiveCustomValues({});
+    }
+  }, [activeConversationId]);
+
+  // Google Sheets Login & Logout handlers
+  const handleGoogleLogin = async () => {
+    try {
+      const result = await googleSignIn();
+      if (result) {
+        setGUser(result.user);
+        setGToken(result.accessToken);
+        toast.success(`Google Sheets conectado com sucesso!`);
+      }
+    } catch (err: any) {
+      toast.error(`Falha ao conectar Google: ${err.message || "Erro inesperado"}`);
+    }
+  };
+
+  const handleGoogleLogout = async () => {
+    await googleSignOut();
+    setGUser(null);
+    setGToken(null);
+    toast.info("Conta Google desconectada.");
+  };
+
+  const handleSaveSheetId = () => {
+    setStoredSpreadsheetId(spreadsheetId);
+    setIsEditingSheetId(false);
+    toast.success("Spreadsheet ID atualizado com sucesso!");
+  };
+
+  const handleCreateCustomField = async () => {
+    if (!newFieldName.trim()) {
+      toast.error("Por favor, informe o nome do campo.");
+      return;
+    }
+    const slug = newFieldName
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/(^_+|_+$)/g, "");
+
+    const exists = customFieldDefs.some((d) => d.id === slug);
+    if (exists) {
+      toast.error("Um campo com esse nome já existe!");
+      return;
+    }
+
+    const newField: CustomFieldDefinition = {
+      id: slug,
+      name: newFieldName.trim(),
+      type: newFieldType,
+    };
+
+    const updated = [...customFieldDefs, newField];
+    saveCustomFieldDefs(updated);
+    setCustomFieldDefs(updated);
+    setNewFieldName("");
+    setShowAddFieldForm(false);
+
+    if (gToken) {
+      toast.loading("Sincronizando colunas com a Planilha Google...", { id: "col-sync" });
+      try {
+        const currentRows = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A1:Z5000`,
+          { headers: { Authorization: `Bearer ${gToken}` } }
+        ).then(r => r.json()).catch(() => null);
+
+        let headersRange = currentRows?.values?.[0] || [];
+        if (!headersRange.includes(newFieldName.trim())) {
+          const updatedHeaders = [...headersRange, newFieldName.trim()];
+          const colLetter = String.fromCharCode(65 + updatedHeaders.length - 1);
+          await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A1:${colLetter}1?valueInputOption=USER_ENTERED`,
+            {
+              method: "PUT",
+              headers: {
+                Authorization: `Bearer ${gToken}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                range: `A1:${colLetter}1`,
+                majorDimension: "ROWS",
+                values: [updatedHeaders],
+              }),
+            }
+          );
+        }
+        toast.success(`Campo "${newFieldName}" criado e integrado na Planilha!`, { id: "col-sync" });
+      } catch (e) {
+        toast.warning(`Campo "${newFieldName}" criado no painel local (erro ao ajustar planilha).`, { id: "col-sync" });
+      }
+    } else {
+      toast.success(`Campo "${newFieldName}" criado localmente! Conecte-se ao Sheets para sincronizar.`);
+    }
+  };
+
+  const handleUpdateCustomFieldValue = async (fieldId: string, value: any) => {
+    if (!activeConversation) return;
+    const newValues = { ...activeCustomValues, [fieldId]: value };
+    setActiveCustomValues(newValues);
+    saveCustomFieldValues(activeConversation.id, newValues);
+
+    if (gToken) {
+      const res = await syncConversationToSheet(gToken, spreadsheetId, activeConversation, customFieldDefs);
+      if (res) {
+        console.log(`[Google Sheets] Sincronização automática para o campo "${fieldId}" concluída.`);
+      }
+    }
+  };
+
+  const handleSyncActiveConversation = async () => {
+    if (!gToken) {
+      toast.error("Por favor, conecte-se com sua conta Google primeiro.");
+      return;
+    }
+    if (!activeConversation) {
+      toast.error("Nenhum atendimento ativo selecionado.");
+      return;
+    }
+    toast.loading("Sincronizando atendimento...", { id: "sync-single" });
+    const success = await syncConversationToSheet(gToken, spreadsheetId, activeConversation, customFieldDefs);
+    if (success) {
+      toast.success("Atendimento sincronizado com sucesso na planilha!", { id: "sync-single" });
+    } else {
+      toast.error("Erro ao sincronizar na planilha. Verifique as permissões de escrita.", { id: "sync-single" });
+    }
+  };
+
+  const handleSyncAllConversations = async () => {
+    if (!gToken) {
+      toast.error("Por favor, conecte-se com sua conta Google primeiro.");
+      return;
+    }
+    setIsSyncingAll(true);
+    toast.loading("Sincronizando lote completo com a planilha...", { id: "sync-batch" });
+    try {
+      const res = await syncAllConversationsToSheet(gToken, spreadsheetId, conversations, customFieldDefs);
+      if (res.success) {
+        toast.success(`Tudo pronto! ${res.count} atendimentos sincronizados com sucesso na planilha!`, { id: "sync-batch" });
+      } else {
+        toast.error("Falha ao subir atendimentos em lote. Verifique se a planilha é pública ou possui autorização.", { id: "sync-batch" });
+      }
+    } catch (e: any) {
+      toast.error(`Erro na sincronização em lote: ${e.message}`, { id: "sync-batch" });
+    } finally {
+      setIsSyncingAll(false);
+    }
+  };
+
+  // Google Sheets real-time synchronization tracker
+  const prevConversationsRef = useRef<Record<string, { status: string; lastMessageAt?: string | Date; lastMessage?: string }>>({});
+  
+  useEffect(() => {
+    const autoSync = async () => {
+      const token = await getAccessToken();
+      const sheetId = getStoredSpreadsheetId();
+      if (!token || !sheetId) return;
+
+      const currentDefs = getCustomFieldDefs();
+
+      for (const conv of conversations) {
+        const prev = prevConversationsRef.current[conv.id];
+        const currentCleanStatus = getCleanStatusLabel(conv);
+        const hasChanged = !prev || 
+          prev.status !== currentCleanStatus || 
+          prev.lastMessageAt !== conv.last_message_at ||
+          prev.lastMessage !== conv.last_message;
+
+        if (hasChanged) {
+          prevConversationsRef.current[conv.id] = {
+            status: currentCleanStatus,
+            lastMessageAt: conv.last_message_at,
+            lastMessage: conv.last_message
+          };
+
+          syncConversationToSheet(token, sheetId, conv, currentDefs).then((success) => {
+            if (success) {
+              console.log(`[Google Sheets] Tempo Real - Sincronizado: "${conv.customer?.name || "Cliente"}"`);
+            }
+          });
+        }
+      }
+    };
+
+    if (conversations.length > 0) {
+      autoSync();
+    }
+  }, [conversations]);
 
   // Initial load
   useEffect(() => {
@@ -491,6 +743,28 @@ export default function OmnichannelPage() {
       setMessages([]);
     }
   }, [activeConversationId]);
+
+  // Synchronize state with route param
+  useEffect(() => {
+    if (conversationId && conversationId !== activeConversationId) {
+      setActiveConversationId(conversationId);
+    } else if (!conversationId && activeConversationId) {
+      setActiveConversationId(null);
+    }
+  }, [conversationId]);
+
+  // Synchronize route param with state when user selects a conversation
+  useEffect(() => {
+    if (activeConversationId) {
+      if (conversationId !== activeConversationId) {
+        navigate(`/app/atendimentos/${activeConversationId}`);
+      }
+    } else {
+      if (conversationId) {
+        navigate("/app/atendimentos");
+      }
+    }
+  }, [activeConversationId, conversationId, navigate]);
 
   // Ref-based stable handlers for SSE connections
   const activeConversationIdRef = useRef<string | null>(null);
@@ -615,6 +889,32 @@ export default function OmnichannelPage() {
   const currentAccount = safeAccounts.find(
     (a) => a.id === activeConversation?.whatsapp_account_id,
   );
+
+  // Dynamically mark active conversation as read when new messages or updates arrive, if it's assigned to the current agent
+  useEffect(() => {
+    if (
+      activeConversation &&
+      (activeConversation.unread_count || 0) > 0 &&
+      activeConversation.assigned_user_id === currentUser?.id
+    ) {
+      // Optimistically update conversations locally
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === activeConversation.id ? { ...c, unread_count: 0 } : c,
+        ),
+      );
+
+      const baseUrl = getApiBaseUrl();
+      authorizedFetch(
+        `${baseUrl}/api/omnichannel/conversations/${activeConversation.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ unread_count: 0 }),
+        },
+      ).catch((err) => console.warn("Erro ao marcar como lida:", err));
+    }
+  }, [activeConversation, currentUser]);
 
   const [isEditingCustomer, setIsEditingCustomer] = useState(false);
   const [editCustomerForm, setEditCustomerForm] = useState({
@@ -2580,6 +2880,18 @@ export default function OmnichannelPage() {
                 </button>
                 <div className="w-px h-6 bg-slate-200 mx-0.5 sm:mx-1"></div>
                 <button
+                  onClick={() => {
+                    const link = `${window.location.origin}/app/atendimentos/${activeConversation.id}`;
+                    navigator.clipboard.writeText(link);
+                    toast.success("Link do atendimento copiado com sucesso!");
+                  }}
+                  className="p-2 sm:p-2.5 hover:bg-slate-50 hover:text-blue-600 rounded-xl text-slate-400 transition-all shrink-0 flex items-center gap-1.5"
+                  title="Copiar Link da Conversa"
+                >
+                  <Copy className="w-5 h-5" />
+                  <span className="hidden md:inline text-xs font-bold">Copiar Link</span>
+                </button>
+                <button
                   onClick={() => setShowTransferModal(true)}
                   className="p-2 sm:p-2.5 hover:bg-slate-50 rounded-xl text-slate-400 transition-all shrink-0"
                   title="Transferir Atendimento"
@@ -3605,6 +3917,241 @@ export default function OmnichannelPage() {
                         </span>
                       ))}
                     </div>
+                  </section>
+
+                  {/* GOOGLE SHEETS & CUSTOM FIELDS */}
+                  <section className="border-t border-slate-100 pt-5 mt-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Database className="w-4 h-4 text-blue-500" />
+                        <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                          Campos Customizados
+                        </h4>
+                      </div>
+                      <button
+                        onClick={() => setShowAddFieldForm(!showAddFieldForm)}
+                        className="text-[10px] font-bold text-blue-600 uppercase tracking-wider hover:text-blue-800 transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        <Plus className="w-3 h-3" /> Adicionar Campo
+                      </button>
+                    </div>
+
+                    {/* Inline custom field creator */}
+                    {showAddFieldForm && (
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl mb-4 space-y-3 shadow-inner">
+                        <div>
+                          <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                            Nome do Campo
+                          </label>
+                          <input
+                            type="text"
+                            value={newFieldName}
+                            onChange={(e) => setNewFieldName(e.target.value)}
+                            placeholder="Ex: Reserva Confirmada"
+                            className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white font-medium"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                            Tipo do Campo
+                          </label>
+                          <select
+                            value={newFieldType}
+                            onChange={(e) => setNewFieldType(e.target.value as any)}
+                            className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white font-medium text-slate-600"
+                          >
+                            <option value="text">Texto</option>
+                            <option value="number">Número</option>
+                            <option value="boolean">Sim/Não (Opção)</option>
+                          </select>
+                        </div>
+                        <div className="flex gap-2 justify-end pt-1">
+                          <button
+                            onClick={() => {
+                              setShowAddFieldForm(false);
+                              setNewFieldName("");
+                            }}
+                            className="px-2 py-1 text-[10px] text-slate-500 hover:bg-slate-100 rounded-md uppercase font-bold transition-all cursor-pointer"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            onClick={handleCreateCustomField}
+                            className="px-2.5 py-1 text-[10px] text-white bg-blue-600 hover:bg-blue-700 rounded-md uppercase font-bold transition-all cursor-pointer"
+                          >
+                            Criar Campo
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {customFieldDefs.length === 0 ? (
+                      <p className="text-xs text-slate-400 italic py-1">Nenhum campo customizado criado.</p>
+                    ) : (
+                      <div className="space-y-2.5">
+                        {customFieldDefs.map((def) => {
+                          const val = activeCustomValues[def.id];
+                          return (
+                            <div key={def.id} className="p-2.5 bg-slate-50 border border-slate-200/60 rounded-xl space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate max-w-[150px]" title={def.name}>
+                                  {def.name}
+                                </span>
+                                <span className="text-[8px] font-black text-slate-300 uppercase tracking-widest">
+                                  {def.type === "boolean" ? "Sim/Não" : def.type === "number" ? "Número" : "Texto"}
+                                </span>
+                              </div>
+
+                              {def.type === "boolean" ? (
+                                <label className="relative flex items-center gap-2 cursor-pointer py-0.5 select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!val}
+                                    onChange={(e) => handleUpdateCustomFieldValue(def.id, e.target.checked)}
+                                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                  />
+                                  <span className={`text-xs font-bold ${val ? "text-emerald-600" : "text-slate-500"}`}>
+                                    {val ? "Sim (Confirmado)" : "Não"}
+                                  </span>
+                                </label>
+                              ) : (
+                                <input
+                                  type={def.type === "number" ? "number" : "text"}
+                                  value={val === undefined || val === null ? "" : val}
+                                  onChange={(e) => handleUpdateCustomFieldValue(def.id, def.type === "number" ? parseFloat(e.target.value) || "" : e.target.value)}
+                                  className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white text-slate-700 font-medium"
+                                  placeholder={`Preencher ${def.name.toLowerCase()}`}
+                                />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+
+                  {/* GOOGLE SHEETS SYNC STATUS PANEL */}
+                  <section className="border-t border-slate-100 pt-5 mt-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <svg className="w-4 h-4 text-emerald-600 fill-current" viewBox="0 0 24 24">
+                        <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2M9.33 17H7.5v-1.67H9.33V17m0-3.33H7.5V12h1.33v1.67M12.67 17H11v-1.67h1.67V17m0-3.33H11V12h1.67v1.67M16 17h-1.67v-1.67H16V17m0-3.33h-1.67V12H16v1.67M17 9H7V7h10v2z"/>
+                      </svg>
+                      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                        Conexão com Planilha
+                      </h4>
+                    </div>
+
+                    {!gUser ? (
+                      <div className="p-4 bg-slate-50 border border-slate-200 border-dashed rounded-2xl text-center space-y-3">
+                        <p className="text-[11px] leading-relaxed text-slate-400 font-medium">
+                          Vincule sua conta Google com permissão para planilhar todos os atendimentos do CRM em tempo real.
+                        </p>
+                        <button
+                          onClick={handleGoogleLogin}
+                          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 cursor-pointer"
+                        >
+                          <svg className="w-4 h-4 fill-current shrink-0" viewBox="0 0 24 24">
+                            <path d="M12.24 10.285V14.4h6.887c-.648 2.41-2.519 4.114-5.136 4.114A5.73 5.73 0 0 1 8.24 12.8a5.73 5.73 0 0 1 5.751-5.714c2.519 0 4.114 1.48 4.114 1.48l2.91-2.91s-2.812-2.583-7.024-2.583c-6.19 0-11 4.81-11 11s4.81 11 11 11c6.19 0 10.514-4.21 10.514-10.514a9.9 9.9 0 0 0-.154-1.783z"/>
+                          </svg>
+                          Conectar Conta Google
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl text-xs space-y-2">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                            <span className="font-bold text-emerald-700 text-[11px]">Sincronização Ativa</span>
+                          </div>
+                          
+                          <div className="border-t border-slate-200 mt-20 mt-2 pt-2">
+                            <label className="block text-[8px] font-bold text-slate-400 uppercase tracking-widest mb-1">ID da Planilha (Clique para Abrir)</label>
+                            <div className="flex items-center gap-1.5">
+                              {isEditingSheetId ? (
+                                <>
+                                  <input
+                                    type="text"
+                                    value={spreadsheetId}
+                                    onChange={(e) => setSpreadsheetId(e.target.value)}
+                                    className="flex-1 px-2 py-1 text-[11px] border border-slate-200 rounded focus:outline-none bg-white font-mono"
+                                    placeholder="Spreadsheet ID"
+                                  />
+                                  <button
+                                    onClick={handleSaveSheetId}
+                                    className="px-2 py-1 bg-blue-600 text-white text-[10px] rounded font-bold hover:bg-blue-700 transition"
+                                  >
+                                    Salvar
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <a
+                                    href={`https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`}
+                                    target="_blank"
+                                    referrerPolicy="no-referrer"
+                                    className="font-mono text-[10px] text-blue-600 hover:underline truncate flex-1 leading-normal select-all font-bold"
+                                    title="Abrir planilha no Google Docs"
+                                  >
+                                    {spreadsheetId}
+                                  </a>
+                                  <button
+                                    onClick={() => setIsEditingSheetId(true)}
+                                    className="p-1 hover:bg-slate-200 rounded text-slate-400 hover:text-slate-600 transition"
+                                    title="Mudar ID da Planilha"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                          
+                          <div className="border-t border-slate-200 mt-2 pt-2 flex justify-between text-[10px]">
+                            <span className="text-slate-400">Google Link:</span>
+                            <span className="font-bold text-slate-600 truncate max-w-[130px]" title={gUser.email || ""}>
+                              {gUser.displayName || gUser.email}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <button
+                            onClick={handleSyncActiveConversation}
+                            className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[11px] font-bold transition-all shadow active:scale-95 cursor-pointer"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            Planilhar Atendimento
+                          </button>
+                          
+                          <button
+                            onClick={handleGoogleLogout}
+                            title="Desconectar Conta Google"
+                            className="p-2 bg-slate-50 hover:bg-red-50 hover:text-red-500 text-slate-400 rounded-xl border border-slate-200 transition-all cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        <button
+                          onClick={handleSyncAllConversations}
+                          disabled={isSyncingAll}
+                          className={`w-full py-2 px-3 rounded-xl text-[11px] font-bold transition-all border border-emerald-300 flex items-center justify-center gap-1.5 cursor-pointer ${
+                            isSyncingAll 
+                              ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed" 
+                              : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100/60 active:scale-95"
+                          }`}
+                        >
+                          <svg className={`w-3.5 h-3.5 shrink-0 ${isSyncingAll ? "animate-spin text-slate-400" : "text-emerald-600 fill-current"}`} viewBox="0 0 24 24">
+                            {isSyncingAll ? (
+                              <path d="M12 4V2C6.48 2 2 6.48 2 12h2c0-4.41 3.59-8 8-8zm0 16c4.41 0 8-3.59 8-8h2c0 5.52-4.48 10-10 10v-2z"/>
+                            ) : (
+                              <path d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2v9.67z"/>
+                            )}
+                          </svg>
+                          {isSyncingAll ? "Sincronizando lote..." : "Sincronizar Todas as Conversas"}
+                        </button>
+                      </div>
+                    )}
                   </section>
 
                   <section>
