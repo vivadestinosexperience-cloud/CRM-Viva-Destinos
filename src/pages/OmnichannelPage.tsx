@@ -130,6 +130,7 @@ export default function OmnichannelPage() {
     addInternalNote,
     updateInternalNote,
     deleteInternalNote,
+    fetchWhatsAppAccounts,
   } = useAppStore();
 
   const { conversationId } = useParams();
@@ -442,6 +443,43 @@ export default function OmnichannelPage() {
     }
     return Array.from(uniqueMap.values());
   }, [conversations, safeCustomers]);
+
+  // Align activeConversationId with the unique counterpart in safeConversations to prevent screen/selection jumps
+  useEffect(() => {
+    if (!activeConversationId || safeConversations.length === 0) return;
+    const directMatch = safeConversations.some(c => c.id === activeConversationId);
+    if (!directMatch) {
+      // Find the raw one
+      const rawFound = conversations.find(c => c && c.id === activeConversationId);
+      if (rawFound) {
+        let phone = rawFound.customer_phone_normalized || "";
+        if (!phone) {
+          const cust = rawFound.customer || safeCustomers.find((cust) => cust.id === rawFound.customer_id);
+          phone = cust?.phone_normalized || cust?.phone || "";
+        }
+        phone = String(phone).replace(/\D/g, "");
+        const normResult = normalizeBrazilPhone(phone);
+        const key = normResult.valid ? normResult.phone : phone;
+
+        if (key) {
+          const uniqueFound = safeConversations.find(c => {
+            let p = c.customer_phone_normalized || "";
+            if (!p) {
+              const cust = c.customer || safeCustomers.find((cust) => cust.id === c.customer_id);
+              p = cust?.phone_normalized || cust?.phone || "";
+            }
+            p = String(p).replace(/\D/g, "");
+            const nr = normalizeBrazilPhone(p);
+            const k = nr.valid ? nr.phone : p;
+            return k === key;
+          });
+          if (uniqueFound) {
+            setActiveConversationId(uniqueFound.id);
+          }
+        }
+      }
+    }
+  }, [activeConversationId, safeConversations, conversations, safeCustomers]);
 
   // Sync state if active conversation becomes ignored
   useEffect(() => {
@@ -820,6 +858,7 @@ export default function OmnichannelPage() {
   // Initial load
   useEffect(() => {
     loadConversations();
+    fetchWhatsAppAccounts();
   }, []);
 
   // Reload when team filter changes
@@ -898,6 +937,7 @@ export default function OmnichannelPage() {
 
   const latestLoadConversations = useRef(loadConversations);
   const latestLoadMessages = useRef(loadMessages);
+  const latestFetchWhatsAppAccounts = useRef(fetchWhatsAppAccounts);
 
   useEffect(() => {
     latestLoadConversations.current = loadConversations;
@@ -906,6 +946,10 @@ export default function OmnichannelPage() {
   useEffect(() => {
     latestLoadMessages.current = loadMessages;
   }, [loadMessages]);
+
+  useEffect(() => {
+    latestFetchWhatsAppAccounts.current = fetchWhatsAppAccounts;
+  }, [fetchWhatsAppAccounts]);
 
   // Real-time updates (SSE with active Auto-Reconnect + fast Polling fallback)
   useEffect(() => {
@@ -937,6 +981,7 @@ export default function OmnichannelPage() {
             data.event === "campaign.updated"
           ) {
             latestLoadConversations.current(true);
+            latestFetchWhatsAppAccounts.current();
             const activeId = activeConversationIdRef.current;
             if (activeId) {
               latestLoadMessages.current(activeId, true);
@@ -955,6 +1000,7 @@ export default function OmnichannelPage() {
         
         // Carrega as atualizações imediatamente para garantir sincronia caso algo tenha atualizado durante a queda
         latestLoadConversations.current(true);
+        latestFetchWhatsAppAccounts.current();
         const activeId = activeConversationIdRef.current;
         if (activeId) {
           latestLoadMessages.current(activeId, true);
@@ -972,6 +1018,7 @@ export default function OmnichannelPage() {
     // Polling rápido de 4s como fallback resiliente e em tempo real para múltiplos dispositivos
     const interval = setInterval(() => {
       latestLoadConversations.current(true);
+      latestFetchWhatsAppAccounts.current();
       const activeId = activeConversationIdRef.current;
       if (activeId) {
         latestLoadMessages.current(activeId, true);
@@ -1768,8 +1815,9 @@ export default function OmnichannelPage() {
 
       // Filter by Accounts
       if (selectedAccountIds.length > 0) {
+        const conversationAccountId = conversation.whatsapp_account_id || conversation.channelId || "";
         if (
-          !selectedAccountIds.includes(conversation.whatsapp_account_id || "")
+          !selectedAccountIds.includes(conversationAccountId)
         )
           return false;
       }
@@ -2726,6 +2774,34 @@ export default function OmnichannelPage() {
             >
               <Settings2 className="w-5 h-5 text-slate-500" />
             </button>
+          </div>
+
+          {/* Quick Channel Filters */}
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1.5 mb-2.5 border-b border-slate-50/60">
+            <button
+              onClick={() => setSelectedAccountIds([])}
+              className={`shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${selectedAccountIds.length === 0 ? "bg-slate-800 text-white shadow-md animate-fade-in" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
+            >
+              Todos os Canais
+            </button>
+            {safeAccounts.map((acc) => {
+              const isSelected = selectedAccountIds.includes(acc.id);
+              return (
+                <button
+                  key={acc.id}
+                  onClick={() => {
+                    if (isSelected) {
+                      setSelectedAccountIds(selectedAccountIds.filter((id) => id !== acc.id));
+                    } else {
+                      setSelectedAccountIds([...selectedAccountIds, acc.id]);
+                    }
+                  }}
+                  className={`shrink-0 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${isSelected ? "bg-emerald-600 text-white shadow-md animate-fade-in" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
+                >
+                  {acc.name}
+                </button>
+              );
+            })}
           </div>
 
           <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">

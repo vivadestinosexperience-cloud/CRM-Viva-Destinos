@@ -155,13 +155,16 @@ export const whatsappService = {
         id: c.id,
         name: c.name,
         type: 'WHATSAPP',
-        provider: 'ZAPI',
+        provider: c.type === 'whatsapp_meta' ? 'META_CLOUD' : 'ZAPI',
         phone_number: c.connected_phone || '',
         status: c.status || 'DISCONNECTED',
         instance_id: c.instance_id,
         instance_token: c.instance_token,
         client_token: c.client_token,
-        is_active: c.is_active
+        is_active: c.is_active,
+        meta_app_id: c.meta_app_id || '',
+        meta_app_secret: c.meta_app_secret || '',
+        meta_verify_token: c.meta_verify_token || ''
       } as WhatsAppAccount));
     } catch (err: any) {
       console.error("[whatsappService.list error, falling back to empty]", err);
@@ -174,11 +177,15 @@ export const whatsappService = {
         method: 'POST',
         body: JSON.stringify({
           name: account.name,
-          type: 'whatsapp_zapi',
+          type: account.provider === 'META_CLOUD' ? 'whatsapp_meta' : 'whatsapp_zapi',
           instance_id: account.instance_id || '',
           instance_token: account.instance_token || '',
           client_token: account.client_token || '',
-          is_active: account.is_active !== undefined ? account.is_active : true
+          connected_phone: account.phone_number || account.phone || '',
+          is_active: account.is_active !== undefined ? account.is_active : true,
+          meta_app_id: account.meta_app_id || '',
+          meta_app_secret: account.meta_app_secret || '',
+          meta_verify_token: account.meta_verify_token || ''
         })
       });
       const data = await safeReadJson(res);
@@ -189,13 +196,16 @@ export const whatsappService = {
         id: c.id,
         name: c.name,
         type: 'WHATSAPP',
-        provider: 'ZAPI',
+        provider: c.type === 'whatsapp_meta' ? 'META_CLOUD' : 'ZAPI',
         phone_number: c.connected_phone || '',
         status: (c.status || 'DISCONNECTED') as any,
         instance_id: c.instance_id,
         instance_token: c.instance_token,
         client_token: c.client_token,
-        is_active: c.is_active
+        is_active: c.is_active,
+        meta_app_id: c.meta_app_id || '',
+        meta_app_secret: c.meta_app_secret || '',
+        meta_verify_token: c.meta_verify_token || ''
       } as WhatsAppAccount;
     } catch (err: any) {
       console.error("[whatsappService.create error]", err);
@@ -208,12 +218,16 @@ export const whatsappService = {
         method: 'PATCH',
         body: JSON.stringify({
           name: updates.name,
+          type: updates.provider === 'META_CLOUD' ? 'whatsapp_meta' : 'whatsapp_zapi',
           instance_id: updates.instance_id,
           instance_token: updates.instance_token,
           client_token: updates.client_token,
           connected_phone: updates.phone_number || updates.phone,
           status: updates.status,
-          is_active: updates.is_active
+          is_active: updates.is_active,
+          meta_app_id: updates.meta_app_id || '',
+          meta_app_secret: updates.meta_app_secret || '',
+          meta_verify_token: updates.meta_verify_token || ''
         })
       });
       const data = await safeReadJson(res);
@@ -224,13 +238,16 @@ export const whatsappService = {
         id: c.id,
         name: c.name,
         type: 'WHATSAPP',
-        provider: 'ZAPI',
+        provider: c.type === 'whatsapp_meta' ? 'META_CLOUD' : 'ZAPI',
         phone_number: c.connected_phone || '',
         status: (c.status || 'DISCONNECTED') as any,
         instance_id: c.instance_id,
         instance_token: c.instance_token,
         client_token: c.client_token,
-        is_active: c.is_active
+        is_active: c.is_active,
+        meta_app_id: c.meta_app_id || '',
+        meta_app_secret: c.meta_app_secret || '',
+        meta_verify_token: c.meta_verify_token || ''
       } as WhatsAppAccount;
     } catch (err: any) {
       console.error("[whatsappService.update error]", err);

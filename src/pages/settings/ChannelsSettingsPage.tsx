@@ -103,7 +103,10 @@ export default function ChannelsSettingsPage() {
     responsibleId: '',
     instanceId: '',
     instanceToken: '',
-    clientToken: ''
+    clientToken: '',
+    metaAppId: '',
+    metaAppSecret: '',
+    metaVerifyToken: ''
   });
 
   const [isCheckingConfig, setIsCheckingConfig] = useState(false);
@@ -121,6 +124,15 @@ export default function ChannelsSettingsPage() {
   const [showDiagnosticModal, setShowDiagnosticModal] = useState(false);
   const [diagnosticData, setDiagnosticData] = useState<any | null>(null);
   const [isLoadingDiagnostic, setIsLoadingDiagnostic] = useState(false);
+  const [providerType, setProviderType] = useState<'ZAPI' | 'META_CLOUD'>('ZAPI');
+
+  // Meta connection states
+  const [metaTestStatus, setMetaTestStatus] = useState<'NOT_TESTED' | 'TESTING' | 'SUCCESS' | 'FAILED'>('NOT_TESTED');
+  const [isTestingMeta, setIsTestingMeta] = useState(false);
+  const [metaTestError, setMetaTestError] = useState<string | null>(null);
+  const [metaTestResults, setMetaTestResults] = useState<any | null>(null);
+  const [metaTestPhoneInput, setMetaTestPhoneInput] = useState<string>('');
+
 
   const fetchDiagnostic = async () => {
     setIsLoadingDiagnostic(true);
@@ -191,6 +203,11 @@ export default function ChannelsSettingsPage() {
     setShowZapiModal(false);
     setQrCodeData(null);
     setQrError(null);
+    setProviderType('ZAPI');
+    setMetaTestStatus('NOT_TESTED');
+    setMetaTestError(null);
+    setMetaTestResults(null);
+    setMetaTestPhoneInput('');
     if (qrIntervalRef.current) clearInterval(qrIntervalRef.current);
     if (statusIntervalRef.current) clearInterval(statusIntervalRef.current);
     setFormData({
@@ -200,8 +217,107 @@ export default function ChannelsSettingsPage() {
       responsibleId: '',
       instanceId: '',
       instanceToken: '',
-      clientToken: ''
+      clientToken: '',
+      metaAppId: '',
+      metaAppSecret: '',
+      metaVerifyToken: ''
     });
+  };
+
+  const handleTestMetaConnection = async (testPhoneNum?: string) => {
+    if (!formData.instanceId.trim() || !formData.instanceToken.trim() || !formData.clientToken.trim()) {
+      toast.error("Phone Number ID, Token de Acesso e WABA ID são obrigatórios para os testes.");
+      return;
+    }
+
+    setMetaTestStatus('TESTING');
+    setIsTestingMeta(true);
+    setMetaTestError(null);
+    setMetaTestResults(null);
+
+    try {
+      const response = await authorizedFetch("/api/meta/whatsapp/test-connection", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          instanceId: formData.instanceId.trim(),
+          instanceToken: formData.instanceToken.trim(),
+          clientToken: formData.clientToken.trim(),
+          appId: formData.metaAppId.trim(),
+          appSecret: formData.metaAppSecret.trim(),
+          verifyToken: formData.metaVerifyToken.trim() || "viva_meta_verify_token_2026",
+          testPhone: testPhoneNum || ""
+        })
+      });
+
+      const resData = await safeReadJson(response);
+
+      if (!response.ok) {
+        setMetaTestStatus('FAILED');
+        setMetaTestError(resData.error || "A validação falhou por um motivo desconhecido.");
+        setMetaTestResults(resData.testResults || null);
+        toast.error("Falha nos testes de conexão da Meta.");
+        setIsTestingMeta(false);
+        return;
+      }
+
+      setMetaTestStatus('SUCCESS');
+      setMetaTestResults(resData);
+      toast.success("Todos os testes obrigatórios de conexão passaram!");
+      
+      if (!formData.phone && resData.display_phone_number) {
+        setFormData(prev => ({ ...prev, phone: resData.display_phone_number }));
+      }
+    } catch (err: any) {
+      setMetaTestStatus('FAILED');
+      setMetaTestError(err.message || "Erro de rede ou de sistema durante a validação.");
+      toast.error("Erro inesperado ao testar conexão.");
+    } finally {
+      setIsTestingMeta(false);
+    }
+  };
+
+  const handleSaveMetaChannel = async () => {
+    if (!formData.name.trim()) {
+      toast.error("Por favor, preencha o Nome do Canal.");
+      return;
+    }
+    if (!formData.instanceId.trim() || !formData.instanceToken.trim()) {
+      toast.error("Phone Number ID e Token de Acesso são obrigatórios.");
+      return;
+    }
+    if (metaTestStatus !== 'SUCCESS') {
+      toast.error("Não é possível ativar a integração enquanto os testes mínimos obrigatórios não passarem. Clique em 'Testar Conexão Meta WhatsApp' primeiro!");
+      return;
+    }
+
+    if (!formData.metaAppId.trim() || !formData.metaAppSecret.trim()) {
+      toast.warning("Validação avançada do token e assinatura do webhook exigem App ID e App Secret.", { duration: 6000 });
+    }
+
+    await safeAction(async () => {
+      await addWhatsAppAccount({
+        id: "",
+        name: formData.name,
+        type: 'WHATSAPP',
+        provider: 'META_CLOUD',
+        phone_number: formData.phone || '',
+        status: 'CONNECTED',
+        instance_id: formData.instanceId,
+        instance_token: formData.instanceToken,
+        client_token: formData.clientToken,
+        is_active: true,
+        team_id: formData.teamId || undefined,
+        responsible_user_id: formData.responsibleId || undefined,
+        meta_app_id: formData.metaAppId,
+        meta_app_secret: formData.metaAppSecret,
+        meta_verify_token: formData.metaVerifyToken
+      });
+      toast.success("Canal Meta Oficial adicionado com sucesso!");
+      resetModal();
+    }, { label: "Erro ao adicionar canal Meta" });
   };
 
   async function handleCheckConfig() {
@@ -1019,241 +1135,635 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
               <div className="p-8 border-b border-slate-100 flex items-center justify-between shrink-0">
                 <div>
                    <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Adicionar Canal</h3>
-                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">WhatsApp via Z-API</p>
+                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Selecione o provedor de WhatsApp</p>
                 </div>
                 <button onClick={resetModal} className="p-2 hover:bg-red-50 text-slate-300 hover:text-red-500 rounded-xl transition-colors">
                   <X className="w-6 h-6" />
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-8 space-y-8 text-center">
-                 {qrError && (
-                   <div className="p-6 bg-red-50 border border-red-100 rounded-3xl flex flex-col gap-4 text-left">
-                     <div className="flex items-start gap-4">
-                       <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-                       <div className="space-y-1">
-                         <p className="text-xs font-black text-red-600 uppercase tracking-tight">Erro na Configuração</p>
-                         <p className="text-[10px] text-red-500 font-medium whitespace-pre-wrap">
-                           {qrError}
-                         </p>
-                       </div>
-                     </div>
+              <div className="flex-1 overflow-y-auto p-8 space-y-6 text-center">
+                {/* Horizontal tabs to switch provider */}
+                <div className="flex bg-slate-100 p-1.5 rounded-2xl max-w-md mx-auto mb-4">
+                  <button
+                    type="button"
+                    onClick={() => setProviderType('ZAPI')}
+                    className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-xl transition-all ${
+                      providerType === 'ZAPI'
+                        ? 'bg-white text-slate-800 shadow-md'
+                        : 'text-slate-400 hover:text-slate-600'
+                    }`}
+                  >
+                    WhatsApp Web (Z-API)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setProviderType('META_CLOUD')}
+                    className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-xl transition-all ${
+                      providerType === 'META_CLOUD'
+                        ? 'bg-white text-slate-800 shadow-md'
+                        : 'text-slate-400 hover:text-slate-600'
+                    }`}
+                  >
+                    Oficial Meta Cloud API
+                  </button>
+                </div>
 
-                     {isMissingClientToken && (
-                        <div className="pt-4 border-t border-red-100 flex flex-col gap-3">
-                           <p className="text-[10px] text-red-600 font-bold leading-relaxed">
-                             Acesse o painel da Z-API &gt; Segurança &gt; Client Token. Se a opção não aparecer, solicite ao suporte da Z-API a liberação do Token de Segurança da conta.
-                           </p>
-                           <button 
-                             onClick={handleCopySupportMessage}
-                             className="w-full py-2.5 bg-red-600 text-white rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-red-700 transition-all shadow-md shadow-red-100 flex items-center justify-center gap-2"
-                           >
-                             Copiar mensagem para suporte
-                           </button>
-                        </div>
-                     )}
-                   </div>
-                 )}
-
-                 <div className="flex flex-col items-center justify-center py-4 space-y-4">
-                    {/* Connection status display */}
-                    {connectionStatus && (
-                      <div className={`w-full max-w-md p-4 rounded-2xl text-left border ${
-                        connectionStatus.connected 
-                          ? "bg-emerald-50 border-emerald-100 text-emerald-800" 
-                          : "bg-amber-50 border-amber-100 text-amber-800"
-                       }`}>
-                        <p className="text-[10px] font-black uppercase tracking-wider mb-1">Status da Instância Z-API</p>
-                        <div className="flex items-center justify-between text-xs font-bold">
-                          <span className="flex items-center gap-1.5">
-                            <div className={`w-2.5 h-2.5 rounded-full ${connectionStatus.connected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
-                            {connectionStatus.connected ? "Conectado" : "Desconectado"}
-                          </span>
-                          {connectionStatus.phone && (
-                            <span className="font-mono text-slate-600 bg-white/60 px-2 py-0.5 rounded">
-                              {connectionStatus.phone}
-                            </span>
-                          )}
+                {providerType === 'ZAPI' ? (
+                  <>
+                    {qrError && (
+                      <div className="p-6 bg-red-50 border border-red-100 rounded-3xl flex flex-col gap-4 text-left">
+                        <div className="flex items-start gap-4">
+                          <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                          <div className="space-y-1">
+                            <p className="text-xs font-black text-red-600 uppercase tracking-tight">Erro na Configuração</p>
+                            <p className="text-[10px] text-red-500 font-medium whitespace-pre-wrap">
+                              {qrError}
+                            </p>
+                          </div>
                         </div>
 
-                        {connectionStatus.error && (
-                          <p className="text-[10px] text-red-500 mt-2 font-black leading-relaxed">
-                            ⚠️ Z-API reportou: {String(connectionStatus.error)}
-                          </p>
-                        )}
-
-                        {/* Diagnostics based on errors */}
-                        {connectionStatus.error === "You need to restore the session" && (
-                          <div className="mt-2.5 p-2 bg-red-100/40 rounded-xl text-[10px] text-red-700 font-semibold leading-relaxed border border-red-200/20">
-                            <strong>Diagnóstico:</strong> A sessão precisa ser restaurada. Tente usar o botão abaixo <strong>Reiniciar Instância</strong> ou <strong>Desconectar Sessão</strong> antes de gerar um novo QR Code.
-                          </div>
-                        )}
-
-                        {connectionStatus.error === "You are not connected" && qrAttempts > 0 && !qrPollingActive && (
-                          <div className="mt-2.5 p-2 bg-amber-100/40 rounded-xl text-[10px] text-amber-700 font-semibold leading-relaxed border border-amber-200/40">
-                            <strong>Diagnóstico:</strong> O QR foi lido, mas a instância ainda não conectou completamente. Por favor, clique em gerar um novo QR Code e tente novamente.
-                          </div>
+                        {isMissingClientToken && (
+                           <div className="pt-4 border-t border-red-100 flex flex-col gap-3">
+                              <p className="text-[10px] text-red-600 font-bold leading-relaxed">
+                                Acesse o painel da Z-API &gt; Segurança &gt; Client Token. Se a opção não aparecer, solicite ao suporte da Z-API a liberação do Token de Segurança da conta.
+                              </p>
+                              <button 
+                                onClick={handleCopySupportMessage}
+                                className="w-full py-2.5 bg-red-600 text-white rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-red-700 transition-all shadow-md shadow-red-100 flex items-center justify-center gap-2"
+                              >
+                                Copiar mensagem para suporte
+                              </button>
+                           </div>
                         )}
                       </div>
                     )}
 
-                    {isLoadingQr ? (
-                      <div className="flex flex-col items-center gap-4 py-8">
-                        <RefreshCw className="w-12 h-12 text-blue-500 animate-spin" />
-                        <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Iniciando conexão e obtendo QR Code...</p>
+                    <div className="flex flex-col items-center justify-center py-4 space-y-4">
+                       {/* Connection status display */}
+                       {connectionStatus && (
+                         <div className={`w-full max-w-md p-4 rounded-2xl text-left border ${
+                           connectionStatus.connected 
+                             ? "bg-emerald-50 border-emerald-100 text-emerald-800" 
+                             : "bg-amber-50 border-amber-100 text-amber-800"
+                          }`}>
+                           <p className="text-[10px] font-black uppercase tracking-wider mb-1">Status da Instância Z-API</p>
+                           <div className="flex items-center justify-between text-xs font-bold">
+                             <span className="flex items-center gap-1.5">
+                               <div className={`w-2.5 h-2.5 rounded-full ${connectionStatus.connected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
+                               {connectionStatus.connected ? "Conectado" : "Desconectado"}
+                             </span>
+                             {connectionStatus.phone && (
+                               <span className="font-mono text-slate-600 bg-white/60 px-2 py-0.5 rounded">
+                                 {connectionStatus.phone}
+                               </span>
+                             )}
+                           </div>
+
+                           {connectionStatus.error && (
+                             <p className="text-[10px] text-red-500 mt-2 font-black leading-relaxed">
+                               ⚠️ Z-API reportou: {String(connectionStatus.error)}
+                             </p>
+                           )}
+
+                           {/* Diagnostics based on errors */}
+                           {connectionStatus.error === "You need to restore the session" && (
+                             <div className="mt-2.5 p-2 bg-red-100/40 rounded-xl text-[10px] text-red-700 font-semibold leading-relaxed border border-red-200/20">
+                               <strong>Diagnóstico:</strong> A sessão precisa ser restaurada. Tente usar o botão abaixo <strong>Reiniciar Instância</strong> ou <strong>Desconectar Sessão</strong> antes de gerar um novo QR Code.
+                             </div>
+                           )}
+
+                           {connectionStatus.error === "You are not connected" && qrAttempts > 0 && !qrPollingActive && (
+                             <div className="mt-2.5 p-2 bg-amber-100/40 rounded-xl text-[10px] text-amber-700 font-semibold leading-relaxed border border-amber-200/40">
+                               <strong>Diagnóstico:</strong> O QR foi lido, mas a instância ainda não conectou completamente. Por favor, clique em gerar um novo QR Code e tente novamente.
+                             </div>
+                           )}
+                         </div>
+                       )}
+
+                       {isLoadingQr ? (
+                         <div className="flex flex-col items-center gap-4 py-8">
+                           <RefreshCw className="w-12 h-12 text-blue-500 animate-spin" />
+                           <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Iniciando conexão e obtendo QR Code...</p>
+                         </div>
+                       ) : qrCodeData ? (
+                         <div className="space-y-4 flex flex-col items-center">
+                           <div className="w-[220px] h-[220px] bg-white p-4 rounded-[2rem] border-4 border-emerald-100 shadow-2xl flex items-center justify-center relative">
+                             {qrCodeData.type === 'IMAGE' ? (
+                               <img 
+                                 src={qrCodeData.value} 
+                                 alt="QR Code Z-API" 
+                                 className="w-full h-full object-contain"
+                                 onError={() => setQrError("A imagem do QR Code não pôde ser carregada.")}
+                               />
+                             ) : (
+                               <QRCodeSVG 
+                                 value={qrCodeData.value}
+                                 size={180}
+                                 level="H"
+                                 includeMargin={false}
+                               />
+                             )}
+                           </div>
+
+                           {/* Active Polling details */}
+                           <div className="text-center space-y-1">
+                             <p className="text-xs text-slate-800 font-black">
+                               Abra o WhatsApp no celular &gt; Aparelhos conectados &gt; Conectar aparelho &gt; escaneie o QR Code.
+                             </p>
+                             <p className="text-[9px] font-medium text-slate-500 max-w-sm mx-auto">
+                               Este QR Code expira em aproximadamente 20 segundos. Se não for escaneado, um novo QR será gerado automaticamente.
+                             </p>
+                             
+                             {qrPollingActive && (
+                               <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 border border-blue-100 rounded-full text-[10px] font-black text-blue-600 uppercase tracking-wider mt-2">
+                                 <RefreshCw className="w-3 h-3 animate-spin text-blue-500" />
+                                 Atualizando QR Code (Tentativa {qrAttempts} de 3)
+                               </div>
+                             )}
+                           </div>
+                         </div>
+                       ) : (
+                         <div className="text-center py-8 space-y-3 opacity-60">
+                            <MobileIcon className="w-12 h-12 mx-auto text-slate-300" />
+                            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Aguardando geração do QR Code para conexão</p>
+                            <p className="text-xs text-slate-500 max-w-xs mx-auto">Preencha o nome do canal e clique no botão azul abaixo para iniciar o processo.</p>
+                         </div>
+                       )}
+
+                       {/* Action Buttons for diagnostic or session controls */}
+                       <div className="w-full max-w-md pt-2 border-t border-slate-100 flex flex-col gap-2 text-left">
+                         <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Ações Administrativas / Diagnóstico</p>
+                         <div className="grid grid-cols-2 gap-2">
+                           <button
+                             type="button"
+                             disabled={isRestarting}
+                             onClick={handleRestartZapi}
+                             className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-50 rounded-xl font-bold text-[9px] uppercase tracking-wider transition-all"
+                           >
+                             {isRestarting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3 text-amber-500" />}
+                             Reiniciar Instância
+                           </button>
+                           <button
+                             type="button"
+                             disabled={isDisconnecting}
+                             onClick={handleDisconnectZapi}
+                             className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 disabled:opacity-50 rounded-xl font-bold text-[9px] uppercase tracking-wider transition-all"
+                           >
+                             {isDisconnecting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+                             Desconectar Sessão
+                           </button>
+                         </div>
+                       </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 mx-4 text-left">
+                      <div className="space-y-2">
+                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Nome do Canal</label>
+                        <input 
+                         type="text" 
+                         className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-sm"
+                         placeholder="Ex: Comercial Principal"
+                         value={formData.name}
+                         onChange={(e) => setFormData({...formData, name: e.target.value})}
+                       />
                       </div>
-                    ) : qrCodeData ? (
-                      <div className="space-y-4 flex flex-col items-center">
-                        <div className="w-[220px] h-[220px] bg-white p-4 rounded-[2rem] border-4 border-emerald-100 shadow-2xl flex items-center justify-center relative">
-                          {qrCodeData.type === 'IMAGE' ? (
-                            <img 
-                              src={qrCodeData.value} 
-                              alt="QR Code Z-API" 
-                              className="w-full h-full object-contain"
-                              onError={() => setQrError("A imagem do QR Code não pôde ser carregada.")}
+                      <div className="space-y-2">
+                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Equipe</label>
+                        <select 
+                         className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-sm"
+                         value={formData.teamId}
+                         onChange={(e) => setFormData({...formData, teamId: e.target.value})}
+                       >
+                         <option value="">Selecione...</option>
+                         {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                       </select>
+                      </div>
+
+                      <div className="col-span-2 border-t border-slate-100 pt-4 mt-2 space-y-4">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Configuração Personalizada da Z-API (Opcional)</p>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">ID da Instância (Opcional)</label>
+                            <input 
+                              type="text" 
+                              className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs"
+                              placeholder="Deixe em branco para usar o padrão"
+                              value={formData.instanceId}
+                              onChange={(e) => setFormData({...formData, instanceId: e.target.value})}
                             />
-                          ) : (
-                            <QRCodeSVG 
-                              value={qrCodeData.value}
-                              size={180}
-                              level="H"
-                              includeMargin={false}
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Token da Instância (Opcional)</label>
+                            <input 
+                              type="text" 
+                              className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs"
+                              placeholder="Deixe em branco para usar o padrão"
+                              value={formData.instanceToken}
+                              onChange={(e) => setFormData({...formData, instanceToken: e.target.value})}
                             />
-                          )}
+                          </div>
+                          <div className="col-span-2 space-y-2">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Client Token (Opcional)</label>
+                            <input 
+                              type="text" 
+                              className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs"
+                              placeholder="Deixe em branco para usar o padrão"
+                              value={formData.clientToken}
+                              onChange={(e) => setFormData({...formData, clientToken: e.target.value})}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="p-6 bg-slate-50 border border-slate-100 rounded-3xl text-left space-y-4">
+                      <div>
+                        <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight flex items-center gap-1.5">
+                          <Globe className="w-4 h-4 text-blue-500" />
+                          Instruções para Credenciamento Meta
+                        </h4>
+                        <p className="text-[10px] text-slate-400 leading-relaxed mt-1">
+                          Acesse o painel do Facebook Business Developer e insira os dados gerados abaixo para poder integrar o número oficial. O webhook do Facebook deve apontar para:
+                        </p>
+                        <div className="mt-2.5 p-3 bg-slate-150 rounded-xl font-mono text-[9px] text-slate-600 break-all select-all flex items-center justify-between">
+                          <span>{window.location.origin}/api/webhooks/meta</span>
+                        </div>
+                        <p className="text-[10px] text-amber-600 font-bold mt-2">
+                          Verify Token a ser configurado no Facebook developers: <span className="font-mono bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded">viva_meta_verify_token_2026</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 text-left">
+                      <div className="space-y-2">
+                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Nome do Canal (Meta Oficial)</label>
+                        <input 
+                         type="text" 
+                         className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-sm"
+                         placeholder="Ex: WhatsApp Meta Oficial"
+                         value={formData.name}
+                         onChange={(e) => setFormData({...formData, name: e.target.value})}
+                       />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Equipe de Atendimento</label>
+                        <select 
+                         className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-sm"
+                         value={formData.teamId}
+                         onChange={(e) => setFormData({...formData, teamId: e.target.value})}
+                       >
+                         <option value="">Selecione...</option>
+                         {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                       </select>
+                      </div>
+
+                      <div className="col-span-2 space-y-2">
+                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Número de Telefone Associado (Com DDI)</label>
+                        <input 
+                         type="text" 
+                         className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs"
+                         placeholder="Ex: 5511999999999"
+                         value={formData.phone}
+                         onChange={(e) => setFormData({...formData, phone: e.target.value})}
+                       />
+                      </div>
+
+                      <div className="col-span-2 border-t border-slate-100 pt-4 mt-2 space-y-4">
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="text-[10px] font-black text-slate-450 uppercase tracking-widest leading-none">Credenciais Meta Developer</p>
+                          <span className="bg-amber-100 text-amber-800 text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full">Evite Erros Práticos</span>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2 col-span-1 text-left">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2 block text-left">
+                              Phone Number ID (ID do Telefone) <span className="text-red-500">*</span>
+                            </label>
+                            <input 
+                              type="text" 
+                              className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all text-left"
+                              placeholder="Ex: 559123456789123 (15-16 dígitos)"
+                              value={formData.instanceId}
+                              onChange={(e) => setFormData({...formData, instanceId: e.target.value})}
+                            />
+                            <div className="px-2 space-y-1 block text-left">
+                              <span className="inline-block bg-blue-50 text-blue-700 text-[8px] font-extrabold uppercase px-1.5 py-0.5 rounded leading-none">
+                                Usado para enviar mensagens
+                              </span>
+                              <p className="text-[9px] text-amber-600 font-semibold leading-tight mt-1">
+                                ⚠️ ATENÇÃO: Use o <b>ID do Telefone</b>. Não coloque o ID do App ou ID da conta empresarial (WABA) aqui. Caso contrário, ocorrerá o erro de objeto inexistente ("Object with ID does not exist").
+                              </p>
+                            </div>
+                          </div>
+                          
+                          <div className="space-y-2 col-span-1 text-left">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2 block text-left">
+                              WhatsApp Business Account ID <span className="text-slate-400 font-medium">(Opcional)</span>
+                            </label>
+                            <input 
+                              type="text" 
+                              className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all text-left"
+                              placeholder="Ex: 1690946888711832"
+                              value={formData.clientToken}
+                              onChange={(e) => setFormData({...formData, clientToken: e.target.value})}
+                            />
+                            <div className="px-2 space-y-1 block text-left">
+                              <span className="inline-block bg-emerald-50 text-emerald-700 text-[8px] font-extrabold uppercase px-1.5 py-0.5 rounded leading-none">
+                                Usado para criar e gerenciar modelos de mensagem
+                              </span>
+                              <p className="text-[9px] text-slate-400 leading-tight mt-1">
+                                ID da Conta Comercial do WhatsApp (WABA) encontrado no painel do Facebook Developer.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="col-span-2 space-y-2 text-left">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2 block text-left">
+                              Token de Acesso Permanente (Permanent Token / EAAB...) <span className="text-red-500">*</span>
+                            </label>
+                            <textarea 
+                              rows={3}
+                              className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-semibold text-xs font-mono focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all text-left"
+                              placeholder="EAAB... (Inicie com EAAB)"
+                              value={formData.instanceToken}
+                              onChange={(e) => setFormData({...formData, instanceToken: e.target.value})}
+                            />
+                            <div className="p-3 bg-blue-50/50 border border-blue-100/30 rounded-xl space-y-1 block text-left">
+                              <p className="text-[9px] text-blue-700 font-bold leading-relaxed">
+                                💡 Checklist de Permissões da Meta para seu Token de Acesso:
+                              </p>
+                              <ul className="list-disc pl-4 text-[9px] text-slate-500 font-medium space-y-0.5">
+                                <li>O Token deve ser gerado por um <b>Usuário do Sistema Admin</b> no painel de Configurações do Negócio.</li>
+                                <li>Selecione as permissões <b>whatsapp_business_messaging</b> e <b>whatsapp_business_management</b>.</li>
+                                <li><b>IMPORTANTÍSSIMO:</b> Após gerar o token, clique em "Atribuir Ativos" (Assign Assets) no Usuário do Sistema, selecione "Contas do WhatsApp", marque sua conta correspondente e dê a permissão de "Controle Total / Gerenciar". Sem essa associação de ativo, o Facebook retornará erro de objeto inexistente ("Object with ID does not exist").</li>
+                              </ul>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Configurações Avançadas da Meta (Opcionais) */}
+                      <div className="col-span-2 border-t border-slate-100 pt-4 mt-2 space-y-4 text-left">
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="text-[10px] font-black text-slate-450 uppercase tracking-widest leading-none">Configurações Avançadas (Opcional)</p>
+                          <span className="bg-slate-100 text-slate-500 text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full">Webhook & Debug Avançado</span>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2 col-span-1 text-left">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2 block text-left">
+                              Meta App ID (ID do Aplicativo)
+                            </label>
+                            <input 
+                              type="text" 
+                              className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all text-left"
+                              placeholder="Ex: 2220391788200892"
+                              value={formData.metaAppId}
+                              onChange={(e) => setFormData({...formData, metaAppId: e.target.value})}
+                            />
+                            <p className="text-[9px] text-slate-400 px-2 leading-tight">
+                              Necessário para validação avançada do token (debug_token).
+                            </p>
+                          </div>
+                          
+                          <div className="space-y-2 col-span-1 text-left">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2 block text-left">
+                              Meta App Secret (Chave Secreta do App)
+                            </label>
+                            <input 
+                              type="password" 
+                              className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all text-left"
+                              placeholder="••••••••••••••••"
+                              value={formData.metaAppSecret}
+                              onChange={(e) => setFormData({...formData, metaAppSecret: e.target.value})}
+                            />
+                            <p className="text-[9px] text-slate-400 px-2 leading-tight">
+                              Chave Secreta usada para validar a integridade da assinatura do webhook.
+                            </p>
+                          </div>
+
+                          <div className="col-span-2 space-y-2 text-left">
+                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2 block text-left">
+                              Token de Verificação do Webhook (Verify Token)
+                            </label>
+                            <input 
+                              type="text" 
+                              className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all text-left"
+                              placeholder="Ex: meu_token_de_verificacao_secreto"
+                              value={formData.metaVerifyToken}
+                              onChange={(e) => setFormData({...formData, metaVerifyToken: e.target.value})}
+                            />
+                            <p className="text-[9px] text-slate-400 px-2 leading-tight">
+                              O <b>Verify Token</b> é um texto criado por você. Deve ser idêntico no painel da Meta Developers para comprovar a segurança na ativação dos recebimentos em tempo real.
+                            </p>
+                          </div>
                         </div>
 
-                        {/* Active Polling details */}
-                        <div className="text-center space-y-1">
-                          <p className="text-xs text-slate-800 font-black">
-                            Abra o WhatsApp no celular &gt; Aparelhos conectados &gt; Conectar aparelho &gt; escaneie o QR Code.
-                          </p>
-                          <p className="text-[9px] font-medium text-slate-500 max-w-sm mx-auto">
-                            Este QR Code expira em aproximadamente 20 segundos. Se não for escaneado, um novo QR será gerado automaticamente.
-                          </p>
-                          
-                          {qrPollingActive && (
-                            <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 border border-blue-100 rounded-full text-[10px] font-black text-blue-600 uppercase tracking-wider mt-2">
-                              <RefreshCw className="w-3 h-3 animate-spin text-blue-500" />
-                              Atualizando QR Code (Tentativa {qrAttempts} de 3)
+                        {/* Meta WhatsApp Connection Tests and Validation Panel */}
+                        <div className="col-span-2 border-t border-slate-100 pt-6 mt-4 space-y-4">
+                          <div className="flex items-center justify-between">
+                            <div className="space-y-0.5">
+                              <h4 className="text-xs font-bold text-slate-800">Validação e Testes de Conexão</h4>
+                              <p className="text-[10px] text-slate-400">Verifique a integridade das credenciais antes de ativar o canal.</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleTestMetaConnection()}
+                              disabled={isTestingMeta}
+                              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider transition-all shadow-sm ${
+                                isTestingMeta 
+                                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                  : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200'
+                              }`}
+                            >
+                              <Activity className={`w-3.5 h-3.5 ${isTestingMeta ? 'animate-pulse' : ''}`} />
+                              {isTestingMeta ? 'Testando...' : 'Testar Conexão Meta WhatsApp'}
+                            </button>
+                          </div>
+
+                          {metaTestStatus !== 'NOT_TESTED' && (
+                            <div className="p-4 bg-slate-50 border border-slate-100 rounded-2xl space-y-3">
+                              {/* Step checks checklist list */}
+                              <div className="grid grid-cols-3 gap-3">
+                                <div className="p-3 bg-white border border-slate-100 rounded-xl space-y-1 shadow-sm">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[8px] font-black tracking-widest text-slate-400 uppercase">Passo 1: Phone ID</span>
+                                    {isTestingMeta ? (
+                                      <RefreshCw className="w-3.5 h-3.5 text-slate-400 animate-spin" />
+                                    ) : metaTestResults?.testResults?.step1 === 'passed' ? (
+                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                                    ) : (
+                                      <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
+                                    )}
+                                  </div>
+                                  <p className="text-[9px] font-bold text-slate-600">ID do Telefone Existe</p>
+                                </div>
+
+                                <div className="p-3 bg-white border border-slate-100 rounded-xl space-y-1 shadow-sm">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[8px] font-black tracking-widest text-slate-400 uppercase">Passo 2: WABA Link</span>
+                                    {isTestingMeta ? (
+                                      <RefreshCw className="w-3.5 h-3.5 text-slate-400 animate-spin" />
+                                    ) : metaTestResults?.testResults?.step2 === 'passed' ? (
+                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                                    ) : (
+                                      <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
+                                    )}
+                                  </div>
+                                  <p className="text-[9px] font-bold text-slate-600">Pertence à WABA</p>
+                                </div>
+
+                                <div className="p-3 bg-white border border-slate-100 rounded-xl space-y-1 shadow-sm">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[8px] font-black tracking-widest text-slate-400 uppercase">Passo 3: Token Roles</span>
+                                    {isTestingMeta ? (
+                                      <RefreshCw className="w-3.5 h-3.5 text-slate-400 animate-spin" />
+                                    ) : metaTestResults?.testResults?.step3 === 'passed' ? (
+                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                                    ) : metaTestResults?.testResults?.step3 === 'skipped' ? (
+                                      <span className="text-[8px] font-bold text-slate-400 italic">Pular app-id</span>
+                                    ) : (
+                                      <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
+                                    )}
+                                  </div>
+                                  <p className="text-[9px] font-bold text-slate-600">Token Permissões</p>
+                                </div>
+                              </div>
+
+                              {/* Error Panel if failed */}
+                              {metaTestStatus === 'FAILED' && metaTestError && (
+                                <div className="p-3.5 bg-rose-50 border border-rose-100 rounded-xl space-y-1">
+                                  <div className="flex items-center gap-2 text-rose-800">
+                                    <AlertCircle className="w-4 h-4 shrink-0" />
+                                    <span className="text-[10px] font-black uppercase tracking-wider">Falha de Validação Meta Cloud</span>
+                                  </div>
+                                  <p className="text-[10px] font-semibold text-rose-700 leading-relaxed pl-6">
+                                    {metaTestError}
+                                  </p>
+                                </div>
+                              )}
+
+                              {/* Details dashboard if successful */}
+                              {metaTestStatus === 'SUCCESS' && metaTestResults && (
+                                <div className="space-y-3">
+                                  <div className="p-3.5 bg-emerald-50 border border-emerald-100 rounded-xl space-y-2">
+                                    <div className="flex items-center gap-1.5 text-emerald-800">
+                                      <CheckCircle2 className="w-4 h-4" />
+                                      <span className="text-[10px] font-black uppercase tracking-wider">Meta WhatsApp Conectado</span>
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[10px] text-slate-600 font-medium pl-5">
+                                      <div><b>Nome Verificado:</b> {metaTestResults.verified_name}</div>
+                                      <div><b>Número do Telefone:</b> {metaTestResults.display_phone_number}</div>
+                                      <div>
+                                        <b>Qualidade do Canal:</b>{' '}
+                                        <span className={`px-2 py-0.5 rounded-full font-bold text-[8px] uppercase tracking-wider ${
+                                          metaTestResults.quality_rating === 'GREEN' 
+                                            ? 'bg-emerald-100 text-emerald-800' 
+                                            : 'bg-amber-100 text-amber-800'
+                                        }`}>
+                                          {metaTestResults.quality_rating}
+                                        </span>
+                                      </div>
+                                      <div><b>WABA ID:</b> {metaTestResults.waba_id}</div>
+                                      <div><b>Phone Number ID:</b> {metaTestResults.phone_number_id}</div>
+                                      <div className="col-span-2 text-[9px] text-slate-400 mt-1 italic">
+                                        Testado em: {new Date(metaTestResults.last_test_at).toLocaleString()}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Test Message Sending (hello_world template format) */}
+                                  <div className="p-3.5 bg-blue-50/40 border border-blue-100/30 rounded-xl space-y-2">
+                                    <div className="space-y-0.5">
+                                      <h5 className="text-[9px] font-black tracking-widest text-slate-500 uppercase">Enviar Mensagem de Teste (hello_world Template)</h5>
+                                      <p className="text-[9px] text-slate-400">Insira um número válido com DDI (ex: 5511999999999) para receber o template do Facebook.</p>
+                                    </div>
+                                    <div className="flex gap-2">
+                                      <input
+                                        type="text"
+                                        className="flex-1 px-3 py-1.5 bg-white border border-slate-200 rounded-lg outline-none font-bold text-xs"
+                                        placeholder="Ex: 5511999999999"
+                                        value={metaTestPhoneInput}
+                                        onChange={(e) => setMetaTestPhoneInput(e.target.value)}
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (!metaTestPhoneInput.trim()) {
+                                            toast.error("Insira o número de destino para o teste.");
+                                            return;
+                                          }
+                                          handleTestMetaConnection(metaTestPhoneInput.trim());
+                                        }}
+                                        disabled={isTestingMeta}
+                                        className="px-3.5 py-1.5 bg-blue-600 text-white font-bold text-[9px] uppercase tracking-wider rounded-lg hover:bg-blue-700 transition"
+                                      >
+                                        Enviar
+                                      </button>
+                                    </div>
+
+                                    {metaTestResults.template_send_result && (
+                                      <div className={`p-2.5 rounded-lg border text-[9px] font-semibold leading-relaxed ${
+                                        metaTestResults.template_send_result.success
+                                          ? 'bg-emerald-50 border-emerald-100 text-emerald-700'
+                                          : 'bg-rose-50 border-rose-100 text-rose-700'
+                                      }`}>
+                                        {metaTestResults.template_send_result.success 
+                                          ? '✅ Mensagem hello_world enviada com sucesso! Verifique o aparelho do destinatário.'
+                                          : `❌ Falha ao enviar mensagem de teste: ${metaTestResults.template_send_result.error}`
+                                        }
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
                       </div>
-                    ) : (
-                      <div className="text-center py-8 space-y-3 opacity-60">
-                         <MobileIcon className="w-12 h-12 mx-auto text-slate-300" />
-                         <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Aguardando geração do QR Code para conexão</p>
-                         <p className="text-xs text-slate-500 max-w-xs mx-auto">Preencha o nome do canal e clique no botão azul abaixo para iniciar o processo.</p>
-                      </div>
-                    )}
-
-                    {/* Action Buttons for diagnostic or session controls */}
-                    <div className="w-full max-w-md pt-2 border-t border-slate-100 flex flex-col gap-2 text-left">
-                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Ações Administrativas / Diagnóstico</p>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          disabled={isRestarting}
-                          onClick={handleRestartZapi}
-                          className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-50 rounded-xl font-bold text-[9px] uppercase tracking-wider transition-all"
-                        >
-                          {isRestarting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3 text-amber-500" />}
-                          Reiniciar Instância
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isDisconnecting}
-                          onClick={handleDisconnectZapi}
-                          className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 disabled:opacity-50 rounded-xl font-bold text-[9px] uppercase tracking-wider transition-all"
-                        >
-                          {isDisconnecting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
-                          Desconectar Sessão
-                        </button>
-                      </div>
                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4 mx-4 text-left">
-                    <div className="space-y-2">
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Nome do Canal</label>
-                      <input 
-                       type="text" 
-                       className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-sm"
-                       placeholder="Ex: Comercial Principal"
-                       value={formData.name}
-                       onChange={(e) => setFormData({...formData, name: e.target.value})}
-                     />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Equipe</label>
-                      <select 
-                       className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-sm"
-                       value={formData.teamId}
-                       onChange={(e) => setFormData({...formData, teamId: e.target.value})}
-                     >
-                       <option value="">Selecione...</option>
-                       {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                     </select>
-                    </div>
-
-                    <div className="col-span-2 border-t border-slate-100 pt-4 mt-2 space-y-4">
-                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Configuração Personalizada da Z-API (Opcional)</p>
-                      
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">ID da Instância (Opcional)</label>
-                          <input 
-                            type="text" 
-                            className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs"
-                            placeholder="Deixe em branco para usar o padrão"
-                            value={formData.instanceId}
-                            onChange={(e) => setFormData({...formData, instanceId: e.target.value})}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Token da Instância (Opcional)</label>
-                          <input 
-                            type="text" 
-                            className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs"
-                            placeholder="Deixe em branco para usar o padrão"
-                            value={formData.instanceToken}
-                            onChange={(e) => setFormData({...formData, instanceToken: e.target.value})}
-                          />
-                        </div>
-                        <div className="col-span-2 space-y-2">
-                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2">Client Token (Opcional)</label>
-                          <input 
-                            type="text" 
-                            className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold text-xs"
-                            placeholder="Deixe em branco para usar o padrão"
-                            value={formData.clientToken}
-                            onChange={(e) => setFormData({...formData, clientToken: e.target.value})}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  </>
+                )}
               </div>
 
-               <div className="p-8 border-t border-slate-100 bg-slate-50 grid grid-cols-2 gap-4">
+              {providerType === 'ZAPI' ? (
+                <div className="p-8 border-t border-slate-100 bg-slate-50 grid grid-cols-2 gap-4 shrink-0">
+                   <button 
+                     type="button"
+                     onClick={checkZapiConnectionStatus}
+                     className="flex items-center justify-center gap-2 px-6 py-4 bg-white border border-slate-200 text-slate-600 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-100 transition-all shadow-sm"
+                   >
+                     <Smartphone className="w-4 h-4 text-emerald-500" />
+                     Verificar Conexão
+                   </button>
+                   <button 
+                     type="button"
+                     onClick={handleGenerateQrCode}
+                     disabled={isLoadingQr}
+                     className="flex items-center justify-center gap-2 px-6 py-4 bg-blue-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 transition-all shadow-xl shadow-blue-100"
+                   >
+                     <RefreshCw className="w-4 h-4" />
+                     {qrPollingActive ? "Gerar Novo QR" : "Gerar QR Code"}
+                   </button>
+                </div>
+              ) : (
+                <div className="p-8 border-t border-slate-100 bg-slate-50 shrink-0">
                   <button 
                     type="button"
-                    onClick={checkZapiConnectionStatus}
-                    className="flex items-center justify-center gap-2 px-6 py-4 bg-white border border-slate-200 text-slate-600 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-100 transition-all shadow-sm"
+                    onClick={handleSaveMetaChannel}
+                    disabled={isSaving}
+                    className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all shadow-xl shadow-blue-100"
                   >
-                    <Smartphone className="w-4 h-4 text-emerald-500" />
-                    Verificar Conexão
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    {isSaving ? "Salvando..." : "Salvar Canal Meta Oficial"}
                   </button>
-                  <button 
-                    type="button"
-                    onClick={handleGenerateQrCode}
-                    disabled={isLoadingQr}
-                    className="flex items-center justify-center gap-2 px-6 py-4 bg-blue-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 transition-all shadow-xl shadow-blue-100"
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                    {qrPollingActive ? "Gerar Novo QR" : "Gerar QR Code"}
-                  </button>
-               </div>
+                </div>
+              )}
             </motion.div>
           </div>
         )}

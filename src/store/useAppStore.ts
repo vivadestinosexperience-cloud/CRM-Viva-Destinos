@@ -144,6 +144,7 @@ interface AppState {
   
   // New actions for API sync
   fetchConversationMessages: (conversationId: string) => Promise<void>;
+  fetchWhatsAppAccounts: () => Promise<void>;
   
   // Generic reset
   resetState: () => void;
@@ -553,6 +554,15 @@ export const useAppStore = create<AppState>()(
           }));
         } catch (err) {
           console.error("Failed to fetch messages for conversation", conversationId, err);
+        }
+      },
+
+      fetchWhatsAppAccounts: async () => {
+        try {
+          const whatsapp = await whatsappService.list();
+          set({ whatsAppAccounts: whatsapp || [] });
+        } catch (err) {
+          console.error("Failed to fetch WhatsApp accounts:", err);
         }
       },
 

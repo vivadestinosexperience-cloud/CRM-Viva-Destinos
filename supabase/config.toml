@@ -1,0 +1,4 @@
+project_id = "tjehnzijznuyjpilmain"
+
+[functions.meta-webhook]
+verify_jwt = false

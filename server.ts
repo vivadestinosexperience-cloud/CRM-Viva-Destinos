@@ -26,6 +26,16 @@ let globalSupabaseAdmin: any = null;
 
 // Database or JSON filesystem helpers for Channels Settings
 async function loadChannelsDBOrFile() {
+  let fileList: any[] = [];
+  try {
+    const jsonPath = path.join(process.cwd(), "backend_channels.json");
+    if (fs.existsSync(jsonPath)) {
+      fileList = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+    }
+  } catch (err) {
+    // Ignora
+  }
+
   // 1. Tenta buscar do Supabase
   try {
     if (globalSupabaseAdmin) {
@@ -34,24 +44,31 @@ async function loadChannelsDBOrFile() {
         .select("*")
         .order("created_at", { ascending: false });
       if (!error && data) {
-        return data;
+        const dbIds = new Set(data.map((d: any) => d.id));
+        const merged = data.map((dbChan: any) => {
+          const fileChan = fileList.find((c: any) => c.id === dbChan.id);
+          return {
+            ...dbChan,
+            meta_app_id: dbChan.meta_app_id || fileChan?.meta_app_id || "",
+            meta_app_secret: dbChan.meta_app_secret || fileChan?.meta_app_secret || "",
+            meta_verify_token: dbChan.meta_verify_token || fileChan?.meta_verify_token || ""
+          };
+        });
+        
+        // Adiciona canais existentes apenas em arquivo
+        for (const fileChan of fileList) {
+          if (!dbIds.has(fileChan.id)) {
+            merged.push(fileChan);
+          }
+        }
+        return merged;
       }
     }
   } catch (err) {
     // Ignora erro de tabela inexistente
   }
 
-  // 2. Fallback: Lê do arquivo JSON
-  try {
-    const jsonPath = path.join(process.cwd(), "backend_channels.json");
-    if (fs.existsSync(jsonPath)) {
-      return JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
-    }
-  } catch (err) {
-    // Ignora
-  }
-
-  return [];
+  return fileList;
 }
 
 async function saveChannelToDBOrFile(channel: any) {
@@ -74,21 +91,41 @@ async function saveChannelToDBOrFile(channel: any) {
           .neq("id", channel.id);
       }
 
-      await globalSupabaseAdmin
-        .from("crm_channels")
-        .upsert({
-          id: channel.id,
-          name: channel.name,
-          type: channel.type || "whatsapp_zapi",
-          instance_id: channel.instance_id,
-          instance_token: channel.instance_token,
-          client_token: channel.client_token || "",
-          connected_phone: channel.connected_phone || null,
-          status: channel.status || "DISCONNECTED",
-          is_active: channel.is_active !== undefined ? channel.is_active : true,
-          created_at: channel.created_at,
-          updated_at: channel.updated_at
-        });
+      const basePayload = {
+        id: channel.id,
+        name: channel.name,
+        type: channel.type || "whatsapp_zapi",
+        instance_id: channel.instance_id,
+        instance_token: channel.instance_token,
+        client_token: channel.client_token || "",
+        connected_phone: channel.connected_phone || null,
+        status: channel.status || "DISCONNECTED",
+        is_active: channel.is_active !== undefined ? channel.is_active : true,
+        created_at: channel.created_at,
+        updated_at: channel.updated_at,
+        meta_whatsapp_status: channel.meta_whatsapp_status || null,
+        meta_whatsapp_last_test_at: channel.meta_whatsapp_last_test_at || null,
+        meta_whatsapp_display_phone_number: channel.meta_whatsapp_display_phone_number || null,
+        meta_whatsapp_verified_name: channel.meta_whatsapp_verified_name || null,
+        meta_whatsapp_quality_rating: channel.meta_whatsapp_quality_rating || null,
+        meta_whatsapp_last_error: channel.meta_whatsapp_last_error || null
+      };
+
+      try {
+        await globalSupabaseAdmin
+          .from("crm_channels")
+          .upsert({
+            ...basePayload,
+            meta_app_id: channel.meta_app_id || null,
+            meta_app_secret: channel.meta_app_secret || null,
+            meta_verify_token: channel.meta_verify_token || null
+          });
+      } catch (upsertColErr) {
+        // Fallback upsert without columns if they don't exist
+        await globalSupabaseAdmin
+          .from("crm_channels")
+          .upsert(basePayload);
+      }
     }
   } catch (err) {
     // Ignora erro de tabela inexistente
@@ -366,7 +403,7 @@ function getPublicAppUrl() {
 }
 
 async function callZapi(path: string, body?: any, meta: any = {}) {
-  const channel = await getActiveWhatsappChannel();
+  const channel = meta.channel || await getActiveWhatsappChannel();
 
   if (!channel) {
     throw new Error("Canal WhatsApp não configurado. Verifique a instância Z-API.");
@@ -1513,10 +1550,24 @@ const DEFAULT_TEAM = {
 
   async function findOrCreateConversationByPhone(phone: string, customer: any, options: any = {}) {
     const phones = getEquivalentBrazilPhones(phone);
-    let { data: conversations, error: convFetchErr } = await supabaseAdmin.from(TABLES.conversations).select('*').in('customer_phone_normalized', phones);
+    const channelId = options.channelId || null;
+
+    let query = supabaseAdmin.from(TABLES.conversations).select('*').in('customer_phone_normalized', phones);
+    if (channelId) {
+      query = query.eq('channel_id', channelId);
+    }
+    
+    let { data: conversations, error: convFetchErr } = await query;
     if (convFetchErr) throw convFetchErr;
 
-    let conversation = conversations && conversations.length > 0 ? conversations[0] : null;
+    // Favor active conversations (NEW or OPEN) on this channel
+    let conversation = null;
+    if (conversations && conversations.length > 0) {
+      conversation = conversations.find(c => ["NEW", "OPEN"].includes(String(c.status || "").toUpperCase()));
+      if (!conversation) {
+        conversation = conversations[0];
+      }
+    }
 
     const unreadCount = options.unread_count !== undefined ? options.unread_count : 1;
 
@@ -1536,7 +1587,9 @@ const DEFAULT_TEAM = {
         team_id: DEFAULT_TEAM.id,
         team_name: DEFAULT_TEAM.name,
         queue_id: DEFAULT_TEAM.id,
-        queue_name: DEFAULT_TEAM.name
+        queue_name: DEFAULT_TEAM.name,
+        channel_id: channelId,
+        whatsapp_account_id: channelId
       }).select().single();
       if (convErr) throw convErr;
       return newConv;
@@ -1562,6 +1615,8 @@ const DEFAULT_TEAM = {
           team_name: conversation.team_name || DEFAULT_TEAM.name,
           queue_id: conversation.queue_id || DEFAULT_TEAM.id,
           queue_name: conversation.queue_name || DEFAULT_TEAM.name,
+          channel_id: channelId || conversation.channel_id,
+          whatsapp_account_id: channelId || conversation.whatsapp_account_id,
           updated_at: new Date().toISOString()
         }).eq('id', conversation.id).select().single();
         if (updateErr) throw updateErr;
@@ -1674,12 +1729,27 @@ const DEFAULT_TEAM = {
     const normalized = normalizeIncomingDirectMessage(payload, phone);
     const isOutgoing = payload?.fromMe === true;
 
+    // Resolve channel_id belonging to this Z-API instanceId
+    let channelId = null;
+    const instanceIdFromPayload = payload?.instanceId;
+    if (instanceIdFromPayload) {
+      const { data: matchedChannel } = await supabaseAdmin
+        .from("crm_channels")
+        .select("id")
+        .eq("instance_id", instanceIdFromPayload)
+        .maybeSingle();
+      if (matchedChannel) {
+        channelId = matchedChannel.id;
+      }
+    }
+
     const customer = await findOrCreateCustomerByPhone(phone, normalized.name);
     const conversation = await findOrCreateConversationByPhone(phone, customer, {
       forceDirect: true,
       status: "NEW",
       origin: isOutgoing ? "WHATSAPP_CELULAR" : "WHATSAPP_RECEBIDO",
-      unread_count: isOutgoing ? 0 : 1
+      unread_count: isOutgoing ? 0 : 1,
+      channelId: channelId
     });
 
     const message = await createIncomingDirectMessage(conversation, customer, normalized);
@@ -1712,6 +1782,123 @@ const DEFAULT_TEAM = {
       conversation_id: conversation.id,
       message_db_id: message.id
     };
+  }
+
+  async function sendMetaMessage(channel: any, phone: string, text: string) {
+    const phoneNumberId = channel.instance_id;
+    const accessToken = channel.instance_token;
+    
+    if (!phoneNumberId || !accessToken) {
+      throw new Error("Canal Meta não configurado corretamente. Verifique as credenciais.");
+    }
+
+    const cleanPhone = phone.replace(/\D/g, "");
+    const version = channel.meta_graph_version || process.env.META_GRAPH_VERSION || "v25.0";
+    const url = `https://graph.facebook.com/${version}/${phoneNumberId}/messages`;
+    
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: cleanPhone,
+        type: "text",
+        text: {
+          preview_url: false,
+          body: text
+        }
+      })
+    });
+
+    const responseBody: any = await response.json();
+
+    if (!response.ok) {
+      console.error("[Meta Cloud API send-message error]", responseBody);
+      const rawError = responseBody?.error?.message || "";
+      let detailedError = rawError || "Erro desconhecido ao enviar mensagem pela Meta Cloud API.";
+      
+      if (rawError.includes("Unsupported post request") || rawError.includes("does not exist") || rawError.includes("missing permissions")) {
+        detailedError = `Erro de Permissão Meta Cloud (ID Inválido ou Sem Atribuição): "${rawError}". \n\n🔒 Como resolver esse erro de credenciais no seu Facebook Business:\n1. O "Phone Number ID" (ID do Telefone) inserido (${phoneNumberId}) pode estar incorreto: certifique-se de usar o ID do Telefone e não o ID da Conta de WhatsApp Business ou ID do App.\n2. O Usuário do Sistema da Meta que gerou o Token precisa ter permissão de acesso ao ativo do telefone. Acesse o Gerenciador de Negócios (Business Settings) -> Usuários do Sistema (System Users) -> selecione o usuário correspondente -> clique em "Atribuir Ativos" (Assign Assets) -> escolha "Contas do WhatsApp" -> selecione sua conta e marque controle total. Salve e gere um novo token se necessário!`;
+      } else if (rawError.includes("token") || rawError.includes("Authorization") || response.status === 401) {
+        detailedError = `Token de Acesso Inválido ou Expirado: "${rawError}". \n\n🔑 Como resolver:\nVerifique se o Token permanente inserido nas configurações do canal está completo e correto, e se os escopos "whatsapp_business_messaging" e "whatsapp_business_management" foram marcados ao gerá-lo.`;
+      }
+      throw new Error(detailedError);
+    }
+
+    return responseBody;
+  }
+
+  async function processIncomingMetaMessage(phone: string, customerName: string, messageText: string, externalMsgId: string, channelId: string | null) {
+    const cleanPhone = normalizeBrazilPhone(phone);
+    const customer = await findOrCreateCustomerByPhone(cleanPhone, customerName || "Cliente WhatsApp");
+    
+    const conversation = await findOrCreateConversationByPhone(cleanPhone, customer, {
+      forceDirect: true,
+      status: "NEW",
+      origin: "WHATSAPP_RECEBIDO",
+      unread_count: 1,
+      channelId: channelId
+    });
+
+    if (channelId && conversation.channel_id !== channelId) {
+      await supabaseAdmin
+        .from("crm_conversations")
+        .update({ channel_id: channelId })
+        .eq("id", conversation.id);
+      conversation.channel_id = channelId;
+    }
+
+    const { data: message, error: messageError } = await supabaseAdmin
+      .from("crm_messages")
+      .insert({
+        conversation_id: conversation.id,
+        customer_phone_normalized: cleanPhone,
+        external_message_id: externalMsgId,
+        sender_type: "customer",
+        sender_name: customer.name,
+        from_phone: cleanPhone,
+        to_phone: "",
+        message_type: "text",
+        content: messageText,
+        status: "received",
+        is_internal: false,
+        created_at: new Date().toISOString()
+      })
+      .select("*")
+      .single();
+
+    if (messageError) throw messageError;
+
+    const now = new Date().toISOString();
+    const { data: updatedConv } = await supabaseAdmin
+      .from("crm_conversations")
+      .update({
+        last_message: messageText,
+        last_message_at: now,
+        unread_count: (conversation.unread_count || 0) + 1,
+        status: conversation.status === "RESOLVED" ? "NEW" : (conversation.status || "NEW"),
+        updated_at: now
+      })
+      .eq("id", conversation.id)
+      .select("*")
+      .single();
+
+    broadcastEvent("message.received", { 
+      customer, 
+      conversation: updatedConv || conversation, 
+      message: {
+        ...message,
+        normalized_message_type: 'text',
+        display_content: message.content
+      }, 
+      direction: "incoming" 
+    });
+
+    return { customer, conversation: updatedConv || conversation, message };
   }
 
   // --- Campaign Helpers ---
@@ -2453,6 +2640,223 @@ const DEFAULT_TEAM = {
     return processZapiMessageWebhook(req, res, "sent");
   });
 
+  // Helper for webhooks verification (GET)
+  const handleMetaWebhookVerification = async (req: any, res: any) => {
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+
+    // 1. FAST PATH Check (No database block or delays)
+    const envVerifyToken = process.env.META_VERIFY_TOKEN || "viva_destinos_webhook_2026";
+    const isTokenValidFast = (
+      token === envVerifyToken ||
+      token === "viva_destinos_webhook_2026" ||
+      token === "viva_meta_verify_token_2026"
+    );
+
+    if (mode === "subscribe" && isTokenValidFast) {
+      console.log(`[META SUCCESS] Fast-path webhook verificado com sucesso usando token: ${token}`);
+      res.setHeader("Content-Type", "text/plain");
+      return res.status(200).send(challenge);
+    }
+
+    // 2. BACKUP DATABASE FALLBACK Check
+    let configuredToken = envVerifyToken;
+    try {
+      const activeChannels = await loadChannelsDBOrFile();
+      const activeMetaChannel = activeChannels.find((c: any) => c.type === "whatsapp_meta" && c.is_active);
+      if (activeMetaChannel && activeMetaChannel.meta_verify_token) {
+        configuredToken = activeMetaChannel.meta_verify_token;
+      }
+    } catch (err) {
+      console.error("[META] Erro ao carregar token de verificação dinamicamente:", err);
+    }
+
+    if (mode === "subscribe" && token === configuredToken) {
+      console.log(`[META SUCCESS] Webhook verificado com sucesso usando token dinâmico: ${token}`);
+      res.setHeader("Content-Type", "text/plain");
+      return res.status(200).send(challenge);
+    }
+
+    console.warn(`[META FORBIDDEN] Tentativa de verificação com token incorreto ou sem hub.mode adequado. Esperado: "${configuredToken}", Recebido: "${token}"`);
+    return res.status(403).send("Forbidden");
+  };
+
+  // Helper for webhooks ingestion (POST)
+  const handleMetaWebhookIngestion = async (req: any, res: any) => {
+    try {
+      const body = req.body || {};
+      
+      console.log("Webhook Meta recebido:", JSON.stringify(body));
+
+      // Save raw payload to the secure internal database log
+      try {
+        await supabaseAdmin.from("crm_webhook_logs").insert({
+          payload: body,
+          created_at: new Date().toISOString()
+        });
+      } catch (logErr) {
+        console.error("[META] Erro ao gravar payload bruto em crm_webhook_logs:", logErr);
+      }
+
+      // Check if it is a request on the specific /api/meta/webhook and if so we can flag to return exact response
+      const isMetaSpecificRoute = req.originalUrl?.includes("/api/meta/webhook");
+
+      if (body.object !== "whatsapp_business_account") {
+        if (isMetaSpecificRoute) {
+          res.setHeader("Content-Type", "text/plain");
+          return res.status(200).send("EVENT_RECEIVED");
+        }
+        return res.status(200).json({ success: true, warning: "Not a WhatsApp account object" });
+      }
+
+      const entry = body.entry?.[0];
+      const change = entry?.changes?.[0];
+      const value = change?.value;
+      const metadata = value?.metadata;
+      
+      const incomingPhoneNumberId = metadata?.phone_number_id;
+
+      // Check if phone number ID matches the configured one
+      if (incomingPhoneNumberId) {
+        const configuredPhoneId = process.env.META_PHONE_NUMBER_ID;
+        const activeChannels = await loadChannelsDBOrFile();
+        const activeMetaChannel = activeChannels.find((c: any) => c.type === "whatsapp_meta" && c.is_active);
+        const targetPhoneId = configuredPhoneId || activeMetaChannel?.instance_id;
+
+        if (targetPhoneId && String(incomingPhoneNumberId) !== String(targetPhoneId)) {
+          console.warn(`[META WARNING] O webhook recebeu evento de um Phone Number ID diferente do configurado. Recebido: ${incomingPhoneNumberId}, Configurado: ${targetPhoneId}. Verifique se o número oficial correto está conectado ao app.`);
+        }
+      }
+
+      // Check for status updates
+      if (value?.statuses?.[0]) {
+        const statusObj = value.statuses[0];
+        const waMsgId = statusObj.id;
+        const statusName = statusObj.status; // delivered, read, sent
+
+        try {
+          // Update local webhook table
+          await supabaseAdmin
+            .from("meta_webhook_messages")
+            .update({ status: statusName })
+            .eq("wa_message_id", waMsgId);
+
+          // Update general messages
+          await supabaseAdmin
+            .from("crm_messages")
+            .update({ status: statusName === "read" ? "read" : (statusName === "delivered" ? "delivered" : "sent") })
+            .eq("external_message_id", waMsgId);
+        } catch (dbErr) {
+          console.error("[META WEBHOOK STATUS DB ERROR]:", dbErr);
+        }
+
+        if (isMetaSpecificRoute) {
+          res.setHeader("Content-Type", "text/plain");
+          return res.status(200).send("EVENT_RECEIVED");
+        }
+        return res.status(200).json({ success: true, type: "status_update", messageId: waMsgId, status: statusName });
+      }
+
+      const messageObj = value?.messages?.[0];
+      const contactObj = value?.contacts?.[0];
+
+      if (!messageObj) {
+        if (isMetaSpecificRoute) {
+          res.setHeader("Content-Type", "text/plain");
+          return res.status(200).send("EVENT_RECEIVED");
+        }
+        return res.status(200).json({ success: true, ignored: true });
+      }
+
+      const senderPhone = messageObj.from;
+      let messageText = messageObj.text?.body || "";
+      
+      if (!messageText && messageObj.type && messageObj.type !== 'text') {
+        messageText = `[Mensagem de tipo ${messageObj.type}]`;
+      }
+      
+      const messageId = messageObj.id;
+      const customerName = contactObj?.profile?.name || "Cliente WhatsApp";
+
+      if (!senderPhone || !messageText) {
+        if (isMetaSpecificRoute) {
+          res.setHeader("Content-Type", "text/plain");
+          return res.status(200).send("EVENT_RECEIVED");
+        }
+        return res.status(200).json({ success: true, ignored: true });
+      }
+
+      // Save to meta_webhook_messages table
+      try {
+        await supabaseAdmin
+          .from("meta_webhook_messages")
+          .insert({
+            wa_message_id: messageId,
+            "from": senderPhone,
+            phone_number_id: incomingPhoneNumberId || null,
+            timestamp: messageObj.timestamp || String(Math.floor(Date.now() / 1000)),
+            message_type: messageObj.type || "text",
+            message_body: messageText,
+            raw_payload: body,
+            status: "received",
+            created_at: new Date().toISOString()
+          });
+      } catch (dbErr) {
+        console.error("[META WEBHOOK TABLE INSERT ERROR]:", dbErr);
+      }
+
+      // Find channel id
+      let channelId = null;
+      if (incomingPhoneNumberId) {
+        const { data: matchedChannel } = await supabaseAdmin
+          .from("crm_channels")
+          .select("id")
+          .eq("instance_id", incomingPhoneNumberId)
+          .maybeSingle();
+        channelId = matchedChannel?.id || null;
+      }
+
+      if (!channelId) {
+        const { data: matchedChannel } = await supabaseAdmin
+          .from("crm_channels")
+          .select("id")
+          .eq("type", "whatsapp_meta")
+          .eq("is_active", true)
+          .limit(1)
+          .maybeSingle();
+        channelId = matchedChannel?.id || null;
+      }
+
+      const result = await processIncomingMetaMessage(senderPhone, customerName, messageText, messageId, channelId);
+
+      if (isMetaSpecificRoute) {
+        res.setHeader("Content-Type", "text/plain");
+        return res.status(200).send("EVENT_RECEIVED");
+      }
+      return res.status(200).json({
+        success: true,
+        result
+      });
+    } catch (err: any) {
+      console.error("[META WEBHOOK EXCEPTION]", err);
+      if (req.originalUrl?.includes("/api/meta/webhook")) {
+        res.setHeader("Content-Type", "text/plain");
+        return res.status(200).send("EVENT_RECEIVED");
+      }
+      return res.status(200).json({ success: false, error: err?.message });
+    }
+  };
+
+  // Map both paths for maximum developer-friendly compliance
+  app.get("/api/webhooks/meta", handleMetaWebhookVerification);
+  app.get("/api/meta/webhook", handleMetaWebhookVerification);
+  app.get("/webhook", handleMetaWebhookVerification);
+
+  app.post("/api/webhooks/meta", handleMetaWebhookIngestion);
+  app.post("/api/meta/webhook", handleMetaWebhookIngestion);
+  app.post("/webhook", handleMetaWebhookIngestion);
+
   // Events SSE for fallback Real-time
   app.get("/api/events", (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -3080,94 +3484,86 @@ const DEFAULT_TEAM = {
       // Find or create customer
       const customer = await findOrCreateCustomerByPhone(normalized, finalName || "Cliente Novo");
 
-      // Find or create conversation
-      let { data: conversation } = await supabaseAdmin
-        .from(TABLES.conversations)
-        .select("*")
-        .eq("customer_phone_normalized", normalized)
-        .maybeSingle();
-
+      let conversation: any = null;
       const now = new Date().toISOString();
       const activeAccountId = accountId || req.body.whatsapp_account_id || null;
 
-      if (conversation) {
-        // Reutilizar conversa antiga e atualizar para OPEN e atribuir
-        const updates: any = {
-          status: "OPEN",
-          whatsapp_account_id: activeAccountId || conversation.whatsapp_account_id,
-          assigned_user_id: currentUser.id,
-          assigned_user_name: currentUser.name,
-          team_id: currentUser.team_id || "comercial",
-          team_name: currentUser.team_name || "Comercial",
-          queue_id: currentUser.team_id || "comercial",
-          queue_name: currentUser.team_name || "Comercial",
-          updated_at: now
-        };
-        if (hasMessageText && finalMessage) {
-          updates.last_message = finalMessage;
-          updates.last_message_at = now;
-        }
-
-        const { data: updatedConv, error: updateErr } = await supabaseAdmin
-          .from(TABLES.conversations)
-          .update(updates)
-          .eq("id", conversation.id)
-          .select()
-          .single();
-
-        if (updateErr) throw updateErr;
-        conversation = updatedConv;
-      } else {
-        // Criar nova conversa
-        let resolvedAccountId = activeAccountId;
-        if (!resolvedAccountId) {
-          const { data: channels } = await supabaseAdmin.from("crm_channels").select("*").eq("is_active", true).limit(1);
-          resolvedAccountId = channels && channels[0] ? channels[0].id : null;
-        }
-
-        const insertPayload: any = {
-          customer_id: customer.id,
-          whatsapp_account_id: resolvedAccountId,
-          customer_phone_normalized: normalized,
-          assigned_user_id: currentUser.id,
-          assigned_user_name: currentUser.name,
-          status: "OPEN",
-          team_id: currentUser.team_id || "comercial",
-          team_name: currentUser.team_name || "Comercial",
-          queue_id: currentUser.team_id || "comercial",
-          queue_name: currentUser.team_name || "Comercial",
-          source: "WhatsApp Z-API",
-          last_message: finalMessage || "Atendimento iniciado",
-          last_message_at: now,
-          created_at: now,
-          updated_at: now
-        };
-
-        const { data: newConv, error: insertErr } = await supabaseAdmin
-          .from(TABLES.conversations)
-          .insert(insertPayload)
-          .select()
-          .single();
-
-        if (insertErr) throw insertErr;
-        conversation = newConv;
+      // Criar nova conversa/atendimento proativo
+      let resolvedAccountId = activeAccountId;
+      if (!resolvedAccountId) {
+        const { data: channels } = await supabaseAdmin.from("crm_channels").select("*").eq("is_active", true).limit(1);
+        resolvedAccountId = channels && channels[0] ? channels[0].id : null;
       }
+
+      const insertPayload: any = {
+        customer_id: customer.id,
+        whatsapp_account_id: resolvedAccountId,
+        channel_id: resolvedAccountId, // Configurar ambos os campos de canal para consistência total
+        customer_phone_normalized: normalized,
+        assigned_user_id: currentUser.id,
+        assigned_user_name: currentUser.name,
+        status: "OPEN",
+        team_id: currentUser.team_id || "comercial",
+        team_name: currentUser.team_name || "Comercial",
+        queue_id: currentUser.team_id || "comercial",
+        queue_name: currentUser.team_name || "Comercial",
+        source: "WhatsApp Z-API",
+        last_message: finalMessage || "Atendimento iniciado",
+        last_message_at: now,
+        created_at: now,
+        updated_at: now
+      };
+
+      const { data: newConv, error: insertErr } = await supabaseAdmin
+        .from(TABLES.conversations)
+        .insert(insertPayload)
+        .select()
+        .single();
+
+      if (insertErr) throw insertErr;
+      conversation = newConv;
 
       let savedMessage = null;
 
       if (hasMessageText && finalMessage) {
-        // Enviar pela Z-API via callZapi
-        const zapiResponse = await callZapi(
-          "/send-text",
-          {
-            phone: normalized,
-            message: finalMessage
-          },
-          {
-            source: "start-chat",
-            source_id: conversation.id
-          }
-        );
+        let externalMsgId = `sent-${Date.now()}`;
+        let rawPayload = null;
+
+        // Fetch channel associated with the conversation or grab the default
+        let conversationChannel = null;
+        if (conversation.channel_id) {
+          const { data: matchedChannel } = await supabaseAdmin
+            .from("crm_channels")
+            .select("*")
+            .eq("id", conversation.channel_id)
+            .maybeSingle();
+          conversationChannel = matchedChannel;
+        }
+
+        if (!conversationChannel) {
+          conversationChannel = await getActiveWhatsappChannel();
+        }
+
+        if (conversationChannel?.type === "whatsapp_meta") {
+          const metaResponse = await sendMetaMessage(conversationChannel, normalized, finalMessage);
+          externalMsgId = metaResponse?.messages?.[0]?.id || `meta-${Date.now()}`;
+          rawPayload = metaResponse;
+        } else {
+          // Enviar pela Z-API via callZapi
+          const zapiResponse = await callZapi(
+            "/send-text",
+            {
+              phone: normalized,
+              message: finalMessage
+            },
+            {
+              source: "start-chat",
+              source_id: conversation.id
+            }
+          );
+          externalMsgId = zapiResponse?.messageId || zapiResponse?.id || `sent-${Date.now()}`;
+          rawPayload = zapiResponse;
+        }
 
         // Salvar em crm_messages
         const { data: savedMsg, error: messageError } = await supabaseAdmin
@@ -3175,7 +3571,7 @@ const DEFAULT_TEAM = {
           .insert({
             conversation_id: conversation.id,
             customer_phone_normalized: normalized,
-            external_message_id: zapiResponse?.messageId || zapiResponse?.id || `sent-${Date.now()}`,
+            external_message_id: externalMsgId,
             sender_type: "agent",
             sender_user_id: currentUser.id,
             sender_name: currentUser.name,
@@ -3185,7 +3581,7 @@ const DEFAULT_TEAM = {
             content: finalMessage,
             status: "sent",
             is_internal: false,
-            raw_payload: zapiResponse,
+            raw_payload: rawPayload,
             created_at: now
           })
           .select()
@@ -3479,17 +3875,46 @@ const DEFAULT_TEAM = {
   
       const finalMessage = formatAgentMessageForWhatsApp(message, currentUser.name);
   
-      const zapiResponse = await callZapi(
-        "/send-text",
-        {
-          phone,
-          message: finalMessage
-        },
-        {
-          source: "conversation",
-          source_id: conversationId
-        }
-      );
+      let externalMsgId = `sent-${Date.now()}`;
+      let rawPayload = null;
+      let zapiResponse: any = null;
+
+      // Check if conversation has channel_id or whatsapp_account_id and retrieve it
+      let conversationChannel = null;
+      const targetChannelId = conversation.channel_id || conversation.whatsapp_account_id;
+      if (targetChannelId) {
+        const { data: matchedChannel } = await supabaseAdmin
+          .from("crm_channels")
+          .select("*")
+          .eq("id", targetChannelId)
+          .maybeSingle();
+        conversationChannel = matchedChannel;
+      }
+ 
+      if (!conversationChannel) {
+        conversationChannel = await getActiveWhatsappChannel();
+      }
+ 
+      if (conversationChannel?.type === "whatsapp_meta") {
+        const metaResponse = await sendMetaMessage(conversationChannel, phone, finalMessage);
+        externalMsgId = metaResponse?.messages?.[0]?.id || `meta-${Date.now()}`;
+        rawPayload = metaResponse;
+      } else {
+        zapiResponse = await callZapi(
+          "/send-text",
+          {
+            phone,
+            message: finalMessage
+          },
+          {
+            source: "conversation",
+            source_id: conversationId,
+            channel: conversationChannel
+          }
+        );
+        externalMsgId = zapiResponse?.messageId || zapiResponse?.id || `sent-${Date.now()}`;
+        rawPayload = zapiResponse;
+      }
   
       const now = new Date().toISOString();
   
@@ -3498,7 +3923,7 @@ const DEFAULT_TEAM = {
         .insert({
           conversation_id: conversationId,
           customer_phone_normalized: phone,
-          external_message_id: zapiResponse?.messageId || zapiResponse?.id || `sent-${Date.now()}`,
+          external_message_id: externalMsgId,
           sender_type: "agent",
           sender_user_id: currentUser.id,
           sender_name: currentUser.name,
@@ -3508,7 +3933,7 @@ const DEFAULT_TEAM = {
           content: finalMessage,
           status: "sent",
           is_internal: false,
-          raw_payload: zapiResponse,
+          raw_payload: rawPayload,
           created_at: now
         })
         .select("*")
@@ -6891,10 +7316,40 @@ const DEFAULT_TEAM = {
     }
   });
 
+  function maskSensitiveFields(c: any) {
+    if (!c) return c;
+    const cloned = { ...c };
+    if (cloned.instance_token && typeof cloned.instance_token === 'string' && cloned.instance_token.length > 15) {
+      cloned.instance_token = cloned.instance_token.substring(0, 8) + "..." + cloned.instance_token.substring(cloned.instance_token.length - 8);
+    }
+    if (cloned.meta_app_secret && typeof cloned.meta_app_secret === 'string' && cloned.meta_app_secret.length > 6) {
+      cloned.meta_app_secret = "..." + cloned.meta_app_secret.substring(cloned.meta_app_secret.length - 4);
+    }
+    return cloned;
+  }
+
   app.get("/api/channels", async (req, res) => {
     try {
       const list = await loadChannelsDBOrFile();
-      return res.json({ success: true, channels: list });
+      const active = list.find((c: any) => c.is_active);
+      if (active) {
+        try {
+          const raw = await getZapiStatusRaw();
+          const normalized = normalizeZapiStatus(raw);
+          const currentStatus = normalized.connected ? "CONNECTED" : "DISCONNECTED";
+          if (active.status !== currentStatus) {
+            active.status = currentStatus;
+            if (normalized.phone) {
+              active.connected_phone = normalized.phone;
+            }
+            await saveChannelToDBOrFile(active);
+          }
+        } catch (zapiErr) {
+          console.log("[CHANNELS ACTIVE SYNC REFRESH SKIP]:", zapiErr instanceof Error ? zapiErr.name : zapiErr);
+        }
+      }
+      const safeList = list.map(c => maskSensitiveFields(c));
+      return res.json({ success: true, channels: safeList });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
     }
@@ -6919,7 +7374,7 @@ const DEFAULT_TEAM = {
         } catch (zapiErr) {
           console.log("[ACTIVE CHANNEL ZAPI SYNC SKIP / NOT CONFIG]:", zapiErr instanceof Error ? zapiErr.name : zapiErr);
         }
-        return res.json({ success: true, channel: active });
+        return res.json({ success: true, channel: maskSensitiveFields(active) });
       } else {
         // Fallback das env
         let envStatus = "DISCONNECTED";
@@ -6944,7 +7399,7 @@ const DEFAULT_TEAM = {
           status: envStatus,
           connected_phone: envPhone
         };
-        return res.json({ success: true, channel: envConfig });
+        return res.json({ success: true, channel: maskSensitiveFields(envConfig) });
       }
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
@@ -6953,7 +7408,7 @@ const DEFAULT_TEAM = {
 
   app.post("/api/channels", async (req, res) => {
     try {
-      const { name, type, instance_id, instance_token, client_token, is_active } = req.body;
+      const { name, type, instance_id, instance_token, client_token, is_active, meta_app_id, meta_app_secret, meta_verify_token } = req.body;
       if (!instance_id || !instance_token) {
         return res.status(400).json({ success: false, error: "id da instância e token são obrigatórios." });
       }
@@ -6964,10 +7419,13 @@ const DEFAULT_TEAM = {
         instance_token,
         client_token: client_token || "",
         status: "DISCONNECTED",
-        is_active: is_active !== undefined ? is_active : true
+        is_active: is_active !== undefined ? is_active : true,
+        meta_app_id: meta_app_id || "",
+        meta_app_secret: meta_app_secret || "",
+        meta_verify_token: meta_verify_token || ""
       };
       await saveChannelToDBOrFile(channel);
-      return res.json({ success: true, channel });
+      return res.json({ success: true, channel: maskSensitiveFields(channel) });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
     }
@@ -6977,17 +7435,37 @@ const DEFAULT_TEAM = {
     try {
       const { id } = req.params;
       const list = await loadChannelsDBOrFile();
-      const existing = list.find((c: any) => c.id === id);
+      let existing = list.find((c: any) => c.id === id);
+      if (!existing && id === 'env-fallback') {
+        existing = {
+          id: "env-fallback",
+          name: "Canal Padrão (Ambiente)",
+          type: "whatsapp_zapi",
+          instance_id: process.env.ZAPI_INSTANCE_ID || "env_default_id",
+          instance_token: process.env.ZAPI_INSTANCE_TOKEN || "env_default_token",
+          client_token: process.env.ZAPI_CLIENT_TOKEN || "",
+          is_active: true,
+          status: "DISCONNECTED",
+          connected_phone: ""
+        };
+      }
       if (!existing) {
         return res.status(404).json({ success: false, error: "Canal não encontrado." });
       }
+      const updates = { ...req.body };
+      if (updates.instance_token && updates.instance_token.includes("...")) {
+        delete updates.instance_token;
+      }
+      if (updates.meta_app_secret && updates.meta_app_secret.includes("...")) {
+        delete updates.meta_app_secret;
+      }
       const updated = {
         ...existing,
-        ...req.body,
+        ...updates,
         id
       };
       await saveChannelToDBOrFile(updated);
-      return res.json({ success: true, channel: updated });
+      return res.json({ success: true, channel: maskSensitiveFields(updated) });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
     }
@@ -7000,6 +7478,254 @@ const DEFAULT_TEAM = {
       return res.json({ success: true, message: "Canal removido com sucesso." });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post("/api/meta/whatsapp/test-connection", async (req, res) => {
+    const channelId = req.body.channelId || "";
+    let meta_access_token = req.body.instanceToken || process.env.META_ACCESS_TOKEN || "";
+    const meta_phone_number_id = req.body.instanceId || process.env.META_PHONE_NUMBER_ID || "";
+    const meta_waba_id = req.body.clientToken || process.env.META_WABA_ID || "";
+    const meta_app_id = req.body.appId || process.env.META_APP_ID || "";
+    let meta_app_secret = req.body.appSecret || process.env.META_APP_SECRET || "";
+    const meta_verify_token = req.body.verifyToken || process.env.META_VERIFY_TOKEN || "";
+    const meta_graph_version = req.body.graphVersion || process.env.META_GRAPH_VERSION || "v25.0";
+    const test_phone = req.body.testPhone || "";
+
+    // Resolve masked tokens from saved channels if tested again from UI
+    if ((meta_access_token.includes("...") || meta_app_secret.includes("...")) && channelId) {
+      try {
+        const list = await loadChannelsDBOrFile();
+        const existing = list.find((c: any) => c.id === channelId);
+        if (existing) {
+          if (meta_access_token.includes("...") && existing.instance_token) {
+            meta_access_token = existing.instance_token;
+          }
+          if (meta_app_secret.includes("...") && existing.meta_app_secret) {
+            meta_app_secret = existing.meta_app_secret;
+          }
+        }
+      } catch (err) {
+        console.error("[META TEST] Erro ao carregar credenciais sem máscara para teste:", err);
+      }
+    }
+
+    const logSecure = (testName: string, endpoint: string, isSuccess: boolean, errorDetails?: any) => {
+      const timestamp = new Date().toISOString();
+      const sanitizedResponse = errorDetails ? JSON.stringify(errorDetails).replace(new RegExp(meta_access_token, "g"), "***") : "OK";
+      console.log(`[META TEST LOG] [${timestamp}] - Test: ${testName} - Endpoint: ${endpoint} - Success: ${isSuccess} - Response: ${sanitizedResponse}`);
+    };
+
+    const mapMetaErrorResponse = (errData: any): string => {
+      const errorMsg = errData?.message || "";
+      const code = errData?.code;
+      const subcode = errData?.error_subcode;
+
+      if (code === 131005) {
+        return "Acesso Negado (Erro #131005): O token ou canal não possui permissão para enviar mensagens. Caso esteja usando uma conta de teste (Sandbox/Desenvolvedor/Temporária), você DEVE adicionar o seu telefone de teste no painel da Meta Developers como número de destinatário autorizado antes de enviar o template, ou garantir que o token permanente possua a permissão 'whatsapp_business_messaging'.";
+      }
+      if (errorMsg.includes("Unsupported post request") || errorMsg.includes("Object with ID") || subcode === 33) {
+        return "Unsupported post request. Object with ID does not exist, cannot be loaded due to missing permissions, or does not support this operation. Por favor, confira se o ID informado é realmente o Phone Number ID e se o token tem permissões totais no WhatsApp.";
+      }
+      if (code === 190 && subcode === 463) {
+        return "Sessão Expirada (Erro #190, Subcode #463): O seu token de acesso da Meta expirou. Isso geralmente ocorre ao usar um Token de Acesso Temporário (válido por apenas 24h). Você DEVE criar um Token de Acesso Permanente (Permanent System User Token) com validade ilimitada no painel da Meta Developers e Meta Business Suite.";
+      }
+      if (code === 190 || errorMsg.includes("expired") || errorMsg.includes("Session has expired") || errorMsg.includes("validating access token")) {
+        return "Sessão Expirada ou Token Inválido (Erro #190): O token de acesso da Meta expirou ou é de sessão curta. Por favor, gere um Token de Acesso Permanente de Usuário do Sistema com validade ilimitada nas configurações do seu Business Manager da Meta.";
+      }
+      if (errData?.type === "OAuthException") {
+        return "Erro de Autenticação (OAuthException): Token inválido, expirado ou com escopos insuficientes. Gere um token permanente com permissões completas (whatsapp_business_management, whatsapp_business_messaging) e sem data de expiração.";
+      }
+      if (code === 10 || code === 200) {
+        return "Permissão insuficiente. Por favor, conceda acesso total da Conta do WhatsApp ao Usuário do Sistema da Meta.";
+      }
+      if (code === 100) {
+        return "Parâmetro inválido. Verifique se o WABA ID, Phone Number ID e a versão da API estão corretos.";
+      }
+      return errorMsg || "Erro desconhecido retornado da API da Meta.";
+    };
+
+    try {
+      // Basic fields existence check
+      if (!meta_access_token) {
+        return res.status(400).json({ success: false, error: "Token de Acesso Permanente é obrigatório." });
+      }
+      if (!meta_phone_number_id) {
+        return res.status(400).json({ success: false, error: "Phone Number ID é obrigatório." });
+      }
+      if (!meta_waba_id) {
+        return res.status(400).json({ success: false, error: "WABA ID é obrigatório." });
+      }
+
+      // Test 1: Validate Phone Number ID
+      const firstUrl = `https://graph.facebook.com/${meta_graph_version}/${meta_phone_number_id}?fields=id,display_phone_number,verified_name,quality_rating`;
+      const firstRes = await fetch(firstUrl, {
+        headers: { "Authorization": `Bearer ${meta_access_token}` }
+      });
+      const firstData: any = await firstRes.json();
+
+      if (!firstRes.ok) {
+        const errorMsg = mapMetaErrorResponse(firstData?.error);
+        logSecure("Validate Phone ID", firstUrl, false, firstData?.error);
+        
+        // Save failure to channel
+        if (channelId) {
+          const list = await loadChannelsDBOrFile();
+          const chan = list.find((c: any) => c.id === channelId);
+          if (chan) {
+            chan.meta_whatsapp_status = "error";
+            chan.meta_whatsapp_last_error = errorMsg;
+            chan.meta_whatsapp_last_test_at = new Date().toISOString();
+            await saveChannelToDBOrFile(chan);
+          }
+        }
+
+        return res.status(400).json({
+          success: false,
+          error: errorMsg,
+          testResults: { step1: "failed", step2: "skipped", step3: "skipped" }
+        });
+      }
+
+      logSecure("Validate Phone ID", firstUrl, true, firstData);
+
+      const verified_name = firstData.verified_name || "N/A";
+      const display_phone_number = firstData.display_phone_number || "N/A";
+      const quality_rating = firstData.quality_rating || "N/A";
+
+      // Test 2: Check if phone number belongs to WABA
+      const secondUrl = `https://graph.facebook.com/${meta_graph_version}/${meta_waba_id}/phone_numbers`;
+      const secondRes = await fetch(secondUrl, {
+        headers: { "Authorization": `Bearer ${meta_access_token}` }
+      });
+      const secondData: any = await secondRes.json();
+
+      if (!secondRes.ok) {
+        const errorMsg = mapMetaErrorResponse(secondData?.error);
+        logSecure("List WABA Numbers", secondUrl, false, secondData?.error);
+        return res.status(400).json({
+          success: false,
+          error: `Erro ao obter números da WABA: ${errorMsg}`,
+          testResults: { step1: "passed", step2: "failed", step3: "skipped" }
+        });
+      }
+
+      logSecure("List WABA Numbers", secondUrl, true, `Found ${secondData?.data?.length || 0} numbers.`);
+
+      const numbersList = secondData?.data || [];
+      const belongsToWaba = numbersList.some((n: any) => String(n.id) === String(meta_phone_number_id));
+
+      if (!belongsToWaba) {
+        const errorMsg = "O Phone Number ID informado não pertence à WABA configurada.";
+        logSecure("Link Check", "Comparison Logic", false, errorMsg);
+        return res.status(400).json({
+          success: false,
+          error: errorMsg,
+          testResults: { step1: "passed", step2: "failed", step3: "skipped" }
+        });
+      }
+
+      // Test 3: Debug token scopes (optional) -> Do not block active channel tests
+      let tokenScopes: string[] = [];
+      let tokenDebugPassed = true;
+      let tokenErrorMsg = "";
+
+      if (meta_app_id && meta_app_secret) {
+        const debugUrl = `https://graph.facebook.com/debug_token?input_token=${meta_access_token}&access_token=${meta_app_id}|${meta_app_secret}`;
+        const debugRes = await fetch(debugUrl);
+        const debugData: any = await debugRes.json();
+
+        if (!debugRes.ok || !debugData?.data?.is_valid) {
+          tokenDebugPassed = false;
+          tokenErrorMsg = "O token da Meta está inválido, expirado ou sem as permissões necessárias. Gere um novo token permanente pelo Usuário do Sistema com acesso total à Conta do WhatsApp.";
+          logSecure("Debug Token", debugUrl, false, debugData?.error || "Token Invalid");
+        } else {
+          tokenScopes = debugData?.data?.scopes || [];
+          const hasMessaging = tokenScopes.includes("whatsapp_business_messaging");
+          const hasManagement = tokenScopes.includes("whatsapp_business_management");
+
+          if (!hasMessaging || !hasManagement) {
+            tokenDebugPassed = false;
+            tokenErrorMsg = "O token da Meta está inválido, expirado ou sem as permissões necessárias. Gere um novo token permanente pelo Usuário do Sistema com acesso total à Conta do WhatsApp.";
+            logSecure("Debug Token Scopes Check", debugUrl, false, `Scopes missing. Scopes found: ${tokenScopes.join(", ")}`);
+          } else {
+            logSecure("Debug Token", debugUrl, true, "Token validation and permissions passed.");
+          }
+        }
+      }
+
+      // Webhook Verify Token Checklist Verify
+      const isWebhookConfigured = !!meta_verify_token;
+
+      // Optional step: hello_world template message
+      let templateResult: any = null;
+      if (test_phone) {
+        const sendUrl = `https://graph.facebook.com/${meta_graph_version}/${meta_phone_number_id}/messages`;
+        const cleanSendPhone = test_phone.replace(/\D/g, "");
+        const sendRes = await fetch(sendUrl, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${meta_access_token}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            to: cleanSendPhone,
+            type: "template",
+            template: {
+              name: "hello_world",
+              language: {
+                code: "en_US"
+              }
+            }
+          })
+        });
+
+        const sendData = await sendRes.json();
+        if (!sendRes.ok) {
+          templateResult = { success: false, error: mapMetaErrorResponse(sendData?.error) };
+          logSecure("Send hello_world message", sendUrl, false, sendData?.error);
+        } else {
+          templateResult = { success: true, response: sendData };
+          logSecure("Send hello_world message", sendUrl, true, sendData);
+        }
+      }
+
+      // Save success outcomes to DB / File
+      const list = await loadChannelsDBOrFile();
+      const loadedChan = channelId ? list.find((c: any) => c.id === channelId) : list.find((c: any) => c.type === "whatsapp_meta" && c.is_active);
+
+      if (loadedChan) {
+        loadedChan.meta_whatsapp_status = "connected";
+        loadedChan.meta_whatsapp_last_test_at = new Date().toISOString();
+        loadedChan.meta_whatsapp_display_phone_number = display_phone_number;
+        loadedChan.meta_whatsapp_verified_name = verified_name;
+        loadedChan.meta_whatsapp_quality_rating = quality_rating;
+        loadedChan.meta_whatsapp_last_error = null;
+        loadedChan.status = "CONNECTED";
+        loadedChan.connected_phone = display_phone_number;
+        await saveChannelToDBOrFile(loadedChan);
+      }
+
+      return res.json({
+        success: true,
+        message: "Conexão válida. O Phone Number ID pertence à WABA configurada.",
+        display_phone_number,
+        verified_name,
+        quality_rating,
+        waba_id: meta_waba_id,
+        phone_number_id: meta_phone_number_id,
+        last_test_at: new Date().toISOString(),
+        permissions: tokenScopes,
+        webhook_configured: isWebhookConfigured,
+        template_send_result: templateResult,
+        tokenWarning: !tokenDebugPassed ? tokenErrorMsg : null,
+        testResults: { step1: "passed", step2: "passed", step3: meta_app_id && meta_app_secret ? (tokenDebugPassed ? "passed" : "failed") : "skipped" }
+      });
+
+    } catch (err: any) {
+      console.error("[META TEST INTEGRATION EXCEPTION]", err);
+      return res.status(500).json({ success: false, error: err?.message || "Exceção inesperada ao validar conexão" });
     }
   });
 
@@ -7241,6 +7967,7 @@ const DEFAULT_TEAM = {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
+    console.log("✅ Meta webhook registrado: GET/POST /api/meta/webhook");
     
     // Resume running campaigns on start after a short delay
     setTimeout(async () => {

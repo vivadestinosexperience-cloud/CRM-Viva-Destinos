@@ -116,6 +116,9 @@ export interface WhatsAppAccount {
   config?: any;
   last_sync_at?: string;
   last_sync?: string; // Legacy compatibility
+  meta_app_id?: string;
+  meta_app_secret?: string;
+  meta_verify_token?: string;
   created_at?: string;
   updated_at?: string;
 }
