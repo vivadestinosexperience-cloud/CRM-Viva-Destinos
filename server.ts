@@ -80,6 +80,31 @@ async function saveChannelToDBOrFile(channel: any) {
     channel.created_at = new Date().toISOString();
   }
 
+  // Proactive check if Z-API channel already has an active session on the server to prevent drop and ban
+  if ((channel.provider_type === "zapi" || channel.provider === "ZAPI" || String(channel.type).includes("zapi")) && channel.instance_id && channel.instance_token) {
+    try {
+      const raw = await getZapiStatusRaw({
+        query: {
+          instanceId: channel.instance_id,
+          instanceToken: channel.instance_token,
+          clientToken: channel.client_token
+        }
+      });
+      const normalized = normalizeZapiStatus(raw);
+      if (normalized.connected) {
+        channel.status = "CONNECTED";
+        if (normalized.phone) {
+          channel.connected_phone = normalized.phone;
+          channel.phone_number = normalized.phone;
+        }
+      } else {
+        channel.status = "DISCONNECTED";
+      }
+    } catch (zapiErr) {
+      console.log("[PROACTIVE SAVE CHANNEL ZAPI SYNC SKIP/OFFLINE]:", zapiErr instanceof Error ? zapiErr.name : zapiErr);
+    }
+  }
+
   // 1. Tenta salvar no Supabase
   try {
     if (globalSupabaseAdmin) {
@@ -384,7 +409,20 @@ async function getActiveWhatsappChannel() {
   return null;
 }
 
-async function getZapiConfig() {
+async function getZapiConfig(req?: any) {
+  const queryId = req?.query?.instanceId || req?.headers?.["x-instance-id"] || req?.body?.instanceId;
+  const queryToken = req?.query?.instanceToken || req?.headers?.["x-instance-token"] || req?.body?.instanceToken;
+  const queryClient = req?.query?.clientToken || req?.headers?.["x-client-token"] || req?.body?.clientToken;
+
+  if (queryId && queryToken) {
+    return {
+      baseUrl: process.env.ZAPI_BASE_URL || "https://api.z-api.io",
+      instanceId: String(queryId).trim(),
+      instanceToken: String(queryToken).trim(),
+      clientToken: queryClient ? String(queryClient).trim() : ""
+    };
+  }
+
   const channel = await getActiveWhatsappChannel();
   return {
     baseUrl: channel?.base_url || process.env.ZAPI_BASE_URL || "https://api.z-api.io",
@@ -506,8 +544,8 @@ async function callZapi(path: string, body?: any, meta: any = {}) {
   return responseBody;
 }
 
-async function callZapiQrRaw(path: string) {
-  const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig();
+async function callZapiQrRaw(path: string, req?: any) {
+  const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig(req);
 
   if (!instanceId || !instanceToken) {
     throw new Error("Z-API não configurada: cadastre um canal ativo ou verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN no servidor.");
@@ -644,8 +682,8 @@ function extractQrFromAnyResponse(response: any) {
   return null;
 }
 
-async function getZapiStatusRaw() {
-  const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig();
+async function getZapiStatusRaw(req?: any) {
+  const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig(req);
 
   if (!instanceId || !instanceToken) {
     throw new Error("Z-API não configurada: cadastre um canal ativo ou verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN.");
@@ -708,8 +746,8 @@ function normalizeZapiStatus(raw: any) {
   };
 }
 
-async function callZapiActionRaw(path: string, method: "GET" | "POST" = "POST") {
-  const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig();
+async function callZapiActionRaw(path: string, method: "GET" | "POST" = "POST", req?: any) {
+  const { baseUrl, instanceId, instanceToken, clientToken } = await getZapiConfig(req);
 
   if (!instanceId || !instanceToken) {
     throw new Error("Z-API não configurada: cadastre um canal ativo ou verifique ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN.");
@@ -4642,7 +4680,7 @@ const DEFAULT_TEAM = {
   app.post("/api/meta/messages/send-template", async (req, res) => {
     try {
       const currentUser = await getAuthenticatedUser(req);
-      const { phone, customer_name, template_id, variables } = req.body;
+      const { phone, customer_name, template_id, variables, accountId } = req.body;
 
       if (!phone || !template_id) {
         return res.status(400).json({ success: false, error: "Parâmetros obrigatórios ausentes (phone, template_id)." });
@@ -4664,91 +4702,133 @@ const DEFAULT_TEAM = {
 
       // 3. Validar template
       if (template.status !== "APPROVED") {
-        return res.status(400).json({ success: false, error: `O modelo '${template.name}' não está aprovado na Meta (Status: ${template.status || 'PENDING'}).` });
+        console.warn(`[SEND TEMPLATE WARNING] Template status is '${template.status || 'PENDING'}', proceeding anyway.`);
       }
 
-      // 4. Resolver canal Meta Oficial
-      const activeChannels = await loadChannelsDBOrFile();
-      const activeMeta = activeChannels.find((c: any) => c.type === "whatsapp_meta" && c.is_active);
-
-      const accessToken = activeMeta?.instance_token || process.env.META_ACCESS_TOKEN || "";
-      const phoneNumberId = activeMeta?.instance_id || process.env.META_PHONE_NUMBER_ID || "1068963322976757";
-      const graphVersion = activeMeta?.meta_graph_version || process.env.META_GRAPH_VERSION || "v25.0";
-
-      if (!accessToken) {
-        return res.status(400).json({ success: false, error: "Token de acesso Meta não configurado. Por favor, ajuste nos seus canais ou variáveis de ambiente." });
+      // 4. Resolver canal (Meta ou Z-API)
+      let activeChannel: any = null;
+      if (accountId) {
+        const { data: matchedChannel } = await supabaseAdmin
+          .from("crm_channels")
+          .select("*")
+          .eq("id", accountId)
+          .maybeSingle();
+        activeChannel = matchedChannel;
       }
 
-      // 5. Montar payload do template
+      if (!activeChannel) {
+        const activeChannels = await loadChannelsDBOrFile();
+        activeChannel = activeChannels.find((c: any) => c.is_active);
+      }
+
+      if (!activeChannel) {
+        return res.status(400).json({ success: false, error: "Nenhum canal ativo encontrado para realizar o disparo." });
+      }
+
+      // 5. Reconstruir o conteúdo da mensagem convertendo variáveis {{1}} -> valor ou {1} -> valor
       const sortedKeys = Object.keys(variables || {}).map(Number).sort((a, b) => a - b);
-      const parameters = sortedKeys.map(key => ({
-        type: "text",
-        text: String(variables[key] || "")
-      }));
-
-      const componentsPayload: any[] = [];
-      if (parameters.length > 0) {
-        componentsPayload.push({
-          type: "body",
-          parameters: parameters
-        });
-      }
-
-      const metaUrl = `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`;
-      
-      const response = await fetch(metaUrl, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          recipient_type: "individual",
-          to: phoneNormalized,
-          type: "template",
-          template: {
-            name: template.name,
-            language: {
-              code: template.language || "pt_BR"
-            },
-            components: componentsPayload.length > 0 ? componentsPayload : undefined
-          }
-        })
-      });
-
-      const responseBody: any = await response.json();
-
-      if (!response.ok) {
-        console.error("[Meta Cloud API send-template error]", responseBody);
-        
-        const friendlyError = mapMetaErrorResponse(responseBody?.error);
-        
-        // Registrar notificação de falha
-        await createPlatformNotification(
-          "template_send_failed",
-          "Falha no envio do modelo",
-          `Não foi possível enviar o modelo '${template.name}' para ${phoneNormalized}. Erro: ${friendlyError}`,
-          { phone: phoneNormalized, template_id, template_name: template.name, error: responseBody?.error }
-        );
-
-        return res.status(400).json({
-          success: false,
-          error: friendlyError,
-          errorDetails: responseBody?.error
-        });
-      }
-
-      const waMsgId = responseBody?.messages?.[0]?.id || `meta-${Date.now()}`;
-
-      // Reconstruir o conteúdo da mensagem convertendo variáveis {{1}} -> valor
       let finalMessage = `[Modelo: ${template.name}]`;
       if (template.body_text) {
         let substituted = template.body_text;
         sortedKeys.forEach(key => {
-          substituted = substituted.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), String(variables[key]));
+          substituted = substituted.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), String(variables[key] || ""));
         });
         finalMessage = substituted;
+      }
+
+      let waMsgId = `tmpl-${Date.now()}`;
+      let responseBody: any = { success: true };
+
+      if (activeChannel.type === "whatsapp_meta") {
+        const accessToken = activeChannel?.instance_token || process.env.META_ACCESS_TOKEN || "";
+        const phoneNumberId = activeChannel?.instance_id || process.env.META_PHONE_NUMBER_ID || "1068963322976757";
+        const graphVersion = activeChannel?.meta_graph_version || process.env.META_GRAPH_VERSION || "v25.0";
+
+        if (!accessToken) {
+          return res.status(400).json({ success: false, error: "Token de acesso Meta não configurado para o canal Meta." });
+        }
+
+        const parameters = sortedKeys.map(key => ({
+          type: "text",
+          text: String(variables[key] || "")
+        }));
+
+        const componentsPayload: any[] = [];
+        if (parameters.length > 0) {
+          componentsPayload.push({
+            type: "body",
+            parameters: parameters
+          });
+        }
+
+        const metaUrl = `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`;
+        
+        const response = await fetch(metaUrl, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: phoneNormalized,
+            type: "template",
+            template: {
+              name: template.name,
+              language: {
+                code: template.language || "pt_BR"
+              },
+              components: componentsPayload.length > 0 ? componentsPayload : undefined
+            }
+          })
+        });
+
+        responseBody = await response.json();
+
+        if (!response.ok) {
+          console.error("[Meta Cloud API send-template error]", responseBody);
+          const friendlyError = mapMetaErrorResponse(responseBody?.error);
+          
+          await createPlatformNotification(
+            "template_send_failed",
+            "Falha no envio do modelo",
+            `Não foi possível enviar o modelo '${template.name}' para ${phoneNormalized}. Erro: ${friendlyError}`,
+            { phone: phoneNormalized, template_id, template_name: template.name, error: responseBody?.error }
+          );
+
+          return res.status(400).json({
+            success: false,
+            error: friendlyError,
+            errorDetails: responseBody?.error
+          });
+        }
+
+        waMsgId = responseBody?.messages?.[0]?.id || `meta-${Date.now()}`;
+      } else {
+        // Envio nativo por Z-API (Não oficial)
+        try {
+          const zapiResponse = await callZapi(
+            "/send-text",
+            {
+              phone: phoneNormalized,
+              message: finalMessage
+            },
+            {
+              source: "send-template",
+              template_id: template.id,
+              channel: activeChannel
+            }
+          );
+          waMsgId = zapiResponse?.messageId || zapiResponse?.id || `zapi-${Date.now()}`;
+          responseBody = zapiResponse;
+        } catch (zapiErr: any) {
+          console.error("[Z-API send-template error]", zapiErr);
+          return res.status(400).json({
+            success: false,
+            error: zapiErr?.message || "Falha ao enviar modelo pelo canal Z-API."
+          });
+        }
       }
 
       // 6. Criar ou abrir conversa existente
@@ -4765,7 +4845,6 @@ const DEFAULT_TEAM = {
       let alreadyExisted = false;
       let conversation: any = null;
 
-      // Buscar conversa por telefones equivalentes
       const { data: matchedConv } = await supabaseAdmin
         .from("crm_conversations")
         .select("*")
@@ -4775,24 +4854,29 @@ const DEFAULT_TEAM = {
       if (matchedConv) {
         alreadyExisted = true;
         conversation = matchedConv;
-        // Atualizar o nome se necessário
-        if (customer_name && (!conversation.customer_name || conversation.customer_name === "Cliente WhatsApp")) {
-          const { data: updatedConv } = await supabaseAdmin
-            .from("crm_conversations")
-            .update({ customer_name, updated_at: new Date().toISOString() })
-            .eq("id", conversation.id)
-            .select()
-            .single();
-          if (updatedConv) conversation = updatedConv;
-        }
+        const { data: updatedConv } = await supabaseAdmin
+          .from("crm_conversations")
+          .update({ 
+            status: "OPEN",
+            channel_id: activeChannel?.id || conversation.channel_id,
+            whatsapp_account_id: activeChannel?.id || conversation.whatsapp_account_id,
+            last_message: finalMessage,
+            last_message_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            customer_name: customer_name && (!conversation.customer_name || conversation.customer_name === "Cliente WhatsApp") ? customer_name : conversation.customer_name 
+          })
+          .eq("id", conversation.id)
+          .select()
+          .single();
+        if (updatedConv) conversation = updatedConv;
       } else {
         // Criar conversa nova
         const newConvPayload = {
           id: crypto.randomUUID(),
-          customer_name: customer_name || "Cliente Oficial",
+          customer_name: customer_name || "Cliente Manual",
           customer_phone_normalized: phoneNormalized,
-          channel_id: activeMeta?.id || null,
-          whatsapp_account_id: activeMeta?.id || null,
+          channel_id: activeChannel?.id || null,
+          whatsapp_account_id: activeChannel?.id || null,
           status: "OPEN",
           assigned_user_id: currentUser?.id || null,
           assigned_user_name: currentUser?.name || null,
@@ -5051,72 +5135,13 @@ const DEFAULT_TEAM = {
         conversationChannel = await getActiveWhatsappChannel();
       }
 
-      if (!conversationChannel || conversationChannel.type !== "whatsapp_meta") {
-        return res.status(400).json({ success: false, error: "Apenas canais oficiais da Meta suportam modelos de mensagens." });
+      if (!conversationChannel) {
+        return res.status(400).json({ success: false, error: "Nenhum canal ativo ou configurado foi localizado para a conversa." });
       }
 
-      const phoneNumberId = conversationChannel.instance_id;
-      const accessToken = conversationChannel.instance_token;
-      if (!phoneNumberId || !accessToken) {
-        return res.status(400).json({ success: false, error: "Canal Meta não configurado corretamente. Verifique as credenciais." });
-      }
-
-      const cleanPhone = phone.replace(/\D/g, "");
-      const version = conversationChannel.meta_graph_version || process.env.META_GRAPH_VERSION || "v25.0";
-      const url = `https://graph.facebook.com/${version}/${phoneNumberId}/messages`;
-
-      const parameters = (variables || []).map((val: string) => ({
-        type: "text",
-        text: val
-      }));
-
-      const componentsPayload: any[] = [];
-      if (parameters.length > 0) {
-        componentsPayload.push({
-          type: "body",
-          parameters: parameters
-        });
-      }
-
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          recipient_type: "individual",
-          to: cleanPhone,
-          type: "template",
-          template: {
-            name: templateName,
-            language: {
-              code: languageCode || "pt_BR"
-            },
-            components: componentsPayload
-          }
-        })
-      });
-
-      const responseBody: any = await response.json();
-
-      if (!response.ok) {
-        console.error("[Meta Cloud API send-template error]", responseBody);
-        
-        const friendlyError = mapMetaErrorResponse(responseBody?.error);
-        
-        return res.status(400).json({
-          success: false,
-          error: friendlyError,
-          errorDetails: responseBody?.error
-        });
-      }
-
-      const externalMsgId = responseBody?.messages?.[0]?.id || `meta-${Date.now()}`;
-      
+      // Reconstruir conteúdo do template de mensagem preenchendo as variáveis dinâmicas
       const templates = await loadTemplatesDBOrFile();
-      const matchedTemplate = templates.find((t: any) => t.name === templateName && t.language === (languageCode || "pt_BR"));
+      const matchedTemplate = templates.find((t: any) => t.name === templateName && t.language === (languageCode || "pt_BR")) || templates.find((t: any) => t.name === templateName);
 
       let finalMessage = `[Modelo: ${templateName}]`;
       if (matchedTemplate && matchedTemplate.body_text) {
@@ -5127,6 +5152,93 @@ const DEFAULT_TEAM = {
         finalMessage = substituted;
       }
 
+      let externalMsgId = `tmpl-${Date.now()}`;
+      let responseBody: any = { success: true };
+
+      if (conversationChannel.type === "whatsapp_meta") {
+        const phoneNumberId = conversationChannel.instance_id;
+        const accessToken = conversationChannel.instance_token;
+        if (!phoneNumberId || !accessToken) {
+          return res.status(400).json({ success: false, error: "Canal Meta não configurado corretamente. Verifique as credenciais." });
+        }
+
+        const cleanPhone = phone.replace(/\D/g, "");
+        const version = conversationChannel.meta_graph_version || process.env.META_GRAPH_VERSION || "v25.0";
+        const url = `https://graph.facebook.com/${version}/${phoneNumberId}/messages`;
+
+        const parameters = (variables || []).map((val: string) => ({
+          type: "text",
+          text: val
+        }));
+
+        const componentsPayload: any[] = [];
+        if (parameters.length > 0) {
+          componentsPayload.push({
+            type: "body",
+            parameters: parameters
+           });
+        }
+
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: cleanPhone,
+            type: "template",
+            template: {
+              name: templateName,
+              language: {
+                code: languageCode || "pt_BR"
+              },
+              components: componentsPayload
+            }
+          })
+        });
+
+        responseBody = await response.json();
+
+        if (!response.ok) {
+          console.error("[Meta Cloud API send-template error]", responseBody);
+          const friendlyError = mapMetaErrorResponse(responseBody?.error);
+          return res.status(400).json({
+            success: false,
+            error: friendlyError,
+            errorDetails: responseBody?.error
+          });
+        }
+
+        externalMsgId = responseBody?.messages?.[0]?.id || `meta-${Date.now()}`;
+      } else {
+        // Canal Z-API ou diferente de whatsapp_meta
+        try {
+          const zapiResponse = await callZapi(
+            "/send-text",
+            {
+              phone: phone,
+              message: finalMessage
+            },
+            {
+              source: "send-template",
+              source_id: conversationId,
+              channel: conversationChannel
+            }
+          );
+          externalMsgId = zapiResponse?.messageId || zapiResponse?.id || `zapi-${Date.now()}`;
+          responseBody = zapiResponse;
+        } catch (zapiErr: any) {
+          console.error("[Z-API send-template from conversation error]", zapiErr);
+          return res.status(400).json({
+            success: false,
+            error: zapiErr?.message || "Falha ao enviar modelo pelo canal Z-API."
+          });
+        }
+      }
+      
       const now = new Date().toISOString();
 
       const { data: savedMessage, error: messageError } = await supabaseAdmin
@@ -8064,7 +8176,7 @@ const DEFAULT_TEAM = {
   });
 
   app.get("/api/zapi/config-status", async (req, res) => {
-    const config = await getZapiConfig();
+    const config = await getZapiConfig(req);
     const appUrl = getPublicAppUrl();
     
     const missing = [];
@@ -9132,7 +9244,7 @@ const DEFAULT_TEAM = {
 
   app.get("/api/zapi/status", async (req, res) => {
     try {
-      const raw = await getZapiStatusRaw();
+      const raw = await getZapiStatusRaw(req);
       const normalized = normalizeZapiStatus(raw);
 
       // Sincroniza status do canal ativo
@@ -9166,9 +9278,9 @@ const DEFAULT_TEAM = {
 
   const restartHandler = async (req: any, res: any) => {
     try {
-      let result = await callZapiActionRaw("/restart", "POST");
+      let result = await callZapiActionRaw("/restart", "POST", req);
       if (!result.ok) {
-        result = await callZapiActionRaw("/restart", "GET");
+        result = await callZapiActionRaw("/restart", "GET", req);
       }
       return res.json({ success: result.ok, status: result.status, data: result.json || result.text });
     } catch (error) {
@@ -9184,9 +9296,9 @@ const DEFAULT_TEAM = {
 
   const disconnectHandler = async (req: any, res: any) => {
     try {
-      let result = await callZapiActionRaw("/disconnect", "POST");
+      let result = await callZapiActionRaw("/disconnect", "POST", req);
       if (!result.ok) {
-        result = await callZapiActionRaw("/disconnect", "GET");
+        result = await callZapiActionRaw("/disconnect", "GET", req);
       }
       // Se desconectou com sucesso, limpa status do canal ativo
       try {
@@ -9216,7 +9328,7 @@ const DEFAULT_TEAM = {
     const attempts = [];
 
     try {
-      const rawStatus = await getZapiStatusRaw();
+      const rawStatus = await getZapiStatusRaw(req);
       const status = normalizeZapiStatus(rawStatus);
 
       if (status.connected) {
@@ -9233,7 +9345,7 @@ const DEFAULT_TEAM = {
 
       for (const endpoint of endpoints) {
         try {
-          const response = await callZapiQrRaw(endpoint);
+          const response = await callZapiQrRaw(endpoint, req);
           const qrCodeImage = extractQrFromAnyResponse(response);
 
           attempts.push({

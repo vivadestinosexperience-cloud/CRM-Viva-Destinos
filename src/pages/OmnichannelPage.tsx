@@ -2134,9 +2134,8 @@ export default function OmnichannelPage() {
     const finalAccountId = newChatData.accountId || null;
 
     const selectedAccount = safeAccounts.find((a) => a.id === finalAccountId);
-    const isMetaAccount = selectedAccount?.provider === "META_CLOUD";
 
-    if (isMetaAccount && templateType === "official" && !selectedMetaTemplate) {
+    if (templateType === "official" && !selectedMetaTemplate) {
       toast.error("Por favor, selecione um modelo de mensagem aprovado (template).");
       return;
     }
@@ -2155,8 +2154,8 @@ export default function OmnichannelPage() {
 
         let resData: any = {};
 
-        if (isMetaAccount && templateType === "official" && selectedMetaTemplate) {
-          // Enviar modelo Meta Oficial
+        if (templateType === "official" && selectedMetaTemplate) {
+          // Enviar modelo Oficial (Meta ou Z-API transparente)
           const response = await authorizedFetch(
             `${baseUrl}/api/meta/messages/send-template`,
             {
@@ -2167,6 +2166,7 @@ export default function OmnichannelPage() {
                 customer_name: finalCustomerName,
                 template_id: selectedMetaTemplate.id,
                 variables: metaTemplateVariables,
+                accountId: finalAccountId,
               }),
             }
           );
@@ -3310,15 +3310,15 @@ export default function OmnichannelPage() {
                 >
                   <ArrowRightLeft className="w-5 h-5" />
                 </button>
-                {isMetaConversation && (
+                {activeConversation && (
                   <button
                     onClick={() => setShowTemplateModal(true)}
                     className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 hover:text-emerald-800 rounded-xl border border-emerald-200 transition-all font-bold text-xs"
-                    title="Reiniciar conversa com Modelos de Mensagem (Templates Meta)"
+                    title="Reiniciar conversa com Modelos de Mensagem (Templates)"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
                     <span className="hidden lg:inline">Reiniciar (Modelos de Mensagem)</span>
-                    <span className="lg:hidden">Modelos Meta</span>
+                    <span className="lg:hidden">Modelos</span>
                   </button>
                 )}
                 {activeConversation.status === "RESOLVED" ||
@@ -5420,24 +5420,22 @@ export default function OmnichannelPage() {
                             Tipo de Mensagem Inicial
                           </label>
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                            {isMetaAccountSelected && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setTemplateType("official");
-                                  setSelectedMetaTemplate(null);
-                                  setMetaTemplateVariables({});
-                                  setManualMessageText("");
-                                }}
-                                className={`px-4 py-2.5 rounded-xl border text-xs font-bold transition-all text-center ${
-                                  templateType === "official"
-                                    ? "border-blue-600 bg-blue-50/50 text-blue-700 shadow-sm"
-                                    : "border-slate-100 bg-slate-50 text-slate-500 hover:bg-slate-100/80"
-                                }`}
-                              >
-                                Modelo Oficial (Meta)
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTemplateType("official");
+                                setSelectedMetaTemplate(null);
+                                setMetaTemplateVariables({});
+                                setManualMessageText("");
+                              }}
+                              className={`px-4 py-2.5 rounded-xl border text-xs font-bold transition-all text-center ${
+                                templateType === "official"
+                                  ? "border-blue-600 bg-blue-50/50 text-blue-700 shadow-sm"
+                                  : "border-slate-100 bg-slate-50 text-slate-500 hover:bg-slate-100/80"
+                              }`}
+                            >
+                              Modelo de Mensagem (Templates)
+                            </button>
                             <button
                               type="button"
                               onClick={() => {
@@ -5472,7 +5470,7 @@ export default function OmnichannelPage() {
                         </div>
 
                         {/* Renders Section Based on Chosen templateType */}
-                        {templateType === "official" && isMetaAccountSelected && (
+                        {templateType === "official" && (
                           <div className="space-y-4 animate-in fade-in duration-200">
                             <div className="space-y-1.5 text-left">
                               <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest px-1">

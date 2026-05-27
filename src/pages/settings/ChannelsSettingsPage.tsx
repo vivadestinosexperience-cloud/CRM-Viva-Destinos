@@ -361,7 +361,13 @@ export default function ChannelsSettingsPage() {
 
   async function checkZapiConnectionStatus() {
     try {
-      const response = await authorizedFetch(`/api/zapi/status`);
+      const params = new URLSearchParams();
+      if (formData.instanceId) params.append("instanceId", formData.instanceId);
+      if (formData.instanceToken) params.append("instanceToken", formData.instanceToken);
+      if (formData.clientToken) params.append("clientToken", formData.clientToken);
+      const queryString = params.toString() ? `?${params.toString()}` : "";
+
+      const response = await authorizedFetch(`/api/zapi/status${queryString}`);
       const data = await safeReadJson(response);
 
       if (!response.ok || !data?.success) {
@@ -391,7 +397,13 @@ export default function ChannelsSettingsPage() {
       setIsLoadingQr(true);
       setQrError(null);
 
-      const statusResponse = await authorizedFetch("/api/zapi/config-status");
+      const params = new URLSearchParams();
+      if (formData.instanceId) params.append("instanceId", formData.instanceId);
+      if (formData.instanceToken) params.append("instanceToken", formData.instanceToken);
+      if (formData.clientToken) params.append("clientToken", formData.clientToken);
+      const queryString = params.toString() ? `?${params.toString()}` : "";
+
+      const statusResponse = await authorizedFetch(`/api/zapi/config-status${queryString}`);
       const statusData = await safeReadJson(statusResponse);
 
       if (!statusResponse.ok || !statusData.configured) {
@@ -400,7 +412,7 @@ export default function ChannelsSettingsPage() {
         return;
       }
 
-      const response = await authorizedFetch("/api/zapi/qrcode");
+      const response = await authorizedFetch(`/api/zapi/qrcode${queryString}`);
       const data = await safeReadJson(response);
 
       if (!response.ok || !data?.success) {
@@ -524,7 +536,13 @@ export default function ChannelsSettingsPage() {
   const handleRestartZapi = async () => {
     setIsRestarting(true);
     await safeAction(async () => {
-      const res = await authorizedFetch('/api/zapi/restart');
+      const params = new URLSearchParams();
+      if (formData.instanceId) params.append("instanceId", formData.instanceId);
+      if (formData.instanceToken) params.append("instanceToken", formData.instanceToken);
+      if (formData.clientToken) params.append("clientToken", formData.clientToken);
+      const queryString = params.toString() ? `?${params.toString()}` : "";
+
+      const res = await authorizedFetch(`/api/zapi/restart${queryString}`);
       const data = await safeReadJson(res);
       if (res.ok && data.success) {
         toast.success("Instância reiniciada com sucesso. Aguarde alguns segundos para gerar um novo QR.");
@@ -541,7 +559,13 @@ export default function ChannelsSettingsPage() {
   const handleDisconnectZapi = async () => {
     setIsDisconnecting(true);
     await safeAction(async () => {
-      const res = await authorizedFetch('/api/zapi/disconnect');
+      const params = new URLSearchParams();
+      if (formData.instanceId) params.append("instanceId", formData.instanceId);
+      if (formData.instanceToken) params.append("instanceToken", formData.instanceToken);
+      if (formData.clientToken) params.append("clientToken", formData.clientToken);
+      const queryString = params.toString() ? `?${params.toString()}` : "";
+
+      const res = await authorizedFetch(`/api/zapi/disconnect${queryString}`, { method: 'POST' });
       const data = await safeReadJson(res);
       if (res.ok && data.success) {
         toast.success("Sessão desconectada. Você já pode gerar um novo QR Code.");
