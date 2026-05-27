@@ -8841,6 +8841,338 @@ const DEFAULT_TEAM = {
     return cloned;
   }
 
+  app.get("/api/auth/facebook/callback", async (req: any, res: any) => {
+    const { code, error, error_description, state } = req.query;
+
+    console.log("[META OAUTH CALLBACK] Received query params:", {
+      code: code ? "PRESENT" : "ABSENT",
+      error: error || null,
+      error_description: error_description || null,
+      state: state || null
+    });
+
+    const redirectBackUrl = "https://vivadestinosexperience.online/app/ajustes/canais";
+
+    if (error) {
+      console.error("[META OAUTH ERROR CALLBACK] Error returned from Meta:", error, error_description);
+      return res.send(`
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Conexão com a Meta Falhou</title>
+          <script src="https://cdn.tailwindcss.com"></script>
+          <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+          <style>
+            body { font-family: 'Inter', sans-serif; }
+          </style>
+        </head>
+        <body class="bg-[#0f172a] text-slate-100 flex items-center justify-center min-h-screen p-6">
+          <div class="max-w-md w-full bg-[#1e293b] rounded-[2.5rem] border border-slate-800 shadow-2xl p-8 text-center space-y-6">
+            <div class="mx-auto w-16 h-16 bg-rose-500/10 border border-rose-500/20 text-rose-500 rounded-full flex items-center justify-center text-3xl">
+              ⚠️
+            </div>
+            <div class="space-y-2">
+              <h2 class="text-xl font-black uppercase tracking-tight text-white">Falha na Integração</h2>
+              <p class="text-xs text-slate-400">Ocorreu um problema ao se conectar com o WhatsApp Oficial da Meta.</p>
+            </div>
+            <div class="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 text-left space-y-2.5">
+              <div class="text-[9px] font-black uppercase tracking-widest text-slate-500">Detalhes do Erro</div>
+              <div class="text-xs font-semibold text-rose-400">${error || 'Erro Desconhecido'}</div>
+              <div class="text-[10px] text-slate-400 leading-relaxed">${error_description || 'O processo de autorização ou cadastro foi cancelado ou interrompido.'}</div>
+            </div>
+            <a href="${redirectBackUrl}" class="inline-flex items-center justify-center w-full py-4 bg-[#1877F2] hover:bg-[#166FE5] text-white rounded-2xl font-black text-xs uppercase tracking-wider shadow-lg shadow-blue-950/25 transition-all">
+              Voltar para Configurações
+            </a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+
+    if (!code) {
+      console.warn("[META OAUTH CALLBACK] Missing both code and error parameters.");
+      return res.send(`
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Conexão Inválida</title>
+          <script src="https://cdn.tailwindcss.com"></script>
+          <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+          <style>
+            body { font-family: 'Inter', sans-serif; }
+          </style>
+        </head>
+        <body class="bg-[#0f172a] text-slate-100 flex items-center justify-center min-h-screen p-6">
+          <div class="max-w-md w-full bg-[#1e293b] rounded-[2.5rem] border border-slate-800 shadow-2xl p-8 text-center space-y-6">
+            <div class="mx-auto w-16 h-16 bg-amber-500/10 border border-amber-500/20 text-amber-500 rounded-full flex items-center justify-center text-3xl">
+              ❓
+            </div>
+            <div class="space-y-2">
+              <h2 class="text-xl font-black uppercase tracking-tight text-white">Requisição Inválida</h2>
+              <p class="text-xs text-slate-400">Nenhum código de autorização foi enviado pela Meta.</p>
+            </div>
+            <a href="${redirectBackUrl}" class="inline-flex items-center justify-center w-full py-4 bg-[#1877F2] hover:bg-[#166FE5] text-white rounded-2xl font-black text-xs uppercase tracking-wider shadow-lg shadow-blue-950/25 transition-all">
+              Voltar para Configurações
+            </a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+
+    try {
+      const appId = process.env.META_APP_ID || "1590400272057580";
+      const appSecret = process.env.META_APP_SECRET;
+      const redirectUri = "https://vivadestinosexperience.online/api/auth/facebook/callback";
+
+      console.log(`[META OAUTH CALLBACK] Exchanging code via app_id: ${appId}`);
+
+      if (!appSecret) {
+        throw new Error("Credencial secreta (META_APP_SECRET) não foi configurada nas variáveis de ambiente do seu servidor.");
+      }
+
+      const tokenUrl = `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
+      const tokenRes = await fetch(tokenUrl);
+      const tokenData: any = await tokenRes.json();
+
+      if (!tokenRes.ok) {
+        console.error("[META OAUTH CALLBACK] Token exchange failed:", tokenData);
+        throw new Error(tokenData?.error?.message || "Falha na troca do código de autorização com os servidores da Meta.");
+      }
+
+      const accessToken = tokenData.access_token;
+      if (!accessToken) {
+        throw new Error("Nenhum token de acesso foi retornado pela API da Meta no backend.");
+      }
+
+      console.log("[META OAUTH CALLBACK] Successfully retrieved access token. Commencing metadata discovery...");
+
+      // 1. Discover WhatsApp Business Accounts (WABA)
+      const wabaUrl = `https://graph.facebook.com/v20.0/me/whatsapp_business_accounts?access_token=${accessToken}`;
+      const wabaRes = await fetch(wabaUrl);
+      const wabaData: any = await wabaRes.json();
+      
+      let wabaId = "";
+      let phoneId = "";
+      let phoneNumber = "";
+      let verifiedName = "";
+      let qualityRating = "";
+      let businessId = "";
+
+      if (wabaRes.ok && wabaData?.data && wabaData.data.length > 0) {
+        const firstWaba = wabaData.data[0];
+        wabaId = firstWaba.id;
+        console.log(`[META OAUTH CALLBACK] Discovered WABA ID: ${wabaId}`);
+
+        // Try to fetch additional details of WABA to get business details
+        try {
+          const detailUrl = `https://graph.facebook.com/v20.0/${wabaId}?fields=id,name,business&access_token=${accessToken}`;
+          const detailRes = await fetch(detailUrl);
+          const detailData: any = await detailRes.json();
+          if (detailRes.ok && detailData?.business) {
+            businessId = detailData.business.id;
+            console.log(`[META OAUTH CALLBACK] Discovered Business ID: ${businessId}`);
+          }
+        } catch (detailErr) {
+          console.error("[META OAUTH CALLBACK] Error fetching WABA details:", detailErr);
+        }
+
+        // 2. Discover Phone Numbers
+        const phoneUrl = `https://graph.facebook.com/v20.0/${wabaId}/phone_numbers?access_token=${accessToken}`;
+        const phoneRes = await fetch(phoneUrl);
+        const phoneData: any = await phoneRes.json();
+
+        if (phoneRes.ok && phoneData?.data && phoneData.data.length > 0) {
+          const firstPhone = phoneData.data[0];
+          phoneId = firstPhone.id;
+          phoneNumber = firstPhone.display_phone_number || "";
+          verifiedName = firstPhone.verified_name || "";
+          qualityRating = firstPhone.quality_rating || "";
+          console.log(`[META OAUTH CALLBACK] Discovered Phone ID: ${phoneId}, Number: ${phoneNumber}`);
+        } else {
+          console.warn("[META OAUTH CALLBACK] No phone numbers found connected to this WABA account.");
+        }
+      } else {
+        console.warn("[META OAUTH CALLBACK] No WhatsApp Business Accounts found connected to this Facebook User.");
+      }
+
+      // If phoneId exists, get phone properties (verified_name and quality_rating)
+      if (phoneId && !verifiedName) {
+        try {
+          const phoneDetailRes = await fetch(`https://graph.facebook.com/v20.0/${phoneId}?fields=id,display_phone_number,verified_name,quality_rating&access_token=${accessToken}`);
+          if (phoneDetailRes.ok) {
+            const phoneDetail: any = await phoneDetailRes.json();
+            verifiedName = phoneDetail.verified_name || "";
+            qualityRating = phoneDetail.quality_rating || "";
+          }
+        } catch (phoneDetailErr) {
+          console.error("[META OAUTH CALLBACK] Error fetching phone details:", phoneDetailErr);
+        }
+      }
+
+      // 3. Create or update the channel in database or file
+      const channels = await loadChannelsDBOrFile();
+      let metaChannel = channels.find((c: any) => c.type === "whatsapp_meta");
+
+      if (metaChannel) {
+        metaChannel.instance_token = accessToken;
+        metaChannel.instance_id = phoneId || metaChannel.instance_id || "";
+        metaChannel.client_token = wabaId || metaChannel.client_token || "";
+        metaChannel.connected_phone = phoneNumber || metaChannel.connected_phone || "";
+        metaChannel.status = "CONNECTED";
+        metaChannel.is_active = true;
+        
+        metaChannel.meta_whatsapp_status = "success";
+        metaChannel.meta_whatsapp_display_phone_number = phoneNumber || metaChannel.meta_whatsapp_display_phone_number || "";
+        metaChannel.meta_whatsapp_verified_name = verifiedName || metaChannel.meta_whatsapp_verified_name || "";
+        metaChannel.meta_whatsapp_quality_rating = qualityRating || metaChannel.meta_whatsapp_quality_rating || "";
+        metaChannel.meta_whatsapp_last_error = null;
+        metaChannel.meta_whatsapp_last_test_at = new Date().toISOString();
+        
+        metaChannel.meta_business_id = businessId || metaChannel.meta_business_id || "";
+        metaChannel.meta_waba_id = wabaId || metaChannel.meta_waba_id || "";
+        metaChannel.meta_phone_number_id = phoneId || metaChannel.meta_phone_number_id || "";
+        metaChannel.meta_app_id = appId;
+        metaChannel.meta_app_secret = appSecret;
+        metaChannel.meta_verify_token = "viva_meta_verify_token_2026";
+        metaChannel.updated_at = new Date().toISOString();
+        
+        await saveChannelToDBOrFile(metaChannel);
+        console.log(`[META OAUTH CALLBACK] Updated existing Meta WhatsApp Channel with ID ${metaChannel.id}`);
+      } else {
+        const newChannel = {
+          id: crypto.randomUUID(),
+          name: "WhatsApp Oficial (Meta)",
+          type: "whatsapp_meta",
+          instance_id: phoneId || "",
+          instance_token: accessToken,
+          client_token: wabaId || "",
+          connected_phone: phoneNumber || "",
+          status: "CONNECTED",
+          is_active: true,
+          
+          meta_whatsapp_status: "success",
+          meta_whatsapp_display_phone_number: phoneNumber || "",
+          meta_whatsapp_verified_name: verifiedName || "",
+          meta_whatsapp_quality_rating: qualityRating || "",
+          meta_whatsapp_last_test_at: new Date().toISOString(),
+          
+          meta_business_id: businessId || "",
+          meta_waba_id: wabaId || "",
+          meta_phone_number_id: phoneId || "",
+          meta_app_id: appId,
+          meta_app_secret: appSecret,
+          meta_verify_token: "viva_meta_verify_token_2026",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+        await saveChannelToDBOrFile(newChannel);
+        console.log(`[META OAUTH CALLBACK] Created new Meta WhatsApp Channel with ID ${newChannel.id}`);
+      }
+
+      // Return connection validation screen
+      return res.send(`
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Conectado ao WhatsApp Oficial com Sucesso!</title>
+          <script src="https://cdn.tailwindcss.com"></script>
+          <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+          <meta http-equiv="refresh" content="3;url=${redirectBackUrl}?metaStatus=success">
+          <style>
+            body { font-family: 'Inter', sans-serif; }
+          </style>
+        </head>
+        <body class="bg-[#0f172a] text-slate-100 flex items-center justify-center min-h-screen p-6">
+          <div class="max-w-md w-full bg-[#1e293b] rounded-[2.5rem] border border-slate-800 shadow-2xl p-8 text-center space-y-6 animate-fade-in">
+            <div class="mx-auto w-16 h-16 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center text-3xl">
+              ✓
+            </div>
+            <div class="space-y-2">
+              <h2 class="text-xl font-extrabold uppercase tracking-tight text-white leading-tight">Canal Conectado com Sucesso!</h2>
+              <p class="text-xs text-slate-400">Você já está credenciado com o WhatsApp Oficial Cloud da Meta.</p>
+            </div>
+            
+            <div class="bg-slate-900/40 rounded-3xl p-5 border border-slate-800 text-left space-y-3">
+              <div class="text-[9px] font-black uppercase tracking-widest text-[#1877F2]">Dados Recuperados</div>
+              
+              <div class="grid grid-cols-2 gap-3 text-[10px] leading-relaxed">
+                <div>
+                  <span class="text-slate-500 block text-[8px] uppercase font-bold tracking-wider">NOME VERIFICADO</span>
+                  <span class="text-white font-semibold truncate block">${verifiedName || 'WhatsApp Business Name'}</span>
+                </div>
+                <div>
+                  <span class="text-slate-500 block text-[8px] uppercase font-bold tracking-wider">TELEFONE OFICIAL</span>
+                  <span class="text-white font-semibold truncate block">${phoneNumber || 'Pendente de Configuração'}</span>
+                </div>
+                <div>
+                  <span class="text-slate-500 block text-[8px] uppercase font-bold tracking-wider">WABA ID</span>
+                  <span class="text-white font-semibold truncate block">${wabaId || 'Não localizado'}</span>
+                </div>
+                <div>
+                  <span class="text-slate-500 block text-[8px] uppercase font-bold tracking-wider">PHONE ID</span>
+                  <span class="text-white font-semibold truncate block">${phoneId || 'Não localizado'}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-center gap-2 text-slate-400 text-xs">
+              <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+              <span>Redirecionando em instantes para o CRM...</span>
+            </div>
+
+            <a href="${redirectBackUrl}?metaStatus=success" class="inline-flex items-center justify-center w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-black text-xs uppercase tracking-wider shadow-lg shadow-emerald-950/25 transition-all">
+              Prosseguir no Painel
+            </a>
+          </div>
+        </body>
+        </html>
+      `);
+
+    } catch (err: any) {
+      console.error("[META OAUTH CALLBACK] Error conducting token exchange & discovery:", err);
+      return res.send(`
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Erro Interno na Conexão Meta</title>
+          <script src="https://cdn.tailwindcss.com"></script>
+          <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+          <style>
+            body { font-family: 'Inter', sans-serif; }
+          </style>
+        </head>
+        <body class="bg-[#0f172a] text-slate-100 flex items-center justify-center min-h-screen p-6">
+          <div class="max-w-md w-full bg-[#1e293b] rounded-[2.5rem] border border-slate-800 shadow-2xl p-8 text-center space-y-6">
+            <div class="mx-auto w-16 h-16 bg-rose-500/10 border border-rose-500/20 text-rose-500 rounded-full flex items-center justify-center text-3xl">
+              ✕
+            </div>
+            <div class="space-y-2">
+              <h2 class="text-xl font-black uppercase tracking-tight text-white leading-tight">Erro na Integração</h2>
+              <p class="text-xs text-slate-400">Ocorreu um problema no processamento do token do Facebook.</p>
+            </div>
+            <div class="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 text-left space-y-2.5">
+              <div class="text-[9px] font-black uppercase tracking-widest text-slate-500">Detalhes Técnicos</div>
+              <div class="text-xs text-rose-400 font-bold whitespace-pre-wrap">${err.message || err}</div>
+            </div>
+            <a href="${redirectBackUrl}" class="inline-flex items-center justify-center w-full py-4 bg-[#1877F2] hover:bg-[#166FE5] text-white rounded-2xl font-black text-xs uppercase tracking-wider shadow-lg shadow-blue-950/25 transition-all">
+              Tentar Novamente
+            </a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+  });
+
   app.get("/api/channels", async (req, res) => {
     try {
       const list = await loadChannelsDBOrFile();

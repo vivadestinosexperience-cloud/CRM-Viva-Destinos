@@ -1412,6 +1412,34 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
                   </>
                 ) : (
                   <>
+                     {/* Meta Embedded Signup Button */}
+                     <div className="p-6 bg-[#1877F2]/5 hover:bg-[#1877F2]/10 border border-[#1877F2]/20 rounded-3xl text-left space-y-3.5 transition-all mb-4">
+                       <div className="flex items-center gap-2">
+                         <div className="w-8 h-8 rounded-full bg-[#1877F2]/10 flex items-center justify-center text-[#1877F2] text-sm font-bold">
+                           f
+                         </div>
+                         <div>
+                           <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight leading-none">Conexão Automática Meta</h4>
+                           <p className="text-[9px] font-black text-[#1877F2] uppercase tracking-wider mt-1">Embedded Signup oficial</p>
+                         </div>
+                       </div>
+                       <p className="text-[10px] text-slate-500 leading-relaxed">
+                         Com o método simplificado da Meta, você pode vincular sua conta comercial do Facebook e número de WhatsApp sem preencher credenciais manuais passo a passo.
+                       </p>
+                       <button
+                         type="button"
+                         onClick={() => {
+                           window.location.href = "https://business.facebook.com/messaging/whatsapp/onboard/?app_id=1590400272057580&config_id=1777246883655875&extras=%7B%22version%22%3A%22v4%22%2C%22sessionInfoVersion%22%3A%223%22%2C%22featureType%22%3A%22whatsapp_business_app_onboarding%22%7D&redirect_uri=https%3A%2F%2Fvivadestinosexperience.online%2Fapi%2Fauth%2Ffacebook%2Fcallback";
+                         }}
+                         className="w-full py-4 px-6 bg-[#1877F2] hover:bg-[#166FE5] text-white rounded-2xl font-black text-xs uppercase tracking-wider shadow-lg shadow-blue-500/10 flex items-center justify-center gap-3 transition-all text-center cursor-pointer shadow-blue-950/25"
+                       >
+                         <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                           <path d="M22 12c0-5.52-4.48-10-10-10S2 6.48 2 12c0 4.84 3.44 8.87 8 9.8V15H8v-3h2V9.5C10 7.57 11.57 6 13.5 6H16v3h-2c-.55 0-1 .45-1 1v2h3v3h-3v6.8c4.56-.93 8-4.96 8-9.8z"/>
+                         </svg>
+                         Conectar WhatsApp Oficial
+                       </button>
+                     </div>
+
                     <div className="p-6 bg-slate-50 border border-slate-100 rounded-3xl text-left space-y-4">
                       <div>
                         <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight flex items-center gap-1.5">
