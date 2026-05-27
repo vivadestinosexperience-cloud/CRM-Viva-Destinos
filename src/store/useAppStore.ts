@@ -42,6 +42,7 @@ interface AppearanceSettings {
   companyName: string;
   systemName: string;
   primaryColor: string;
+  secondaryColor?: string;
   theme: 'light' | 'dark' | 'system';
   menuStyle: 'sidebar' | 'top' | 'compact';
   density: 'comfortable' | 'compact';
@@ -119,6 +120,7 @@ interface AppState {
   pauseCampaign: (id: string) => Promise<void>;
   resumeCampaign: (id: string) => Promise<void>;
   cancelCampaign: (id: string) => Promise<void>;
+  fetchCampaign: (id: string) => Promise<Campaign>;
 
   retryFailedCampaign: (id: string) => Promise<void>;
   processCampaignBatch: (id: string) => Promise<void>;
@@ -154,7 +156,8 @@ const DEFAULT_APPEARANCE: AppearanceSettings = {
   logoUrl: 'https://i.postimg.cc/GpgPT0mq/Chat-GPT-Image-17-05-2026-11-32-44.png',
   companyName: 'Viva Destinos Experience',
   systemName: 'Viva CRM',
-  primaryColor: '#2563eb', // Blue-600
+  primaryColor: '#0b2545', // Azul Cósmico (Navy)
+  secondaryColor: '#e5a93b', // Ouro Destinos (Gold)
   theme: 'light',
   menuStyle: 'sidebar',
   density: 'comfortable',
@@ -432,6 +435,26 @@ export const useAppStore = create<AppState>()(
                 if (message && message.sender_type === 'customer' && customer) {
                   toast.info(`Nova mensagem recebida de ${customer.name || 'Cliente'}`);
                 }
+              } else if (eventName === 'campaign.updated' && data && data.id) {
+                set(state => {
+                  const updatedCampaigns = (Array.isArray(state.campaigns) ? state.campaigns : []).map(c => {
+                    if (c && c.id === data.id) {
+                      const updated = { ...c };
+                      if (data.status) updated.status = data.status;
+                      if (data.stats) {
+                        updated.recipients_count = data.stats.recipients_count ?? updated.recipients_count;
+                        updated.pending_count = data.stats.pending_count ?? updated.pending_count;
+                        updated.sending_count = data.stats.sending_count ?? updated.sending_count;
+                        updated.sent_count = data.stats.sent_count ?? updated.sent_count;
+                        updated.failed_count = data.stats.failed_count ?? updated.failed_count;
+                        updated.skipped_count = data.stats.skipped_count ?? updated.skipped_count;
+                      }
+                      return updated;
+                    }
+                    return c;
+                  });
+                  return { campaigns: updatedCampaigns };
+                });
               }
             } catch (err) {
               console.error('SSE Error:', err);
@@ -830,6 +853,19 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           toast.error('Erro ao cancelar campanha');
         }
+      },
+      fetchCampaign: async (id) => {
+        const campaign = await campaignService.get(id);
+        set(state => {
+          const matchIndex = state.campaigns.findIndex(c => c.id === id);
+          if (matchIndex > -1) {
+            const updated = [...state.campaigns];
+            updated[matchIndex] = campaign;
+            return { campaigns: updated };
+          }
+          return { campaigns: [campaign, ...state.campaigns] };
+        });
+        return campaign;
       },
       retryFailedCampaign: async (id) => {
         try {

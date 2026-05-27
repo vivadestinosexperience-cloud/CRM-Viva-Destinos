@@ -96,6 +96,7 @@ import { getContrastTextColor } from "../utils/colorUtils";
 import { TagManagementModal } from "../components/TagManagementModal";
 import { LeadDetailsModal } from "../components/LeadDetailsModal";
 import { FilterPanel } from "../components/FilterPanel";
+import { MetaTemplateSenderModal } from "../components/MetaTemplateSenderModal";
 import { getBoards, getCards, createCard, updateCard } from "../services/kanbanService";
 
 function safeArray(value: any): any[] {
@@ -176,6 +177,7 @@ export default function OmnichannelPage() {
   const [isSilentWarning, setIsSilentWarning] = useState(false);
   const [showAudioRecorder, setShowAudioRecorder] = useState(false);
   const [showNewChatModal, setShowNewChatModal] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [showChatMenu, setShowChatMenu] = useState(false);
@@ -207,6 +209,14 @@ export default function OmnichannelPage() {
   const [quickReplyTriggerState, setQuickReplyTriggerState] = useState<{ index: number; filter: string } | null>(null);
   const [quickRepliesIndex, setQuickRepliesIndex] = useState(0);
 
+  // META Templates state for manual chat initiation
+  const [metaTemplatesForModal, setMetaTemplatesForModal] = useState<any[]>([]);
+  const [selectedMetaTemplate, setSelectedMetaTemplate] = useState<any | null>(null);
+  const [metaTemplateVariables, setMetaTemplateVariables] = useState<Record<string, string>>({});
+  const [templateType, setTemplateType] = useState<"official" | "local" | "none">("none");
+  const [selectedLocalTemplate, setSelectedLocalTemplate] = useState<any | null>(null);
+  const [manualMessageText, setManualMessageText] = useState<string>("");
+
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageText, setEditingMessageText] = useState<string>("");
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
@@ -216,6 +226,30 @@ export default function OmnichannelPage() {
       .then(setQuickReplies)
       .catch(err => console.error("Error loading quick replies in omnichannel:", err));
   }, []);
+
+  useEffect(() => {
+    if (showNewChatModal) {
+      const loadTemplatesForInitiation = async () => {
+        try {
+          const res = await authorizedFetch(`${getApiBaseUrl()}/api/meta/templates`);
+          const data = await safeReadJson(res);
+          if (data.success && data.templates) {
+            // Filter only APPROVED templates
+            const approved = data.templates.filter((t: any) => String(t.status).toUpperCase() === 'APPROVED' || String(t.status).toUpperCase() === 'APPROVED_BY_META');
+            setMetaTemplatesForModal(approved);
+          }
+        } catch (err) {
+          console.error("Erro ao carregar templates para o modal manual:", err);
+        }
+      };
+      loadTemplatesForInitiation();
+      setSelectedMetaTemplate(null);
+      setMetaTemplateVariables({});
+      setTemplateType("none");
+      setSelectedLocalTemplate(null);
+      setManualMessageText("");
+    }
+  }, [showNewChatModal]);
   const { tags, addTag, updateTag, deleteTag } = useAppStore();
 
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -390,11 +424,21 @@ export default function OmnichannelPage() {
   };
 
   const safeMessages = Array.isArray(messages) ? messages.filter(m => m && m.id) : [];
-  const safeTags = Array.isArray(tags) ? tags.filter(t => t && t.id) : [];
-  const safeTeams = Array.isArray(teams) ? teams.filter(t => t && t.id) : [];
-  const safeUsers = Array.isArray(users) ? users.filter(u => u && u.id) : [];
-  const safeAccounts = Array.isArray(whatsAppAccounts) ? whatsAppAccounts.filter(a => a && a.id) : [];
-  const safeCustomers = Array.isArray(customers) ? customers.filter(c => c && c.id) : [];
+
+  const getUniqueById = <T extends { id: string }>(arr: T[]): T[] => {
+    const seen = new Set<string>();
+    return arr.filter(item => {
+      if (!item || !item.id || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  };
+
+  const safeTags = getUniqueById(Array.isArray(tags) ? tags.filter(t => t && t.id) : []);
+  const safeTeams = getUniqueById(Array.isArray(teams) ? teams.filter(t => t && t.id) : []);
+  const safeUsers = getUniqueById(Array.isArray(users) ? users.filter(u => u && u.id) : []);
+  const safeAccounts = getUniqueById(Array.isArray(whatsAppAccounts) ? whatsAppAccounts.filter(a => a && a.id) : []);
+  const safeCustomers = getUniqueById(Array.isArray(customers) ? customers.filter(c => c && c.id) : []);
 
   const safeConversations = useMemo(() => {
     const rawList = Array.isArray(conversations) ? conversations.filter(c => c && c.id) : [];
@@ -2024,38 +2068,82 @@ export default function OmnichannelPage() {
     const finalTeamName = selectedTeamObj?.name || "Comercial";
     const finalAccountId = newChatData.accountId || null;
 
+    const selectedAccount = safeAccounts.find((a) => a.id === finalAccountId);
+    const isMetaAccount = selectedAccount?.provider === "META_CLOUD";
+
+    if (isMetaAccount && templateType === "official" && !selectedMetaTemplate) {
+      toast.error("Por favor, selecione um modelo de mensagem aprovado (template).");
+      return;
+    }
+
     await safeAction(
       async () => {
         const baseUrl = getApiBaseUrl();
+        const selectedCustomerObj = safeCustomers.find((c) => c.id === customerId);
 
-        const normalizedPhone = normalizeBrazilPhone(newChatData.newPhone || "").phone || newChatData.newPhone;
+        let finalPhone = selectedCustomerObj ? selectedCustomerObj.phone : (newChatData.newPhone || "");
+        let finalCustomerName = selectedCustomerObj ? selectedCustomerObj.name : (newChatData.newName || "");
 
-        const startChatRes = await authorizedFetch(
-          `${baseUrl}/api/omnichannel/start-chat`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              customerId: customerId || undefined,
-              newName: newChatData.newName || "",
-              newPhone: normalizedPhone,
-              accountId: finalAccountId,
-              teamId: finalTeamId,
-              teamName: finalTeamName,
-              message: "",
-            }),
-          },
-        );
+        // Normalização do telefone
+        const normalizedPhoneObj = normalizeBrazilPhone(finalPhone);
+        const normalizedPhone = normalizedPhoneObj ? normalizedPhoneObj.phone : finalPhone;
 
-        const startChatData = await safeReadJson(startChatRes);
-        if (!startChatRes.ok) throw startChatData;
+        let resData: any = {};
+
+        if (isMetaAccount && templateType === "official" && selectedMetaTemplate) {
+          // Enviar modelo Meta Oficial
+          const response = await authorizedFetch(
+            `${baseUrl}/api/meta/messages/send-template`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                phone: normalizedPhone,
+                customer_name: finalCustomerName,
+                template_id: selectedMetaTemplate.id,
+                variables: metaTemplateVariables,
+              }),
+            }
+          );
+          resData = await safeReadJson(response);
+          if (!response.ok) throw resData;
+
+          if (resData.alreadyExisted) {
+            toast.success("Conversa existente com este cliente foi aberta!");
+          } else {
+            toast.success("Modelo Meta enviado e conversa iniciada com sucesso!");
+          }
+        } else {
+          // Começar canal padrão Z-API ou Meta Sessão com Mensagem customizada
+          const startChatRes = await authorizedFetch(
+            `${baseUrl}/api/omnichannel/start-chat`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                customerId: customerId || undefined,
+                newName: newChatData.newName || "",
+                newPhone: normalizedPhone,
+                accountId: finalAccountId,
+                teamId: finalTeamId,
+                teamName: finalTeamName,
+                message: manualMessageText,
+              }),
+            },
+          );
+
+          resData = await safeReadJson(startChatRes);
+          if (!startChatRes.ok) throw resData;
+          toast.success("Atendimento iniciado com sucesso!");
+        }
 
         // 1. Recarregar conversas
         await loadConversations(true);
         
-        // 2. Selecionar a conversa criada
-        if (startChatData?.conversation?.id) {
-          setActiveConversationId(startChatData.conversation.id);
+        // 2. Selecionar a conversa criada ou reaberta
+        const finalConvId = resData?.conversation?.id || resData?.message?.conversation_id;
+        if (finalConvId) {
+          setActiveConversationId(finalConvId);
         }
         
         // 3. Mudar aba para "Meus"
@@ -2073,9 +2161,13 @@ export default function OmnichannelPage() {
           newName: "",
           newPhone: "",
         });
-        toast.success("Atendimento iniciado com sucesso!");
+        setSelectedMetaTemplate(null);
+        setMetaTemplateVariables({});
+        setSelectedLocalTemplate(null);
+        setManualMessageText("");
+        setTemplateType("none");
       },
-      { label: "Erro ao chamar novo cliente" },
+      { label: "Erro ao iniciar o atendimento" },
     );
   };
 
@@ -2840,7 +2932,15 @@ export default function OmnichannelPage() {
               </p>
             </div>
           ) : (
-            filteredConversations.map((conv) => {
+            (() => {
+              const seen = new Set<string>();
+              return filteredConversations.filter((c) => {
+                if (!c.id) return false;
+                if (seen.has(c.id)) return false;
+                seen.add(c.id);
+                return true;
+              });
+            })().map((conv) => {
               const customer =
                 conv.customer ||
                 safeCustomers.find((c) => c.id === conv.customer_id);
@@ -2920,9 +3020,9 @@ export default function OmnichannelPage() {
                     </p>
 
                     <div className="flex flex-wrap gap-1">
-                      {safeArray(conv.tags).slice(0, 2).map((tag: any) => (
+                      {safeArray(conv.tags).slice(0, 2).map((tag: any, idx: number) => (
                         <span
-                          key={tag.id}
+                          key={`${tag.id || tag.name || ''}_${idx}`}
                           className="px-1.5 py-0.5 rounded-md text-[8px] font-bold uppercase tracking-wider shadow-sm"
                           style={{
                             backgroundColor: tag.color || "#e2e8f0",
@@ -3007,9 +3107,9 @@ export default function OmnichannelPage() {
 
                     {/* Exibição de Etiquetas no Header */}
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      {safeArray(activeConversation.tags).map((tag: any) => (
+                      {safeArray(activeConversation.tags).map((tag: any, idx: number) => (
                         <div
-                          key={tag.id}
+                          key={`${tag.id || tag.name || ''}_${idx}`}
                           className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider"
                           style={{
                             backgroundColor: tag.color || "#eee",
@@ -3276,7 +3376,15 @@ export default function OmnichannelPage() {
                 </div>
               ) : null}
 
-              {safeMessages.map((msg: Message) => {
+              {(() => {
+                const seen = new Set<string>();
+                return safeMessages.filter((m) => {
+                  if (!m.id) return false;
+                  if (seen.has(m.id)) return false;
+                  seen.add(m.id);
+                  return true;
+                });
+              })().map((msg: Message) => {
                 const isMine =
                   msg.sender_type === "agent" ||
                   (msg.sender_type as any) === "agent_external" ||
@@ -3641,6 +3749,16 @@ export default function OmnichannelPage() {
                     >
                       Nota Interna
                     </button>
+                    {(activeConversation?.channelId || activeConversation?.whatsapp_account_id) && (
+                      <button
+                        type="button"
+                        onClick={() => setShowTemplateModal(true)}
+                        className="px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all bg-emerald-50 text-emerald-600 hover:bg-emerald-100 flex items-center gap-1 shadow-sm"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        Modelo de Mensagem (Meta)
+                      </button>
+                    )}
                   </div>
 
                   <form
@@ -3814,7 +3932,7 @@ export default function OmnichannelPage() {
                           <div className="overflow-y-auto divide-y divide-slate-50 max-h-80">
                             {matchingQuickReplies.map((qr, idx) => (
                               <button
-                                key={qr.id || idx}
+                                key={`${qr.id || 'qr'}_${idx}`}
                                 type="button"
                                 onClick={() => handleSelectQuickReply(qr)}
                                 className={`w-full text-left px-5 py-3.5 flex flex-col gap-1 transition-all text-sm ${idx === quickRepliesIndex ? "bg-blue-600 text-white" : "hover:bg-slate-50 text-slate-700"}`}
@@ -4142,9 +4260,9 @@ export default function OmnichannelPage() {
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                      {(activeCustomer.tags || []).map((tag) => (
+                      {(activeCustomer.tags || []).map((tag, idx) => (
                         <span
-                          key={tag}
+                          key={`${tag || 'tag'}_${idx}`}
                           className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-600 shadow-sm transition-all"
                         >
                           {tag}
@@ -5003,6 +5121,18 @@ export default function OmnichannelPage() {
           </div>
         )}
 
+        <MetaTemplateSenderModal
+          isOpen={showTemplateModal}
+          onClose={() => setShowTemplateModal(false)}
+          conversationId={activeConversationId || ""}
+          onSuccess={async () => {
+            if (activeConversationId) {
+              await loadMessages(activeConversationId, true);
+              await loadConversations(true);
+            }
+          }}
+        />
+
         {showNewChatModal && (
           <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
             <motion.div
@@ -5045,12 +5175,20 @@ export default function OmnichannelPage() {
                       <select
                         className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm appearance-none"
                         value={newChatData.accountId}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const accId = e.target.value;
+                          const selectedAcc = safeAccounts.find((a) => a.id === accId);
+                          const isMeta = selectedAcc?.provider === "META_CLOUD";
                           setNewChatData({
                             ...newChatData,
-                            accountId: e.target.value,
-                          })
-                        }
+                            accountId: accId,
+                          });
+                          setSelectedMetaTemplate(null);
+                          setSelectedLocalTemplate(null);
+                          setMetaTemplateVariables({});
+                          setManualMessageText("");
+                          setTemplateType(isMeta ? "official" : "none");
+                        }}
                       >
                         <option value="">Selecione um canal</option>
                         {safeAccounts.map((acc) => (
@@ -5146,6 +5284,227 @@ export default function OmnichannelPage() {
                       </div>
                     </div>
                   )}
+
+                  {(() => {
+                    const selectedAccount = safeAccounts.find((a) => a.id === newChatData.accountId);
+                    const isMetaAccountSelected = selectedAccount?.provider === "META_CLOUD";
+                    
+                    const getTemplateVariablesKeys = (bodyText: string): string[] => {
+                      if (!bodyText) return [];
+                      const matches = bodyText.match(/\{\{([0-9]+)\}\}/g);
+                      if (!matches) return [];
+                      const keys = matches.map(m => m.replace(/\{\{|\}\}/g, "")).sort((a, b) => Number(a) - Number(b));
+                      return Array.from(new Set(keys));
+                    };
+
+                    if (!newChatData.accountId) return null;
+
+                    return (
+                      <div className="space-y-4 border-t border-slate-100 pt-5 text-left">
+                        {/* Segmented Selector for Template Type */}
+                        <div className="space-y-2">
+                          <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest px-1">
+                            Tipo de Mensagem Inicial
+                          </label>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            {isMetaAccountSelected && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTemplateType("official");
+                                  setSelectedMetaTemplate(null);
+                                  setMetaTemplateVariables({});
+                                  setManualMessageText("");
+                                }}
+                                className={`px-4 py-2.5 rounded-xl border text-xs font-bold transition-all text-center ${
+                                  templateType === "official"
+                                    ? "border-blue-600 bg-blue-50/50 text-blue-700 shadow-sm"
+                                    : "border-slate-100 bg-slate-50 text-slate-500 hover:bg-slate-100/80"
+                                }`}
+                              >
+                                Modelo Oficial (Meta)
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                  setTemplateType("local");
+                                  setSelectedLocalTemplate(null);
+                                  setManualMessageText("");
+                              }}
+                              className={`px-4 py-2.5 rounded-xl border text-xs font-bold transition-all text-center ${
+                                  templateType === "local"
+                                    ? "border-blue-600 bg-blue-50/50 text-blue-700 shadow-sm"
+                                    : "border-slate-100 bg-slate-50 text-slate-500 hover:bg-slate-100/80"
+                              }`}
+                            >
+                              Modelo Local (Não Oficial)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTemplateType("none");
+                                setSelectedLocalTemplate(null);
+                                setManualMessageText("");
+                              }}
+                              className={`px-4 py-2.5 rounded-xl border text-xs font-bold transition-all text-center ${
+                                templateType === "none"
+                                  ? "border-blue-600 bg-blue-50/50 text-blue-700 shadow-sm"
+                                  : "border-slate-100 bg-slate-50 text-slate-500 hover:bg-slate-100/80"
+                              }`}
+                            >
+                              Sem Modelo (Livre)
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Renders Section Based on Chosen templateType */}
+                        {templateType === "official" && isMetaAccountSelected && (
+                          <div className="space-y-4 animate-in fade-in duration-200">
+                            <div className="space-y-1.5 text-left">
+                              <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest px-1">
+                                Selecione o Modelo Aprovado <span className="text-red-500">*</span>
+                              </label>
+                              <select
+                                id="modal_meta_template_select"
+                                className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm appearance-none font-medium"
+                                value={selectedMetaTemplate?.id || ""}
+                                onChange={(e) => {
+                                  const selectedId = e.target.value;
+                                  const templateObj = metaTemplatesForModal.find(t => t.id === selectedId || t.meta_template_id === selectedId);
+                                  setSelectedMetaTemplate(templateObj || null);
+                                  setMetaTemplateVariables({});
+                                }}
+                                required
+                              >
+                                <option value="">Selecione um modelo aprovado...</option>
+                                {(() => {
+                                  const seen = new Set<string>();
+                                  return metaTemplatesForModal.filter((t) => {
+                                    const key = t.id || t.meta_template_id || t.name;
+                                    if (!key) return false;
+                                    if (seen.has(key)) return false;
+                                    seen.add(key);
+                                    return true;
+                                  });
+                                })().map((t, idx) => (
+                                  <option key={`${t.id || t.meta_template_id || t.name || ''}_${idx}`} value={t.id || t.meta_template_id || t.name}>
+                                    {t.display_name || t.name} ({t.category} - {t.language})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            {selectedMetaTemplate && (
+                              <div className="p-4 bg-slate-50 border border-slate-100 rounded-2xl space-y-3">
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">Pré-visualização do Modelo</label>
+                                <div className="p-3 bg-white border border-slate-100 rounded-xl">
+                                  {selectedMetaTemplate.header_text && (
+                                    <div className="font-bold text-slate-800 text-xs border-b border-slate-100 pb-1 mb-2">
+                                      {selectedMetaTemplate.header_text}
+                                    </div>
+                                  )}
+                                  <p className="text-slate-600 text-xs whitespace-pre-wrap leading-relaxed">
+                                    {selectedMetaTemplate.body_text}
+                                  </p>
+                                  {selectedMetaTemplate.footer_text && (
+                                    <p className="text-[10px] text-slate-400 italic mt-2">
+                                      {selectedMetaTemplate.footer_text}
+                                    </p>
+                                  )}
+                                </div>
+
+                                {/* Dynamic variable inputs */}
+                                {getTemplateVariablesKeys(selectedMetaTemplate.body_text).length > 0 && (
+                                  <div className="space-y-3 pt-2">
+                                    <p className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Preencher Variáveis do Modelo</p>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                      {getTemplateVariablesKeys(selectedMetaTemplate.body_text).map((key) => (
+                                        <div key={key} className="space-y-1 text-left">
+                                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-1">
+                                            Variável {"{{"} {key} {"}}"}
+                                          </label>
+                                          <input
+                                            type="text"
+                                            required
+                                            placeholder={`Valor para {{${key}}}...`}
+                                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-xs font-semibold"
+                                            value={metaTemplateVariables[key] || ""}
+                                            onChange={(e) => {
+                                              setMetaTemplateVariables({
+                                                ...metaTemplateVariables,
+                                                [key]: e.target.value
+                                              });
+                                            }}
+                                          />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {templateType === "local" && (
+                          <div className="space-y-4 animate-in fade-in duration-200">
+                            <div className="space-y-1.5 text-left">
+                              <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest px-1">
+                                Selecione o Modelo Local (Não Oficial) <span className="text-red-500">*</span>
+                              </label>
+                              <select
+                                className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm appearance-none font-medium"
+                                value={selectedLocalTemplate?.id || ""}
+                                onChange={(e) => {
+                                  const selectedId = e.target.value;
+                                  const templateObj = quickReplies.find(qr => String(qr.id) === selectedId);
+                                  setSelectedLocalTemplate(templateObj || null);
+                                  setManualMessageText(templateObj ? templateObj.content : "");
+                                }}
+                                required
+                              >
+                                <option value="">Selecione um modelo local...</option>
+                                {quickReplies.map((qr) => (
+                                  <option key={qr.id} value={qr.id}>
+                                    {qr.shortcut}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="space-y-1.5 text-left">
+                              <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest px-1">
+                                Pré-visualização e Edição do Texto
+                              </label>
+                              <textarea
+                                rows={4}
+                                placeholder="Conteúdo do modelo..."
+                                className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-xs font-semibold leading-relaxed"
+                                value={manualMessageText}
+                                onChange={(e) => setManualMessageText(e.target.value)}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {templateType === "none" && (
+                          <div className="space-y-2 animate-in fade-in duration-200">
+                            <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest px-1">
+                              Mensagem Inicial (Opcional)
+                            </label>
+                            <textarea
+                              rows={3}
+                              placeholder="Digite uma mensagem para ser enviada automaticamente ao iniciar a conversa..."
+                              className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-xs font-semibold leading-relaxed"
+                              value={manualMessageText}
+                              onChange={(e) => setManualMessageText(e.target.value)}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div className="flex items-center justify-end gap-3 pt-6">

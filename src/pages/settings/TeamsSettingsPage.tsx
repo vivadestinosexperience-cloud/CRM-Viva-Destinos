@@ -55,11 +55,7 @@ export default function TeamsSettingsPage() {
   });
   const [editingTeam, setEditingTeam] = useState<Team | null>(null);
 
-  function getApiBaseUrl() {
-    const envUrl = import.meta.env.VITE_API_BASE_URL;
-    if (envUrl) return envUrl.replace(/\/$/, "");
-    return "";
-  }
+
 
   async function loadTeams() {
     setLoading(true);

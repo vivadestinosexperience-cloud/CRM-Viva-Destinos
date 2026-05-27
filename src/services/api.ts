@@ -1,10 +1,13 @@
 import { supabase } from '../integrations/supabase/client';
 
 export function getApiBaseUrl() {
-  if (typeof window !== "undefined") {
-    return "";
+  // Since the frontend and backend are hosted on the exact same Express server colocated
+  // on localhost or production domains, we must always default to window.location.origin.
+  if (typeof window !== "undefined" && window.location) {
+    return window.location.origin;
   }
 
+  // Fallback to compile-time environment variable if window is unavailable
   const envUrl = import.meta.env.VITE_API_BASE_URL;
 
   if (envUrl && String(envUrl).trim()) {
@@ -87,11 +90,21 @@ async function fetchWithRetry(url: string, options: RequestInit, retries = 3, de
       return response;
     } catch (err: any) {
       lastError = err;
-      const isNetworkError = err instanceof TypeError || (err.message && String(err.message).toLowerCase().includes("failed to fetch"));
+      const errMsg = err && err.message ? String(err.message).toLowerCase() : "";
+      const isNetworkError = 
+        err instanceof TypeError || 
+        errMsg.includes("failed to fetch") ||
+        errMsg.includes("load failed") ||
+        errMsg.includes("networkerror") ||
+        errMsg.includes("network error") ||
+        errMsg.includes("abort") ||
+        errMsg.includes("connection lost") ||
+        errMsg.includes("dns");
+
       if (!isNetworkError || attempt === retries) {
         throw err;
       }
-      console.warn(`[authorizedFetch] Falha de conexão na tentativa ${attempt + 1}. O servidor pode estar iniciando no Render. Retentando em ${delays[attempt]}ms...`, err);
+      console.warn(`[authorizedFetch] Falha de conexão na tentativa ${attempt + 1}. O servidor pode estar iniciando no Render ou em modo dormente. Retentando em ${delays[attempt]}ms...`, err);
       await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
     }
   }

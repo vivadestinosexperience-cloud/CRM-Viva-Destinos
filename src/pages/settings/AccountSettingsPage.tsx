@@ -50,11 +50,11 @@ export default function AccountSettingsPage() {
   };
 
   const COLORS = [
-    { name: 'Azul', value: '#2563eb' },
+    { name: 'Azul Cósmico', value: '#0b2545' },
+    { name: 'Azul Viva', value: '#2563eb' },
     { name: 'Verde Água', value: '#0d9488' },
     { name: 'Roxo', value: '#7c3aed' },
-    { name: 'Laranja', value: '#ea580c' },
-    { name: 'Dourado', value: '#ca8a04' },
+    { name: 'Ouro Real', value: '#D4AF37' },
     { name: 'Personalizado', value: '#000000' }
   ];
 

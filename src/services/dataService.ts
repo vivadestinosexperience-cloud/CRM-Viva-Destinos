@@ -485,6 +485,17 @@ export const tagService = {
 };
 
 export const campaignService = {
+  async get(id: string) {
+    try {
+      const res = await authorizedFetch(`/api/campaigns/${id}`);
+      const data = await safeReadJson(res);
+      if (!res.ok) throw new Error(data.error || 'Erro ao carregar campanha');
+      return data.campaign;
+    } catch (err: any) {
+      handleError(err, 'campaignService.get');
+      throw err;
+    }
+  },
   async list() {
     try {
       const res = await authorizedFetch('/api/campaigns');

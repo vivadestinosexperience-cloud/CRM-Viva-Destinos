@@ -8,6 +8,8 @@
   --color-primary: var(--primary-color);
   --color-primary-dark: var(--primary-color-dark);
   --color-primary-light: var(--primary-color-light);
+  --color-secondary: var(--secondary-color);
+  --color-secondary-dark: var(--secondary-color-dark);
 
   --color-slate-50: var(--slate-50);
   --color-slate-100: var(--slate-100);
@@ -76,9 +78,11 @@
 }
 
 :root {
-  --primary-color: #2563eb;
-  --primary-color-dark: #1d4ed8;
-  --primary-color-light: #eff6ff;
+  --primary-color: #0b2545;
+  --primary-color-dark: #071930;
+  --primary-color-light: #f0f4f8;
+  --secondary-color: #e5a93b;
+  --secondary-color-dark: #cc922e;
 }
 
 /* Custom background for body based on density */

@@ -26,6 +26,7 @@ import { authService } from '../services/authService';
 import { safeAction } from '../utils/safeAction';
 import Logo from '../components/Logo';
 import { InternalChatDrawer } from '../components/internal-chat/InternalChatDrawer';
+import { NotificationBell } from '../components/NotificationBell';
 
 export default function MainLayout() {
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
@@ -94,7 +95,7 @@ export default function MainLayout() {
                   className={({ isActive }) => `
                     flex items-center justify-between px-3 py-3 rounded-xl transition-all group
                     ${isActive 
-                      ? 'bg-blue-50 text-blue-600 shadow-sm' 
+                      ? 'bg-[var(--primary-color)] text-white shadow-sm' 
                       : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'}
                   `}
                   onClick={(e) => {
@@ -122,7 +123,7 @@ export default function MainLayout() {
                         to={sub.path}
                         className={({ isActive }) => `
                           block py-2 text-xs font-bold transition-all
-                          ${isActive ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}
+                          ${isActive ? 'text-[var(--primary-color)]' : 'text-slate-400 hover:text-[var(--primary-color)]'}
                         `}
                       >
                         {sub.name}
@@ -156,12 +157,13 @@ export default function MainLayout() {
               <input 
                 type="text" 
                 placeholder="Buscar clientes ou mensagens..." 
-                className="w-full pl-11 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all text-sm"
+                className="w-full pl-11 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-[var(--primary-color)] focus:border-transparent transition-all text-sm"
               />
             </div>
           </div>
 
           <div className="flex items-center gap-3 lg:gap-6">
+            <NotificationBell />
             <div className="h-8 w-px bg-slate-200 hidden lg:block"></div>
 
             <div className="relative">
@@ -232,7 +234,7 @@ export default function MainLayout() {
       <aside className="w-16 bg-white border-l border-slate-200 hidden xl:flex flex-col items-center py-6 gap-4">
         <button 
           onClick={() => setSelectedInternalUserId('LIST')}
-          className="p-3 mb-2 text-slate-400 hover:bg-slate-50 hover:text-blue-500 rounded-2xl transition-all shadow-sm border border-slate-100 group"
+          className="p-3 mb-2 text-slate-400 hover:bg-slate-50 hover:text-[var(--primary-color)] rounded-2xl transition-all shadow-sm border border-slate-100 group"
           title="Lista de Contatos Internos"
         >
           <MessageSquare className="w-6 h-6 group-hover:scale-110 transition-transform" />

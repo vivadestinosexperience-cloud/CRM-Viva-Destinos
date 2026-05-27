@@ -168,4 +168,74 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_crm_users_team_id') THEN
       CREATE INDEX idx_crm_users_team_id ON public.crm_users(team_id);
     END IF;
+
+    -- WHATSAPP MESSAGE TEMPLATES Table
+    CREATE TABLE IF NOT EXISTS public.whatsapp_message_templates (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      meta_template_id TEXT UNIQUE,
+      name TEXT NOT NULL,
+      display_name TEXT,
+      category TEXT NOT NULL DEFAULT 'UTILITY',
+      language TEXT NOT NULL DEFAULT 'pt_BR',
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      waba_id TEXT,
+      phone_number_id TEXT,
+      components JSONB,
+      body_text TEXT,
+      header_type TEXT,
+      header_text TEXT,
+      footer_text TEXT,
+      buttons JSONB,
+      quality_score JSONB,
+      rejection_reason TEXT,
+      last_meta_response JSONB,
+      synced_at TIMESTAMPTZ DEFAULT NOW(),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      submitted_at TIMESTAMPTZ,
+      approved_at TIMESTAMPTZ,
+      rejected_at TIMESTAMPTZ,
+      paused_at TIMESTAMPTZ
+    );
+
+    -- Ensure columns exist in existing deployments
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='whatsapp_message_templates' AND column_name='header_type') THEN
+      ALTER TABLE public.whatsapp_message_templates ADD COLUMN header_type TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='whatsapp_message_templates' AND column_name='header_text') THEN
+      ALTER TABLE public.whatsapp_message_templates ADD COLUMN header_text TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='whatsapp_message_templates' AND column_name='footer_text') THEN
+      ALTER TABLE public.whatsapp_message_templates ADD COLUMN footer_text TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='whatsapp_message_templates' AND column_name='buttons') THEN
+      ALTER TABLE public.whatsapp_message_templates ADD COLUMN buttons JSONB;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='whatsapp_message_templates' AND column_name='synced_at') THEN
+      ALTER TABLE public.whatsapp_message_templates ADD COLUMN synced_at TIMESTAMPTZ DEFAULT NOW();
+    END IF;
+
+    -- Update quality_score type if it was TEXT to support JSONB or keep text-friendly handles
+    -- PostgreSQL doesn't allow direct simple text-to-jsonb cast without USING, so we use USING clause or fallback.
+    -- (No changes to quality_score column unless needed, but we can store JSON string or keep it as text)
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_whatsapp_templates_name') THEN
+      CREATE INDEX idx_whatsapp_templates_name ON public.whatsapp_message_templates(name);
+    END IF;
+
+    -- PLATFORM NOTIFICATIONS Table
+    CREATE TABLE IF NOT EXISTS public.platform_notifications (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'unread',
+      metadata JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      read_at TIMESTAMPTZ
+    );
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_platform_notifs_status') THEN
+      CREATE INDEX idx_platform_notifs_status ON public.platform_notifications(status);
+    END IF;
 END $$;

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Megaphone, 
   Plus, 
@@ -53,6 +53,7 @@ import { getErrorMessage } from '../utils/getErrorMessage';
 import { safeAction } from '../utils/safeAction';
 import { getAgentDisplayName } from '../utils/userUtils';
 import { normalizeBrazilPhone } from '../utils/phoneUtils';
+import { authorizedFetch } from '../services/api';
 
 import CampaignDetailsModal from '../components/CampaignDetailsModal';
 import CampaignDebugModal from '../components/CampaignDebugModal';
@@ -141,6 +142,49 @@ export default function CampaignsPage() {
     saveToCrm: false
   });
 
+  // Template & Upload States
+  const [localTemplates, setLocalTemplates] = useState<any[]>([]);
+  const [metaTemplates, setMetaTemplates] = useState<any[]>([]);
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (showAddModal) {
+      const loadTemplates = async () => {
+        setIsLoadingTemplates(true);
+        try {
+          const { quickReplyService } = await import('../services/dataService');
+          const [localList, metaRes] = await Promise.all([
+            quickReplyService.list().catch(err => {
+              console.error("Local templates load error:", err);
+              return [];
+            }),
+            authorizedFetch('/api/meta/templates')
+              .then(res => res.json())
+              .catch(err => {
+                console.error("Meta templates fetch error:", err);
+                return { success: false, templates: [] };
+              })
+          ]);
+
+          setLocalTemplates(localList || []);
+          if (metaRes && metaRes.success && metaRes.templates) {
+            setMetaTemplates(metaRes.templates);
+          }
+        } catch (e) {
+          console.error("Error loading templates in CampaignsPage:", e);
+        } finally {
+          setIsLoadingTemplates(false);
+        }
+      };
+      
+      loadTemplates();
+    }
+  }, [showAddModal]);
+
   const safeCampaigns = Array.isArray(campaigns) ? campaigns : [];
   
   const filteredCampaigns = safeCampaigns.filter(c => {
@@ -181,8 +225,50 @@ export default function CampaignsPage() {
       batchSize: 5,
       saveToCrm: false
     });
+    setSelectedTemplate(null);
+    setIsUploading(false);
+    setUploadProgress(0);
+    setUploadError(null);
     setStep(1);
     setShowAddModal(false);
+  };
+
+  const handleFileUpload = async (file: File) => {
+    setIsUploading(true);
+    setUploadProgress(10);
+    setUploadError(null);
+    try {
+      const uData = new FormData();
+      uData.append('file', file);
+      
+      setUploadProgress(40);
+      const res = await authorizedFetch('/api/campaigns/upload', {
+        method: 'POST',
+        body: uData
+      });
+      
+      setUploadProgress(80);
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Erro no upload");
+      
+      setFormData(prev => ({
+        ...prev,
+        mediaUrl: data.url,
+        mediaFileName: data.fileName,
+        mediaMimeType: data.mimeType
+      }));
+      setUploadProgress(100);
+      toast.success("Arquivo anexado com sucesso!");
+    } catch (e: any) {
+      console.error(e);
+      setUploadError(e.message || "Falha ao enviar arquivo.");
+      toast.error(e.message || "Falha ao enviar arquivo.");
+    } finally {
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadProgress(0);
+      }, 700);
+    }
   };
 
   const handleValidateList = async () => {
@@ -395,10 +481,31 @@ export default function CampaignsPage() {
         return;
       }
 
+      const selectedChannel = whatsAppAccounts.find(acc => acc.id === formData.accountId);
+      const isMeta = selectedChannel?.type?.toLowerCase() === 'whatsapp_meta' || selectedChannel?.provider === 'META_CLOUD' || selectedChannel?.provider_type === 'meta_cloud';
+
+      let descriptionValue = `WhatsApp Account ID: ${formData.accountId}`;
+      if (isMeta && selectedTemplate) {
+        descriptionValue = `WhatsApp Account ID: ${formData.accountId} | Config: ${JSON.stringify({
+          template_id: selectedTemplate.id || selectedTemplate.meta_template_id,
+          template_name: selectedTemplate.name,
+          template_language: selectedTemplate.language || "pt_BR",
+          is_official: true,
+          media_header_type: selectedTemplate.header_type || null,
+          media_url: formData.mediaUrl
+        })}`;
+      } else if (isMeta) {
+        descriptionValue = `WhatsApp Account ID: ${formData.accountId} | Config: ${JSON.stringify({
+          is_official: true,
+          media_url: formData.mediaUrl
+        })}`;
+      }
+
       const campaignData = {
         name: formData.name,
         type: formData.type,
         whatsapp_account_id: formData.accountId,
+        description: descriptionValue,
         team_id: formData.teamId,
         content: formData.content,
         message_type: formData.messageType,
@@ -809,22 +916,170 @@ export default function CampaignsPage() {
                          </div>
 
                          {formData.messageType !== 'text' && (
-                            <div className="space-y-2 animate-in fade-in duration-300">
-                               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">URL da Mídia (Link Direto)</label>
-                               <input 
-                                 type="text" 
-                                 placeholder="https://exemplo.com/imagem.png"
-                                 className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-500/10 font-bold"
-                                 value={formData.mediaUrl}
-                                 onChange={e => setFormData({ ...formData, mediaUrl: e.target.value })}
-                               />
+                            <div className="space-y-3 animate-in fade-in duration-300 border border-slate-100/80 bg-slate-50/50 p-6 rounded-3xl w-full">
+                              <div className="flex items-center justify-between">
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Anexo de Mídia ({formData.messageType === 'image' ? 'Imagem' : formData.messageType === 'video' ? 'Vídeo' : 'Documento/PDF'})</label>
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">Limite: 25MB</span>
+                              </div>
+
+                              {/* Drag & Drop Card */}
+                              <div 
+                                className={`border-2 border-dashed rounded-2xl p-6 text-center transition-all relative ${
+                                  isUploading 
+                                    ? 'border-indigo-400 bg-indigo-50/10' 
+                                    : formData.mediaUrl 
+                                      ? 'border-emerald-200 bg-emerald-50/5' 
+                                      : 'border-slate-200 hover:border-slate-350 bg-white hover:bg-slate-50/50 cursor-pointer'
+                                }`}
+                                onClick={() => {
+                                  if (!isUploading) {
+                                    const input = document.createElement('input');
+                                    input.type = 'file';
+                                    input.accept = formData.messageType === 'image' ? 'image/*' : 
+                                                 formData.messageType === 'video' ? 'video/*' : 
+                                                 'application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+                                    input.onchange = () => {
+                                      const file = input.files?.[0];
+                                      if (file) handleFileUpload(file);
+                                    };
+                                    input.click();
+                                  }
+                                }}
+                              >
+                                {isUploading ? (
+                                  <div className="space-y-2 py-1">
+                                    <div className="flex justify-between text-xs font-bold text-indigo-600 px-2">
+                                      <span>Transmitindo arquivo para os servidores...</span>
+                                      <span>{uploadProgress}%</span>
+                                    </div>
+                                    <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                      <div className="bg-indigo-600 h-full rounded-full transition-all duration-350" style={{ width: `${uploadProgress}%` }}></div>
+                                    </div>
+                                  </div>
+                                ) : formData.mediaUrl ? (
+                                  <div className="space-y-1 py-1">
+                                    <div className="flex items-center justify-center gap-1.5 text-emerald-600 font-bold text-xs">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                      Arquivo Anexado com Sucesso!
+                                    </div>
+                                    <p className="text-[10px] text-slate-500 max-w-xs mx-auto truncate font-mono font-medium">
+                                      {formData.mediaFileName || formData.mediaUrl}
+                                    </p>
+                                    <button 
+                                      type="button"
+                                      className="text-[9px] font-black text-rose-500 uppercase tracking-wider hover:underline pt-0.5"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setFormData(prev => ({ ...prev, mediaUrl: '', mediaFileName: '', mediaMimeType: '' }));
+                                      }}
+                                    >
+                                      Remover/Trocar Arquivo
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="py-1 space-y-0.5">
+                                    <div className="text-lg">📁</div>
+                                    <p className="text-[11px] font-bold text-slate-600">Arraste um arquivo aqui, ou clique para navegar</p>
+                                    <p className="text-[9px] text-slate-400 font-medium">Suporta JPG, PNG, MP4, PDFs ou documentos</p>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Manual Link Input */}
+                              <div className="space-y-1 pt-0.5">
+                                <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider block font-sans">Ou informe uma URL de internet direta se preferir:</span>
+                                <input 
+                                  type="text" 
+                                  placeholder="https://exemplo.com/imagem.png"
+                                  className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-4 focus:ring-indigo-500/10 text-[11px] font-bold"
+                                  value={formData.mediaUrl}
+                                  onChange={e => {
+                                    const val = e.target.value;
+                                    setFormData(prev => ({
+                                      ...prev,
+                                      mediaUrl: val,
+                                      mediaFileName: val.substring(val.lastIndexOf('/') + 1) || 'arquivo'
+                                    }));
+                                  }}
+                                />
+                              </div>
                             </div>
-                         )}
+                          )}
 
                          <div className="space-y-2">
                             <div className="flex items-center justify-between px-1">
                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Conteúdo da Mensagem</label>
                                <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">Dica: Use {"{{nome}}"} para personalizar</span>
+                             </div>
+
+                             <div className="mb-3 animate-in slide-in-from-top duration-300">
+                               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Usar Modelo de Mensagem Cadastrado</label>
+                               <select 
+                                 className="w-full px-5 py-3.5 bg-slate-50 border border-slate-150 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-500/10 font-bold transition-all appearance-none cursor-pointer"
+                                 onChange={e => {
+                                   const val = e.target.value;
+                                   if (!val) return;
+                                   const [type, id] = val.split(':');
+                                   if (type === 'local') {
+                                     const matched = localTemplates.find(t => t.id === id);
+                                     if (matched) {
+                                       setSelectedTemplate(null);
+                                       setFormData(prev => ({
+                                         ...prev,
+                                         content: matched.content
+                                       }));
+                                       toast.success(`Modelo "${matched.shortcut}" carregado!`);
+                                     }
+                                   } else if (type === 'meta') {
+                                     const matched = metaTemplates.find(t => t.id === id);
+                                     if (matched) {
+                                       let text = matched.body_text || matched.bodyText || "";
+                                       if (!text && Array.isArray(matched.components)) {
+                                         const bodyComp = matched.components.find((c: any) => c.type === 'BODY');
+                                         if (bodyComp) text = bodyComp.text;
+                                       }
+                                       
+                                       let headerText = matched.header_text || matched.headerText || "";
+                                       if (!headerText && Array.isArray(matched.components)) {
+                                         const headComp = matched.components.find((c: any) => c.type === 'HEADER');
+                                         if (headComp && headComp.format === 'TEXT') headerText = headComp.text;
+                                       }
+
+                                       const finalContent = headerText ? `*${headerText}*\n\n${text}` : text;
+
+                                       setSelectedTemplate(matched);
+                                       setFormData(prev => ({
+                                         ...prev,
+                                         content: finalContent,
+                                         messageType: matched.header_type?.toLowerCase() === 'image' ? 'image' :
+                                                      matched.header_type?.toLowerCase() === 'video' ? 'video' :
+                                                      matched.header_type?.toLowerCase() === 'document' ? 'document' : prev.messageType
+                                       }));
+                                       toast.success(`Modelo Meta "${matched.name}" carregado!`);
+                                     }
+                                   }
+                                   e.target.value = "";
+                                 }}
+                               >
+                                  <option value="">-- Clique para escolher e preencher --</option>
+                                  {localTemplates.length > 0 && (
+                                    <optgroup label="Modelos Locais">
+                                      {localTemplates.map((t, idx) => (
+                                        <option key={`local_${t.id || idx}`} value={`local:${t.id}`}>{t.shortcut}</option>
+                                      ))}
+                                    </optgroup>
+                                  )}
+                                  {metaTemplates.length > 0 && (
+                                    <optgroup label="Modelos Oficiais Meta">
+                                      {metaTemplates.map((t, idx) => (
+                                        <option key={`meta_${t.id || t.name || idx}`} value={`meta:${t.id}`}>{t.name} ({t.status})</option>
+                                      ))}
+                                    </optgroup>
+                                  )}
+                               </select>
+                             </div>
+
+                             <div className="flex items-center justify-between">
                             </div>
                             <textarea 
                                placeholder="Olá {{nome}}, tudo bem? Temos uma oferta imperdível..."

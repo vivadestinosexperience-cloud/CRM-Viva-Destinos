@@ -41,16 +41,20 @@ export default function App() {
     checkAuth();
   }, [initializeAppData]);
 
-  // Sync primary color and theme to CSS variables
+  // Sync primary color, secondary color and theme to CSS variables
   useEffect(() => {
     document.documentElement.style.setProperty('--primary-color', appearance.primaryColor);
     
     // Simple dark shade for focus/hover
-    // Note: In a real app we might use a color library like 'tinycolor2'
     const darkShade = appearance.primaryColor.startsWith('#') 
       ? appearance.primaryColor + 'ee' 
       : appearance.primaryColor;
     document.documentElement.style.setProperty('--primary-color-dark', darkShade);
+
+    const second = appearance.secondaryColor || '#e5a93b';
+    document.documentElement.style.setProperty('--secondary-color', second);
+    const secondDark = second.startsWith('#') ? second + 'dd' : second;
+    document.documentElement.style.setProperty('--secondary-color-dark', secondDark);
 
     // Theme handling
     const applyTheme = () => {

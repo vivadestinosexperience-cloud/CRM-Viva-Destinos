@@ -40,7 +40,9 @@ export default function CampaignDetailsModal({ campaignId, onClose }: CampaignDe
     getCampaignRecipients,
     getCampaignDebugInfo,
     processCampaignBatch,
-    retryFailedCampaign
+    retryFailedCampaign,
+    fetchCampaign,
+    getSystemDebugInfo
   } = useAppStore();
 
   const [activeTab, setActiveTab] = useState<'overview' | 'recipients' | 'events' | 'debug'>('overview');
@@ -48,6 +50,7 @@ export default function CampaignDetailsModal({ campaignId, onClose }: CampaignDe
   const [recipients, setRecipients] = useState<CampaignRecipient[]>([]);
   const [events, setEvents] = useState<CampaignEvent[]>([]);
   const [debugInfo, setDebugInfo] = useState<any>(null);
+  const [workerStarted, setWorkerStarted] = useState(true);
   
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -60,16 +63,21 @@ export default function CampaignDetailsModal({ campaignId, onClose }: CampaignDe
     else setIsRefreshing(true);
 
     try {
-      const camp = campaigns.find(c => c.id === campaignId);
+      const camp = await fetchCampaign(campaignId);
       if (camp) setCampaign(camp);
 
-      const [recipData, debugData] = await Promise.all([
+      const [recipData, debugData, systemDebug] = await Promise.all([
         getCampaignRecipients(campaignId),
-        getCampaignDebugInfo(campaignId)
+        getCampaignDebugInfo(campaignId),
+        getSystemDebugInfo().catch(() => null)
       ]);
 
       setRecipients(recipData);
       setDebugInfo(debugData);
+
+      if (systemDebug && systemDebug.config) {
+        setWorkerStarted(!!systemDebug.config.campaignWorkerStarted);
+      }
 
       if (debugData?.lastEvents) {
         setEvents(debugData.lastEvents);
@@ -272,7 +280,7 @@ export default function CampaignDetailsModal({ campaignId, onClose }: CampaignDe
                             { label: 'Intervalo Inteligente', value: `${campaign.min_interval}s ~ ${campaign.max_interval}s`, detail: 'Segundos entre mensagens' },
                             { label: 'Tamanho do Lote', value: campaign.batch_size, detail: 'Contatos por processamento' },
                             { label: 'Tentativas Máximas', value: campaign.max_attempts || 3, detail: 'Re-envio em caso de erro provisório' },
-                            { label: 'Status do Worker', value: campaignWorkerStarted ? 'ONLINE' : 'OFFLINE', color: campaignWorkerStarted ? 'text-emerald-500' : 'text-rose-500' }
+                            { label: 'Status do Worker', value: workerStarted ? 'ONLINE' : 'OFFLINE', color: workerStarted ? 'text-emerald-500' : 'text-rose-500' }
                           ].map((item, i) => (
                              <div key={i} className="flex items-center justify-between py-3 border-b border-slate-50 last:border-0 px-2">
                                 <div>
@@ -437,7 +445,7 @@ export default function CampaignDetailsModal({ campaignId, onClose }: CampaignDe
                                      <p>INSTANCE_ID: {debugInfo.campaign?.whatsapp_account_id ? '✓ OK' : '✗ MISSING'}</p>
                                      <p>SUPABASE: ✓ READY</p>
                                      <p>Z-API AUTH: ✓ VERIFIED</p>
-                                     <p>WORKER: {campaignWorkerStarted ? '✓ ACTIVE' : '✗ INACTIVE'}</p>
+                                     <p>WORKER: {workerStarted ? '✓ ACTIVE' : '✗ INACTIVE'}</p>
                                   </div>
                                </div>
 
@@ -555,4 +563,4 @@ export default function CampaignDetailsModal({ campaignId, onClose }: CampaignDe
 }
 
 // Global helper for debug status
-const campaignWorkerStarted = true; // In a real app this would come from store
+// Sourced dynamically from systemDebug config endpoint above

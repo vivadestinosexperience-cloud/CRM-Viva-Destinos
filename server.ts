@@ -1331,10 +1331,248 @@ function getOutgoingMediaLabel(type: string, caption: string, fileName: string):
   return "Mídia";
 }
 
+function extractBodyText(components: any[]): string {
+  if (!Array.isArray(components)) return "";
+  const bodyComponent = components.find((c: any) => String(c.type).toUpperCase() === "BODY");
+  return bodyComponent?.text || "";
+}
+
+function extractHeaderText(components: any[]): string {
+  if (!Array.isArray(components)) return "";
+  const headerComponent = components.find((c: any) => String(c.type).toUpperCase() === "HEADER");
+  return headerComponent?.text || "";
+}
+
+function extractHeaderType(components: any[]): string {
+  if (!Array.isArray(components)) return "TEXT";
+  const headerComponent = components.find((c: any) => String(c.type).toUpperCase() === "HEADER");
+  return headerComponent?.format || "TEXT";
+}
+
+function extractFooterText(components: any[]): string {
+  if (!Array.isArray(components)) return "";
+  const footerComponent = components.find((c: any) => String(c.type).toUpperCase() === "FOOTER");
+  return footerComponent?.text || "";
+}
+
+function extractButtons(components: any[]): any[] {
+  if (!Array.isArray(components)) return [];
+  const buttonsComponent = components.find((c: any) => String(c.type).toUpperCase() === "BUTTONS");
+  return buttonsComponent?.buttons || [];
+}
+
+function mapMetaErrorResponse(errData: any): string {
+  const errorMsg = errData?.message || "";
+  const code = errData?.code;
+  const subcode = errData?.error_subcode;
+
+  if (code === 131005) {
+    return "Acesso Negado (Erro #131005): O token ou canal não possui permissão para enviar mensagens. Caso esteja usando uma conta de teste (Sandbox/Desenvolvedor/Temporária), você DEVE adicionar o seu telefone de teste no painel da Meta Developers como número de destinatário autorizado antes de enviar o template, ou garantir que o token permanente possua a permissão 'whatsapp_business_messaging'.";
+  }
+  if (errorMsg.includes("Unsupported post request") || errorMsg.includes("Object with ID") || subcode === 33) {
+    return "Unsupported post request. Object with ID does not exist, cannot be loaded due to missing permissions, or does not support this operation. Por favor, confira se o ID informado é realmente o Phone Number ID e se o token tem permissões totais no WhatsApp.";
+  }
+  if (code === 190 && subcode === 463) {
+    return "Sessão Expirada (Erro #190, Subcode #463): O seu token de acesso da Meta expirou. Isso geralmente ocorre ao usar um Token de Acesso Temporário (válido por apenas 24h). Você DEVE criar um Token de Acesso Permanente (Permanent System User Token) com validade ilimitada no painel da Meta Developers e Meta Business Suite.";
+  }
+  if (code === 190 || errorMsg.includes("expired") || errorMsg.includes("Session has expired") || errorMsg.includes("validating access token")) {
+    return "Sessão Expirada ou Token Inválido (Erro #190): O token de acesso da Meta expirou ou é de sessão curta. Por favor, gere um Token de Acesso Permanente de Usuário do Sistema com validade ilimitada nas configurações do seu Business Manager da Meta.";
+  }
+  if (errData?.type === "OAuthException") {
+    return "Erro de Autenticação (OAuthException): Token inválido, expirado ou com escopos insuficientes. Gere um token permanente com permissões completas (whatsapp_business_management, whatsapp_business_messaging) e sem data de expiração.";
+  }
+  if (code === 10 || code === 200) {
+    return "Permissão insuficiente. Por favor, conceda acesso total da Conta do WhatsApp ao Usuário do Sistema da Meta.";
+  }
+  if (code === 100) {
+    return "Parâmetro inválido. Verifique se o WABA ID, Phone Number ID e a versão da API estão corretos.";
+  }
+  return errorMsg || "Erro desconhecido retornado da API da Meta.";
+}
+
+async function loadTemplatesDBOrFile() {
+  let fileTemplates: any[] = [];
+  try {
+    const jsonPath = path.join(process.cwd(), "backend_message_templates.json");
+    if (fs.existsSync(jsonPath)) {
+      fileTemplates = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+    }
+  } catch (err) {
+    // ignore
+  }
+
+  try {
+    if (globalSupabaseAdmin) {
+      const { data, error } = await globalSupabaseAdmin
+        .from("whatsapp_message_templates")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (!error && data) {
+        return data;
+      }
+    }
+  } catch (err) {
+    // fallback
+  }
+
+  return fileTemplates;
+}
+
+async function saveTemplateToDBOrFile(template: any) {
+  let saved = false;
+  try {
+    if (globalSupabaseAdmin) {
+      const { error } = await globalSupabaseAdmin
+        .from("whatsapp_message_templates")
+        .upsert(template);
+      if (!error) saved = true;
+    }
+  } catch (err) {
+    // ignore
+  }
+
+  try {
+    const jsonPath = path.join(process.cwd(), "backend_message_templates.json");
+    let fileTemplates: any[] = [];
+    if (fs.existsSync(jsonPath)) {
+      fileTemplates = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+    }
+
+    const idx = fileTemplates.findIndex((t: any) => t.name === template.name && t.language === template.language);
+    if (idx !== -1) {
+      fileTemplates[idx] = { ...fileTemplates[idx], ...template };
+    } else {
+      fileTemplates.push(template);
+    }
+
+    fs.writeFileSync(jsonPath, JSON.stringify(fileTemplates, null, 2), "utf-8");
+  } catch (err) {
+    console.error("[META] Erro ao sincronizar templates com arquivo:", err);
+  }
+}
+
+async function loadNotificationsDBOrFile() {
+  let fileList: any[] = [];
+  try {
+    const jsonPath = path.join(process.cwd(), "backend_notifications.json");
+    if (fs.existsSync(jsonPath)) {
+      fileList = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+    }
+  } catch (err) {
+    // ignore
+  }
+
+  try {
+    if (globalSupabaseAdmin) {
+      const { data, error } = await globalSupabaseAdmin
+        .from("platform_notifications")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (!error && data) {
+        return data;
+      }
+    }
+  } catch (err) {
+    // fallback
+  }
+
+  return fileList;
+}
+
+let broadcastEventGlobal: ((event: string, data: any) => void) | null = null;
+
+async function createPlatformNotification(type: string, title: string, message: string, metadata: any = {}) {
+  const id = crypto.randomUUID();
+  const notification = {
+    id,
+    type,
+    title,
+    message,
+    status: "unread",
+    metadata,
+    created_at: new Date().toISOString()
+  };
+  
+  let saved = false;
+  try {
+    if (globalSupabaseAdmin) {
+      const { error } = await globalSupabaseAdmin.from("platform_notifications").insert(notification);
+      if (!error) saved = true;
+    }
+  } catch (err) {
+    // fallback
+  }
+  
+  if (!saved) {
+    try {
+      const jsonPath = path.join(process.cwd(), "backend_notifications.json");
+      let list = [];
+      if (fs.existsSync(jsonPath)) {
+        list = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+      }
+      list.push(notification);
+      fs.writeFileSync(jsonPath, JSON.stringify(list, null, 2), "utf-8");
+    } catch (err) {
+      console.error("[META] Erro ao salvar notificação para arquivo:", err);
+    }
+  }
+  
+  if (broadcastEventGlobal) {
+    broadcastEventGlobal("notification.created", notification);
+  }
+}
+
+async function checkOfficialChannelWindow(conversationId: string): Promise<boolean> {
+  try {
+    if (globalSupabaseAdmin) {
+      const { data: lastCustMsg } = await globalSupabaseAdmin
+        .from("crm_messages")
+        .select("created_at")
+        .eq("conversation_id", conversationId)
+        .eq("sender_type", "customer")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (lastCustMsg) {
+        const lastTime = new Date(lastCustMsg.created_at).getTime();
+        const diffMs = Date.now() - lastTime;
+        const diffHours = diffMs / (1000 * 60 * 60);
+        return diffHours < 24;
+      }
+    }
+  } catch (err) {
+    console.error("Erro ao checar janela de atendimento:", err);
+  }
+  return false;
+}
+
+async function resolveMetaChannelConfig() {
+  const list = await loadChannelsDBOrFile();
+  const activeMeta = list.find((c: any) => c.type === "whatsapp_meta" && c.is_active);
+  return {
+    accessToken: activeMeta?.instance_token || process.env.META_ACCESS_TOKEN || "",
+    wabaId: activeMeta?.client_token || process.env.META_WABA_ID || "1331425545749731",
+    phoneNumberId: activeMeta?.instance_id || process.env.META_PHONE_NUMBER_ID || "1068963322976757",
+    graphVersion: process.env.META_GRAPH_VERSION || "v25.0"
+  };
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
   app.use(express.json({ limit: "10mb" }));
+
+  // CORS Middleware for Handling Cross-Origin requests safely
+  app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept");
+    if (req.method === "OPTIONS") {
+      return res.status(200).end();
+    }
+    next();
+  });
 
   // Middleware de Log para Diagnóstico
   app.use((req, res, next) => {
@@ -1386,6 +1624,7 @@ async function startServer() {
       }
     });
   }
+  broadcastEventGlobal = broadcastEvent;
 
   async function getAuthenticatedUser(req: express.Request) {
     const authHeader = req.headers.authorization || "";
@@ -1991,17 +2230,67 @@ const DEFAULT_TEAM = {
         return { processed: 0, reason: `Campanha status=${campaign.status}` };
       }
 
-      const { instanceId, instanceToken } = await getZapiConfig();
-      if (!instanceId || !instanceToken) {
-        await supabaseAdmin
-          .from(TABLES.campaigns)
-          .update({
-            last_error: "Z-API não configurada.",
-            updated_at: new Date().toISOString()
-          })
-          .eq("id", campaignId);
+      let whatsAppAccountId: string | null = null;
+      let templateConfig: any = null;
+      if (campaign.description) {
+        if (campaign.description.includes("WhatsApp Account ID: ")) {
+          const parts = campaign.description.split(" | ");
+          const idPart = parts.find((p: string) => p.startsWith("WhatsApp Account ID: "));
+          if (idPart) {
+            whatsAppAccountId = idPart.replace("WhatsApp Account ID: ", "").trim();
+          }
+          const configPart = parts.find((p: string) => p.startsWith("Config: "));
+          if (configPart) {
+            try {
+              templateConfig = JSON.parse(configPart.replace("Config: ", "").trim());
+            } catch (e) {}
+          }
+        }
+      }
 
-        throw new Error("Z-API não configurada.");
+      let conversationChannel: any = null;
+      if (whatsAppAccountId) {
+        const { data: matchedChannel } = await supabaseAdmin
+          .from("crm_channels")
+          .select("*")
+          .eq("id", whatsAppAccountId)
+          .maybeSingle();
+        conversationChannel = matchedChannel;
+      }
+
+      if (!conversationChannel) {
+        conversationChannel = await getActiveWhatsappChannel();
+      }
+
+      const isMetaChannel = conversationChannel?.type === "whatsapp_meta";
+
+      if (!isMetaChannel) {
+        const { instanceId, instanceToken } = await getZapiConfig();
+        if (!instanceId || !instanceToken) {
+          await supabaseAdmin
+            .from(TABLES.campaigns)
+            .update({
+              last_error: "Z-API não configurada.",
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", campaignId);
+
+          throw new Error("Z-API não configurada.");
+        }
+      } else {
+        const phoneNumberId = conversationChannel.instance_id;
+        const accessToken = conversationChannel.instance_token;
+        if (!phoneNumberId || !accessToken) {
+          await supabaseAdmin
+            .from(TABLES.campaigns)
+            .update({
+              last_error: "Canal Meta não configurado corretamente. Faltando token ou ID do telefone.",
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", campaignId);
+
+          throw new Error("Canal Meta não configurado corretamente.");
+        }
       }
 
       const batchSize = campaign.batch_size || 5;
@@ -2066,65 +2355,206 @@ const DEFAULT_TEAM = {
         try {
           const renderedMessage = renderCampaignMessage(campaign.content || campaign.message_text, recipient);
 
-          if (!renderedMessage.trim()) {
+          if (!isMetaChannel && !renderedMessage.trim()) {
             throw new Error("Mensagem da campanha vazia.");
           }
 
-          let zapiResponse;
+          let zapiResponse: any;
           const phone = recipient.phone_normalized;
 
-          if ((campaign.message_type || "text") === "text") {
-            zapiResponse = await callZapi("/send-text", {
-              phone: phone,
-              message: renderedMessage
-            }, {
-              source: "campaign",
-              source_id: campaignId
+          if (isMetaChannel) {
+            const version = conversationChannel.meta_graph_version || process.env.META_GRAPH_VERSION || "v25.0";
+            const metaUrl = `https://graph.facebook.com/${version}/${conversationChannel.instance_id}/messages`;
+            
+            // Build dynamic body variables based on template or render Campaign Message
+            const bodyParams: any[] = [];
+            
+            // Try to match template structure count to send perfect indexed parameters
+            let templateObj: any = null;
+            if (templateConfig?.template_name) {
+              const templates = await loadTemplatesDBOrFile();
+              templateObj = templates.find((t: any) => t.name === templateConfig.template_name || t.id === templateConfig.template_id);
+            }
+            
+            const bodyComp = templateObj?.components?.find((c: any) => c.type === 'BODY');
+            const variableCount = (bodyComp?.text?.match(/\{\{\d+\}\}/g) || []).length;
+            
+            if (variableCount > 0) {
+              for (let i = 1; i <= variableCount; i++) {
+                let paramValue = "Viva Destinos";
+                if (i === 1) {
+                  paramValue = recipient.name || "Cliente";
+                } else if (i === 2) {
+                  paramValue = campaign.created_by_name || "Agente";
+                }
+                bodyParams.push({
+                  type: "text",
+                  text: paramValue
+                });
+              }
+            }
+            
+            const componentsPayload: any[] = [];
+            if (bodyParams.length > 0) {
+              componentsPayload.push({
+                type: "body",
+                parameters: bodyParams
+              });
+            }
+            
+            // If it's a media template, determine media header parameters
+            const mediaUrl = templateConfig?.media_url || campaign.media_url;
+            if (mediaUrl) {
+              const mediaType = campaign.message_type || "image";
+              const headerParams: any[] = [];
+              if (mediaType === "image") {
+                headerParams.push({
+                  type: "image",
+                  image: {
+                    link: mediaUrl
+                  }
+                });
+              } else if (mediaType === "video") {
+                headerParams.push({
+                  type: "video",
+                  video: {
+                    link: mediaUrl
+                  }
+                });
+              } else if (mediaType === "document") {
+                headerParams.push({
+                  type: "document",
+                  document: {
+                    link: mediaUrl,
+                    filename: campaign.media_file_name || "documento.pdf"
+                  }
+                });
+              }
+              
+              if (headerParams.length > 0) {
+                componentsPayload.push({
+                  type: "header",
+                  parameters: headerParams
+                });
+              }
+            }
+            
+            const reqBody = {
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: phone,
+              type: "template",
+              template: {
+                name: templateConfig?.template_name || campaign.content || "vendas_promo",
+                language: {
+                  code: templateConfig?.template_language || "pt_BR"
+                },
+                components: componentsPayload.length > 0 ? componentsPayload : undefined
+              }
+            };
+            
+            const reqResponse = await fetch(metaUrl, {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${conversationChannel.instance_token}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify(reqBody)
             });
-          } else if (campaign.message_type === "image") {
-            if (!campaign.media_url) throw new Error("Imagem da campanha não configurada.");
-
-            zapiResponse = await callZapi("/send-image", {
-              phone: phone,
-              image: campaign.media_url,
-              caption: renderedMessage
-            }, {
-              source: "campaign",
-              source_id: campaignId
-            });
-          } else if (campaign.message_type === "video") {
-            if (!campaign.media_url) throw new Error("Vídeo da campanha não configurado.");
-
-            zapiResponse = await callZapi("/send-video", {
-              phone: phone,
-              video: campaign.media_url,
-              caption: renderedMessage
-            }, {
-              source: "campaign",
-              source_id: campaignId
-            });
-          } else if (campaign.message_type === "audio") {
-             if (!campaign.media_url) throw new Error("Áudio da campanha não configurado.");
-             zapiResponse = await callZapi("/send-audio", {
-                phone: phone,
-                audio: campaign.media_url
-             }, {
-               source: "campaign",
-               source_id: campaignId
-             });
-          } else if (campaign.message_type === "document") {
-             if (!campaign.media_url) throw new Error("Documento da campanha não configurado.");
-             const ext = getExtensionFromMimeOrFileName(campaign.media_mime_type || "", campaign.media_file_name || "arquivo");
-             zapiResponse = await callZapi(`/send-document/${ext}`, {
-                phone: phone,
-                document: campaign.media_url,
-                fileName: campaign.media_file_name || "arquivo"
-             }, {
-               source: "campaign",
-               source_id: campaignId
-             });
+            
+            const resData: any = await reqResponse.json();
+            if (!reqResponse.ok) {
+              const friendlyError = mapMetaErrorResponse(resData?.error);
+              throw new Error(`Erro na API da Meta: ${friendlyError}`);
+            }
+            
+            zapiResponse = { messageId: resData?.messages?.[0]?.id || `meta-${Date.now()}`, success: true };
           } else {
-            throw new Error(`Tipo de campanha não suportado: ${campaign.message_type}`);
+            if ((campaign.message_type || "text") === "text") {
+              zapiResponse = await callZapi("/send-text", {
+                phone: phone,
+                message: renderedMessage
+              }, {
+                source: "campaign",
+                source_id: campaignId
+              });
+            } else if (campaign.message_type === "image") {
+              if (!campaign.media_url) throw new Error("Imagem da campanha não configurada.");
+
+              zapiResponse = await callZapi("/send-image", {
+                phone: phone,
+                image: campaign.media_url,
+                caption: renderedMessage
+              }, {
+                source: "campaign",
+                source_id: campaignId
+              });
+            } else if (campaign.message_type === "video") {
+              if (!campaign.media_url) throw new Error("Vídeo da campanha não configurado.");
+
+              zapiResponse = await callZapi("/send-video", {
+                phone: phone,
+                video: campaign.media_url,
+                caption: renderedMessage
+              }, {
+                source: "campaign",
+                source_id: campaignId
+              });
+            } else if (campaign.message_type === "audio") {
+               if (!campaign.media_url) throw new Error("Áudio da campanha não configurado.");
+               zapiResponse = await callZapi("/send-audio", {
+                  phone: phone,
+                  audio: campaign.media_url
+               }, {
+                 source: "campaign",
+                 source_id: campaignId
+               });
+            } else if (campaign.message_type === "document") {
+               if (!campaign.media_url) throw new Error("Documento da campanha não configurado.");
+               const ext = getExtensionFromMimeOrFileName(campaign.media_mime_type || "", campaign.media_file_name || "arquivo");
+               zapiResponse = await callZapi(`/send-document/${ext}`, {
+                  phone: phone,
+                  document: campaign.media_url,
+                  fileName: campaign.media_file_name || "arquivo"
+               }, {
+                 source: "campaign",
+                 source_id: campaignId
+               });
+            } else {
+              throw new Error(`Tipo de campanha não suportado: ${campaign.message_type}`);
+            }
+          }
+
+          // Register sent message in CRM live chat conversations history
+          try {
+            const finalChatContent = renderedMessage || `Modelo Oficial Meta: ${templateConfig?.template_name || campaign.content}`;
+            const customer = await findOrCreateCustomerByPhone(phone, recipient.name || "Cliente");
+            const conversation = await findOrCreateConversationByPhone(phone, customer, {
+              channelId: whatsAppAccountId,
+              last_message: finalChatContent,
+              status: "OPEN"
+            });
+            
+            await supabaseAdmin.from(TABLES.messages).insert({
+              conversation_id: conversation.id,
+              customer_phone_normalized: phone,
+              sender_type: "agent",
+              sender_name: campaign.created_by_name || "Campanha",
+              message_type: campaign.message_type || "text",
+              content: finalChatContent,
+              media_url: campaign.media_url || null,
+              status: "sent",
+              is_internal: false,
+              created_at: new Date().toISOString()
+            });
+
+            await supabaseAdmin.from(TABLES.conversations).update({
+              last_message: finalChatContent,
+              last_message_at: new Date().toISOString(),
+              unread_count: 0
+            }).eq("id", conversation.id);
+          } catch (chatHistoryErr) {
+            console.error("[CAMPAIGN HIST] Failed to log campaign message in chat history:", chatHistoryErr);
           }
 
           await supabaseAdmin
@@ -2713,6 +3143,65 @@ const DEFAULT_TEAM = {
       const entry = body.entry?.[0];
       const change = entry?.changes?.[0];
       const value = change?.value;
+
+      // Meta Template status updates check via Webhook
+      if (value?.event && value?.message_template_id) {
+        const event = value.event; // APPROVED, REJECTED, PAUSED
+        const templateId = String(value.message_template_id);
+        const templateName = value.message_template_name;
+        const language = value.message_template_language || "pt_BR";
+        const rejection_reason = value.rejection_reason || null;
+
+        console.log(`[META WEBHOOK TEMPLATE STATUS] Model: ${templateName}, Event: ${event}`);
+
+        const templates = await loadTemplatesDBOrFile();
+        const localTemplate = templates.find((t: any) => t.meta_template_id === templateId || t.name === templateName);
+
+        if (localTemplate) {
+          const updatedRecord = {
+            ...localTemplate,
+            status: event,
+            rejection_reason: rejection_reason || localTemplate.rejection_reason,
+            last_webhook_payload: body,
+            updated_at: new Date().toISOString()
+          };
+
+          if (event === "APPROVED") {
+            updatedRecord.approved_at = new Date().toISOString();
+          } else if (event === "REJECTED") {
+            updatedRecord.rejected_at = new Date().toISOString();
+          } else if (event === "PAUSED") {
+            updatedRecord.paused_at = new Date().toISOString();
+          }
+
+          await saveTemplateToDBOrFile(updatedRecord);
+
+          let notifTitle = "Modelo aprovado pela Meta";
+          let notifMsg = `O modelo '${templateName}' foi aprovado pela Meta e já pode ser utilizado para envio.`;
+
+          if (event === "REJECTED") {
+            notifTitle = "Modelo rejeitado pela Meta";
+            notifMsg = `O modelo '${templateName}' foi rejeitado pela Meta. Motivo: ${rejection_reason || 'N/A'}`;
+          } else if (event === "PAUSED") {
+            notifTitle = "Modelo pausado pela Meta";
+            notifMsg = `O modelo '${templateName}' foi suspenso/pausado temporariamente pela Meta.`;
+          }
+
+          await createPlatformNotification(
+            `template_${String(event).toLowerCase()}`,
+            notifTitle,
+            notifMsg,
+            { template_name: templateName, meta_template_id: templateId, event, rejection_reason }
+          );
+        }
+
+        if (isMetaSpecificRoute) {
+          res.setHeader("Content-Type", "text/plain");
+          return res.status(200).send("EVENT_RECEIVED");
+        }
+        return res.status(200).json({ success: true, type: "template_status_update" });
+      }
+
       const metadata = value?.metadata;
       
       const incomingPhoneNumberId = metadata?.phone_number_id;
@@ -3485,43 +3974,125 @@ const DEFAULT_TEAM = {
       const customer = await findOrCreateCustomerByPhone(normalized, finalName || "Cliente Novo");
 
       let conversation: any = null;
+      let infoMessage: string | null = null;
       const now = new Date().toISOString();
       const activeAccountId = accountId || req.body.whatsapp_account_id || null;
 
-      // Criar nova conversa/atendimento proativo
+      // Resolve active channel
       let resolvedAccountId = activeAccountId;
       if (!resolvedAccountId) {
         const { data: channels } = await supabaseAdmin.from("crm_channels").select("*").eq("is_active", true).limit(1);
         resolvedAccountId = channels && channels[0] ? channels[0].id : null;
       }
 
-      const insertPayload: any = {
-        customer_id: customer.id,
-        whatsapp_account_id: resolvedAccountId,
-        channel_id: resolvedAccountId, // Configurar ambos os campos de canal para consistência total
-        customer_phone_normalized: normalized,
-        assigned_user_id: currentUser.id,
-        assigned_user_name: currentUser.name,
-        status: "OPEN",
-        team_id: currentUser.team_id || "comercial",
-        team_name: currentUser.team_name || "Comercial",
-        queue_id: currentUser.team_id || "comercial",
-        queue_name: currentUser.team_name || "Comercial",
-        source: "WhatsApp Z-API",
-        last_message: finalMessage || "Atendimento iniciado",
-        last_message_at: now,
-        created_at: now,
-        updated_at: now
-      };
-
-      const { data: newConv, error: insertErr } = await supabaseAdmin
+      // 1. Look up existing conversation first to prevent unique key violations
+      const { data: existingConvs } = await supabaseAdmin
         .from(TABLES.conversations)
-        .insert(insertPayload)
-        .select()
-        .single();
+        .select("*")
+        .eq("customer_phone_normalized", normalized);
 
-      if (insertErr) throw insertErr;
-      conversation = newConv;
+      const existingConv = existingConvs && existingConvs.length > 0 ? existingConvs[0] : null;
+
+      if (existingConv) {
+        console.log(`[START CHAT] Atendimento existente localizado para o telefone ${normalized}. Reabrindo.`);
+        
+        const updatedPayload: any = {
+          status: "OPEN",
+          assigned_user_id: existingConv.assigned_user_id || currentUser.id,
+          assigned_user_name: existingConv.assigned_user_name || currentUser.name,
+          team_id: existingConv.team_id || currentUser.team_id || "comercial",
+          team_name: existingConv.team_name || currentUser.team_name || "Comercial",
+          queue_id: existingConv.queue_id || currentUser.team_id || "comercial",
+          queue_name: existingConv.queue_name || currentUser.team_name || "Comercial",
+          whatsapp_account_id: resolvedAccountId || existingConv.whatsapp_account_id,
+          channel_id: resolvedAccountId || existingConv.channel_id,
+          updated_at: now
+        };
+
+        if (finalMessage) {
+          updatedPayload.last_message = finalMessage;
+          updatedPayload.last_message_at = now;
+        }
+
+        const { data: reopenedConv, error: updateErr } = await supabaseAdmin
+          .from(TABLES.conversations)
+          .update(updatedPayload)
+          .eq("id", existingConv.id)
+          .select()
+          .single();
+
+        if (updateErr) throw updateErr;
+
+        conversation = reopenedConv;
+        infoMessage = "Já existe uma conversa com este telefone. Abrimos o atendimento existente.";
+      } else {
+        // Create new conversation
+        const insertPayload: any = {
+          customer_id: customer.id,
+          whatsapp_account_id: resolvedAccountId,
+          channel_id: resolvedAccountId,
+          customer_phone_normalized: normalized,
+          assigned_user_id: currentUser.id,
+          assigned_user_name: currentUser.name,
+          status: "OPEN",
+          team_id: currentUser.team_id || "comercial",
+          team_name: currentUser.team_name || "Comercial",
+          queue_id: currentUser.team_id || "comercial",
+          queue_name: currentUser.team_name || "Comercial",
+          source: "WhatsApp Z-API",
+          last_message: finalMessage || "Atendimento iniciado",
+          last_message_at: now,
+          created_at: now,
+          updated_at: now
+        };
+
+        try {
+          const { data: newConv, error: insertErr } = await supabaseAdmin
+            .from(TABLES.conversations)
+            .insert(insertPayload)
+            .select()
+            .single();
+
+          if (insertErr) {
+            throw insertErr;
+          }
+          conversation = newConv;
+        } catch (dbErr: any) {
+          const isUniqueConstraint = 
+            dbErr.code === "23505" || 
+            (dbErr.message && String(dbErr.message).includes("unique constraint")) ||
+            (dbErr.message && String(dbErr.message).includes("duplicate key"));
+
+          if (isUniqueConstraint) {
+            console.warn("[START CHAT RESCUED] Duplicate unique key violation rescued. Loading and updating existing.");
+            const { data: rescueConvs } = await supabaseAdmin
+              .from(TABLES.conversations)
+              .select("*")
+              .eq("customer_phone_normalized", normalized);
+
+            if (rescueConvs && rescueConvs.length > 0) {
+              const rescued = rescueConvs[0];
+              const { data: reopenedRescued } = await supabaseAdmin
+                .from(TABLES.conversations)
+                .update({
+                  status: "OPEN",
+                  whatsapp_account_id: resolvedAccountId || rescued.whatsapp_account_id,
+                  channel_id: resolvedAccountId || rescued.channel_id,
+                  updated_at: now
+                })
+                .eq("id", rescued.id)
+                .select()
+                .single();
+              conversation = reopenedRescued || rescued;
+              infoMessage = "Já existe uma conversa com este telefone. Abrimos o atendimento existente.";
+            } else {
+              throw dbErr;
+            }
+          } else {
+            throw dbErr;
+          }
+        }
+      }
 
       let savedMessage = null;
 
@@ -3605,7 +4176,8 @@ const DEFAULT_TEAM = {
       return res.json({
         success: true,
         conversation,
-        message: savedMessage
+        message: savedMessage,
+        infoMessage
       });
     } catch (err: any) {
       console.error("[START CHAT ERR]", err);
@@ -3834,6 +4406,782 @@ const DEFAULT_TEAM = {
     }
   });
 
+  // START META CUSTOM ENDPOINTS
+  app.get("/api/meta/templates", async (req, res) => {
+    try {
+      const templates = await loadTemplatesDBOrFile();
+      return res.json({ success: true, templates });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || "Erro ao listar templates." });
+    }
+  });
+
+  app.post("/api/meta/templates/create", async (req, res) => {
+    try {
+      const templateData = req.body;
+      const config = await resolveMetaChannelConfig();
+      
+      if (!config.accessToken) {
+        return res.status(400).json({ success: false, error: "Token da Meta não configurado." });
+      }
+
+      const response = await fetch(`https://graph.facebook.com/${config.graphVersion}/${config.wabaId}/message_templates`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${config.accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          name: templateData.name,
+          category: templateData.category,
+          allow_category_change: templateData.allow_category_change ?? true,
+          language: templateData.language || "pt_BR",
+          components: templateData.components
+        })
+      });
+
+      const responseData: any = await response.json();
+      
+      if (!response.ok) {
+        console.error("[META CREATE TEMPLATE ERROR]", responseData);
+        return res.status(400).json({ success: false, error: responseData?.error?.message || "Erro desconhecido na criação do modelo." });
+      }
+
+      const metaTemplateId = responseData.id;
+      const status = responseData.status || "PENDING";
+
+      const newTemplateRecord = {
+        id: crypto.randomUUID(),
+        meta_template_id: metaTemplateId,
+        name: templateData.name,
+        display_name: templateData.display_name || templateData.name,
+        category: templateData.category,
+        language: templateData.language || "pt_BR",
+        status: status,
+        waba_id: config.wabaId,
+        phone_number_id: config.phoneNumberId,
+        components: templateData.components,
+        body_text: extractBodyText(templateData.components) || "",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        submitted_at: new Date().toISOString(),
+        last_meta_response: responseData
+      };
+
+      await saveTemplateToDBOrFile(newTemplateRecord);
+
+      await createPlatformNotification(
+        "template_submitted",
+        "Modelo enviado para análise",
+        `O modelo ${templateData.name} foi enviado para análise da Meta.`,
+        { template_name: templateData.name, meta_template_id: metaTemplateId }
+      );
+
+      return res.json({ success: true, template: newTemplateRecord });
+    } catch (err: any) {
+      console.error("[META CREATE TEMPLATE EXCEPTION]", err);
+      return res.status(500).json({ success: false, error: err?.message || "Erro desconhecido." });
+    }
+  });
+
+  const handleSyncMetaTemplates = async (req: any, res: any) => {
+    try {
+      const config = await resolveMetaChannelConfig();
+      if (!config.accessToken) {
+        return res.status(400).json({ success: false, error: "Token da Meta não configurado nas configurações de canal." });
+      }
+
+      let nextPageUrl: string | null = `https://graph.facebook.com/${config.graphVersion}/${config.wabaId}/message_templates?limit=100`;
+      let metaTemplates: any[] = [];
+
+      while (nextPageUrl) {
+        const response = await fetch(nextPageUrl, {
+          headers: { "Authorization": `Bearer ${config.accessToken}` }
+        });
+
+        const responseData: any = await response.json();
+        if (!response.ok) {
+          console.error("[META SYNC ERROR RESPONSE]", responseData);
+          return res.status(400).json({ success: false, error: responseData?.error?.message || "Erro ao consultar modelos da Meta." });
+        }
+
+        if (responseData.data && Array.isArray(responseData.data)) {
+          metaTemplates.push(...responseData.data);
+        }
+
+        nextPageUrl = responseData.paging?.next || null;
+      }
+
+      const updatedTemplates = [];
+      const existing = await loadTemplatesDBOrFile();
+
+      for (const t of metaTemplates) {
+        const status = t.status || "UNKNOWN";
+        const currentLocal = existing.find((loc: any) => loc.name === t.name && loc.language === t.language);
+        
+        const templateRecord = {
+          id: currentLocal?.id || crypto.randomUUID(),
+          meta_template_id: t.id,
+          name: t.name,
+          display_name: currentLocal?.display_name || t.name,
+          category: t.category,
+          language: t.language,
+          status: status,
+          waba_id: config.wabaId,
+          phone_number_id: config.phoneNumberId,
+          components: t.components,
+          body_text: extractBodyText(t.components) || "",
+          header_text: extractHeaderText(t.components) || "",
+          header_type: extractHeaderType(t.components) || "TEXT",
+          footer_text: extractFooterText(t.components) || "",
+          buttons: extractButtons(t.components) || [],
+          quality_score: t.quality_score || null,
+          rejection_reason: t.rejection_reason || null,
+          last_meta_response: t,
+          synced_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+        await saveTemplateToDBOrFile(templateRecord);
+        updatedTemplates.push(templateRecord);
+
+        // Notify if status changed or it's a new approved template
+        if (currentLocal && currentLocal.status !== status) {
+          if (status === "APPROVED") {
+            await createPlatformNotification("template_approved", "Modelo aprovado pela Meta", `O modelo '${t.name}' foi aprovado e já pode ser usado.`, { template_name: t.name, meta_template_id: t.id });
+          } else if (status === "REJECTED") {
+            await createPlatformNotification("template_rejected", "Modelo rejeitado pela Meta", `O modelo '${t.name}' foi rejeitado pela Meta.`, { template_name: t.name, meta_template_id: t.id });
+          } else if (status === "PAUSED") {
+            await createPlatformNotification("template_paused", "Modelo pausado pela Meta", `O modelo '${t.name}' foi pausado pela Meta.`, { template_name: t.name, meta_template_id: t.id });
+          }
+        }
+      }
+
+      // Create a notification for successful sync
+      if (updatedTemplates.length > 0) {
+        await createPlatformNotification(
+          "template_synced",
+          "Sincronização concluída",
+          `Sincronizamos ${updatedTemplates.length} modelos de mensagem da Meta com sucesso.`,
+          { count: updatedTemplates.length }
+        );
+      }
+
+      return res.json({ success: true, count: updatedTemplates.length, templates: updatedTemplates });
+    } catch (err: any) {
+      console.error("[META TEMPLATES SYNC EXCEPTION]", err);
+      return res.status(500).json({ success: false, error: err?.message || "Erro desconhecido." });
+    }
+  };
+
+  app.get("/api/meta/templates/sync", handleSyncMetaTemplates);
+  app.post("/api/meta/templates/sync", handleSyncMetaTemplates);
+
+  app.get("/api/meta/templates", async (req, res) => {
+    try {
+      const templates = await loadTemplatesDBOrFile();
+      return res.json({ success: true, templates });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || "Erro ao carregar modelos." });
+    }
+  });
+
+  app.post("/api/meta/templates/:id/sync-status", async (req, res) => {
+    try {
+      const templateId = req.params.id;
+      const templates = await loadTemplatesDBOrFile();
+      const localTemplate = templates.find((t: any) => t.id === templateId || t.meta_template_id === templateId);
+      
+      if (!localTemplate) {
+        return res.status(404).json({ success: false, error: "Modelo não encontrado localmente." });
+      }
+
+      const config = await resolveMetaChannelConfig();
+      if (!config.accessToken) {
+        return res.status(400).json({ success: false, error: "Token da Meta não configurado." });
+      }
+
+      const response = await fetch(`https://graph.facebook.com/${config.graphVersion}/${localTemplate.meta_template_id}`, {
+        headers: { "Authorization": `Bearer ${config.accessToken}` }
+      });
+
+      const responseData: any = await response.json();
+      if (!response.ok) {
+        return res.status(400).json({ success: false, error: responseData?.error?.message || "Erro ao consultar modelo na Meta." });
+      }
+
+      const status = responseData.status || "UNKNOWN";
+      
+      const updatedRecord = {
+        ...localTemplate,
+        status: status,
+        components: responseData.components || localTemplate.components,
+        quality_score: responseData.quality_score || localTemplate.quality_score,
+        rejection_reason: responseData.rejection_reason || localTemplate.rejection_reason,
+        last_meta_response: responseData,
+        updated_at: new Date().toISOString()
+      };
+
+      await saveTemplateToDBOrFile(updatedRecord);
+
+      if (localTemplate.status !== status) {
+        if (status === "APPROVED") {
+          await createPlatformNotification("template_approved", "Modelo aprovado pela Meta", `O modelo ${localTemplate.name} foi aprovado e já pode ser usado.`, { template_name: localTemplate.name, meta_template_id: updatedRecord.meta_template_id });
+        } else if (status === "REJECTED") {
+          await createPlatformNotification("template_rejected", "Modelo rejeitado pela Meta", `O modelo ${localTemplate.name} foi rejeitado.`, { template_name: localTemplate.name, meta_template_id: updatedRecord.meta_template_id });
+        }
+      }
+
+      return res.json({ success: true, template: updatedRecord });
+    } catch (err: any) {
+      console.error("[META TEMPLATES SINGLE SYNC CLOUD EXCEPTION]", err);
+      return res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.post("/api/meta/messages/send-template", async (req, res) => {
+    try {
+      const currentUser = await getAuthenticatedUser(req);
+      const { phone, customer_name, template_id, variables } = req.body;
+
+      if (!phone || !template_id) {
+        return res.status(400).json({ success: false, error: "Parâmetros obrigatórios ausentes (phone, template_id)." });
+      }
+
+      // 1. Normalizar telefone
+      let phoneNormalized = String(phone).replace(/\D/g, "");
+      if (phoneNormalized.length > 0 && !phoneNormalized.startsWith("55")) {
+        phoneNormalized = "55" + phoneNormalized;
+      }
+
+      // 2. Buscar o template no banco ou arquivo
+      const templates = await loadTemplatesDBOrFile();
+      const template = templates.find((t: any) => t.id === template_id || t.meta_template_id === template_id || t.name === template_id);
+
+      if (!template) {
+        return res.status(400).json({ success: false, error: "Template não encontrado." });
+      }
+
+      // 3. Validar template
+      if (template.status !== "APPROVED") {
+        return res.status(400).json({ success: false, error: `O modelo '${template.name}' não está aprovado na Meta (Status: ${template.status || 'PENDING'}).` });
+      }
+
+      // 4. Resolver canal Meta Oficial
+      const activeChannels = await loadChannelsDBOrFile();
+      const activeMeta = activeChannels.find((c: any) => c.type === "whatsapp_meta" && c.is_active);
+
+      const accessToken = activeMeta?.instance_token || process.env.META_ACCESS_TOKEN || "";
+      const phoneNumberId = activeMeta?.instance_id || process.env.META_PHONE_NUMBER_ID || "1068963322976757";
+      const graphVersion = activeMeta?.meta_graph_version || process.env.META_GRAPH_VERSION || "v25.0";
+
+      if (!accessToken) {
+        return res.status(400).json({ success: false, error: "Token de acesso Meta não configurado. Por favor, ajuste nos seus canais ou variáveis de ambiente." });
+      }
+
+      // 5. Montar payload do template
+      const sortedKeys = Object.keys(variables || {}).map(Number).sort((a, b) => a - b);
+      const parameters = sortedKeys.map(key => ({
+        type: "text",
+        text: String(variables[key] || "")
+      }));
+
+      const componentsPayload: any[] = [];
+      if (parameters.length > 0) {
+        componentsPayload.push({
+          type: "body",
+          parameters: parameters
+        });
+      }
+
+      const metaUrl = `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`;
+      
+      const response = await fetch(metaUrl, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: phoneNormalized,
+          type: "template",
+          template: {
+            name: template.name,
+            language: {
+              code: template.language || "pt_BR"
+            },
+            components: componentsPayload.length > 0 ? componentsPayload : undefined
+          }
+        })
+      });
+
+      const responseBody: any = await response.json();
+
+      if (!response.ok) {
+        console.error("[Meta Cloud API send-template error]", responseBody);
+        
+        const friendlyError = mapMetaErrorResponse(responseBody?.error);
+        
+        // Registrar notificação de falha
+        await createPlatformNotification(
+          "template_send_failed",
+          "Falha no envio do modelo",
+          `Não foi possível enviar o modelo '${template.name}' para ${phoneNormalized}. Erro: ${friendlyError}`,
+          { phone: phoneNormalized, template_id, template_name: template.name, error: responseBody?.error }
+        );
+
+        return res.status(400).json({
+          success: false,
+          error: friendlyError,
+          errorDetails: responseBody?.error
+        });
+      }
+
+      const waMsgId = responseBody?.messages?.[0]?.id || `meta-${Date.now()}`;
+
+      // Reconstruir o conteúdo da mensagem convertendo variáveis {{1}} -> valor
+      let finalMessage = `[Modelo: ${template.name}]`;
+      if (template.body_text) {
+        let substituted = template.body_text;
+        sortedKeys.forEach(key => {
+          substituted = substituted.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), String(variables[key]));
+        });
+        finalMessage = substituted;
+      }
+
+      // 6. Criar ou abrir conversa existente
+      let phoneToSearch = [phoneNormalized];
+      try {
+        const equivs = getEquivalentBrazilPhones(phoneNormalized);
+        if (equivs && equivs.length > 0) {
+          phoneToSearch = Array.from(new Set([phoneNormalized, ...equivs]));
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      let alreadyExisted = false;
+      let conversation: any = null;
+
+      // Buscar conversa por telefones equivalentes
+      const { data: matchedConv } = await supabaseAdmin
+        .from("crm_conversations")
+        .select("*")
+        .in("customer_phone_normalized", phoneToSearch)
+        .maybeSingle();
+
+      if (matchedConv) {
+        alreadyExisted = true;
+        conversation = matchedConv;
+        // Atualizar o nome se necessário
+        if (customer_name && (!conversation.customer_name || conversation.customer_name === "Cliente WhatsApp")) {
+          const { data: updatedConv } = await supabaseAdmin
+            .from("crm_conversations")
+            .update({ customer_name, updated_at: new Date().toISOString() })
+            .eq("id", conversation.id)
+            .select()
+            .single();
+          if (updatedConv) conversation = updatedConv;
+        }
+      } else {
+        // Criar conversa nova
+        const newConvPayload = {
+          id: crypto.randomUUID(),
+          customer_name: customer_name || "Cliente Oficial",
+          customer_phone_normalized: phoneNormalized,
+          channel_id: activeMeta?.id || null,
+          whatsapp_account_id: activeMeta?.id || null,
+          status: "OPEN",
+          assigned_user_id: currentUser?.id || null,
+          assigned_user_name: currentUser?.name || null,
+          last_message: finalMessage,
+          last_message_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+        const { data: createdConv, error: createError } = await supabaseAdmin
+          .from("crm_conversations")
+          .insert(newConvPayload)
+          .select("*")
+          .single();
+
+        if (createError) {
+          // Tratar erro 23505 de chave duplicada
+          if (createError.code === "23505" || String(createError.message).includes("duplicate") || String(createError.message).includes("customer_phone_normalized_key")) {
+            const { data: fallbackConv } = await supabaseAdmin
+              .from("crm_conversations")
+              .select("*")
+              .in("customer_phone_normalized", phoneToSearch)
+              .maybeSingle();
+            
+            if (fallbackConv) {
+              conversation = fallbackConv;
+              alreadyExisted = true;
+            } else {
+              throw createError;
+            }
+          } else {
+            throw createError;
+          }
+        } else {
+          conversation = createdConv;
+        }
+      }
+
+      // Salvar a mensagem no banco
+      const now = new Date().toISOString();
+      const { data: savedMessage, error: messageError } = await supabaseAdmin
+        .from("crm_messages")
+        .insert({
+          conversation_id: conversation.id,
+          customer_phone_normalized: phoneNormalized,
+          external_message_id: waMsgId,
+          sender_type: "agent",
+          sender_user_id: currentUser.id,
+          sender_name: currentUser.name,
+          from_phone: "",
+          to_phone: phoneNormalized,
+          message_type: "text",
+          content: finalMessage,
+          status: "sent",
+          is_internal: false,
+          raw_payload: responseBody,
+          created_at: now
+        })
+        .select("*")
+        .single();
+
+      if (messageError) throw messageError;
+
+      // Atualizar a conversa
+      const { data: finalConv } = await supabaseAdmin
+        .from("crm_conversations")
+        .update({
+          assigned_user_id: conversation.assigned_user_id || currentUser.id,
+          assigned_user_name: conversation.assigned_user_name || currentUser.name,
+          status: "OPEN",
+          last_message: finalMessage,
+          last_message_at: now,
+          updated_at: now
+        })
+        .eq("id", conversation.id)
+        .select()
+        .single();
+
+      if (finalConv) conversation = finalConv;
+
+      // Registrar notificação de sucesso
+      await createPlatformNotification(
+        "template_send_success",
+        "Modelo enviado",
+        `O modelo '${template.name}' foi enviado com sucesso para ${customer_name || phoneNormalized}.`,
+        { phone: phoneNormalized, template_name: template.name, message_id: waMsgId }
+      );
+
+      // Enviar broadcasts
+      if (broadcastEventGlobal) {
+        broadcastEventGlobal("message.received", {
+          customer_phone: phoneNormalized,
+          conversation_id: conversation.id,
+          message: {
+            ...savedMessage,
+            normalized_message_type: 'text',
+            display_content: savedMessage.content
+          },
+          direction: "outgoing"
+        });
+
+        broadcastEventGlobal("conversation.updated", conversation);
+      }
+
+      return res.json({
+        success: true,
+        message: savedMessage,
+        conversation,
+        alreadyExisted
+      });
+    } catch (err: any) {
+      console.error("[META SEND TEMPLATE ERROR]", err);
+      return res.status(500).json({ success: false, error: err?.message || "Exceção inesperada no envio do modelo." });
+    }
+  });
+
+  app.get("/api/notifications", async (req, res) => {
+    try {
+      const list = await loadNotificationsDBOrFile();
+      list.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      return res.json({ success: true, notifications: list });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || "Erro ao carregar notificações." });
+    }
+  });
+
+  app.post("/api/notifications/:id/read", async (req, res) => {
+    try {
+      const id = req.params.id;
+      let fileList = [];
+      const jsonPath = path.join(process.cwd(), "backend_notifications.json");
+      
+      if (fs.existsSync(jsonPath)) {
+        fileList = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+      }
+
+      const idx = fileList.findIndex((n: any) => n.id === id);
+      if (idx !== -1) {
+        fileList[idx].status = "read";
+        fileList[idx].read_at = new Date().toISOString();
+        fs.writeFileSync(jsonPath, JSON.stringify(fileList, null, 2), "utf-8");
+      }
+
+      try {
+        if (globalSupabaseAdmin) {
+          await globalSupabaseAdmin
+            .from("platform_notifications")
+            .update({ status: "read", read_at: new Date().toISOString() })
+            .eq("id", id);
+        }
+      } catch (err) {
+        // ignore
+      }
+
+      if (broadcastEventGlobal) {
+        broadcastEventGlobal("notification.updated", { id, status: "read" });
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || "Erro ao marcar notificação como lida." });
+    }
+  });
+
+  app.post("/api/notifications/read-all", async (req, res) => {
+    try {
+      let fileList = [];
+      const jsonPath = path.join(process.cwd(), "backend_notifications.json");
+      
+      if (fs.existsSync(jsonPath)) {
+        fileList = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+      }
+
+      fileList.forEach((n: any) => {
+        if (n.status === "unread") {
+          n.status = "read";
+          n.read_at = new Date().toISOString();
+        }
+      });
+      fs.writeFileSync(jsonPath, JSON.stringify(fileList, null, 2), "utf-8");
+
+      try {
+        if (globalSupabaseAdmin) {
+          await globalSupabaseAdmin
+            .from("platform_notifications")
+            .update({ status: "read", read_at: new Date().toISOString() })
+            .eq("status", "unread");
+        }
+      } catch (err) {
+        // ignore
+      }
+
+      if (broadcastEventGlobal) {
+        broadcastEventGlobal("notifications.read_all", { status: "read" });
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || "Erro ao limpar notificações." });
+    }
+  });
+
+  app.get("/api/omnichannel/conversations/:id/window-check", async (req, res) => {
+    try {
+      const conversationId = req.params.id;
+      if (!isValidUUID(conversationId)) {
+        return res.status(400).json({ success: false, error: "ID inválido." });
+      }
+
+      const isWithinWindow = await checkOfficialChannelWindow(conversationId);
+      return res.json({ success: true, isWithinWindow });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || "Erro ao checar janela." });
+    }
+  });
+
+  app.post("/api/omnichannel/conversations/:id/send-template", async (req, res) => {
+    try {
+      const currentUser = await getAuthenticatedUser(req);
+      const conversationId = req.params.id;
+      if (!isValidUUID(conversationId)) {
+        return res.status(400).json({ success: false, error: "Identificador de conversação inválido." });
+      }
+
+      const { templateName, languageCode, variables } = req.body;
+
+      if (!templateName) {
+        return res.status(400).json({ success: false, error: "Nome do modelo de mensagem é obrigatório." });
+      }
+
+      const { data: conversation, error: conversationError } = await supabaseAdmin
+        .from("crm_conversations")
+        .select("*")
+        .eq("id", conversationId)
+        .single();
+
+      if (conversationError || !conversation) {
+        return res.status(404).json({ success: false, error: "Conversa não encontrada." });
+      }
+
+      const phone = normalizeBrazilPhone(conversation.customer_phone_normalized);
+      if (!phone) {
+        return res.status(400).json({ success: false, error: "Telefone do cliente inválido." });
+      }
+
+      let conversationChannel = null;
+      const targetChannelId = conversation.channel_id || conversation.whatsapp_account_id;
+      if (targetChannelId) {
+        const { data: matchedChannel } = await supabaseAdmin
+          .from("crm_channels")
+          .select("*")
+          .eq("id", targetChannelId)
+          .maybeSingle();
+        conversationChannel = matchedChannel;
+      }
+
+      if (!conversationChannel) {
+        conversationChannel = await getActiveWhatsappChannel();
+      }
+
+      if (!conversationChannel || conversationChannel.type !== "whatsapp_meta") {
+        return res.status(400).json({ success: false, error: "Apenas canais oficiais da Meta suportam modelos de mensagens." });
+      }
+
+      const phoneNumberId = conversationChannel.instance_id;
+      const accessToken = conversationChannel.instance_token;
+      if (!phoneNumberId || !accessToken) {
+        return res.status(400).json({ success: false, error: "Canal Meta não configurado corretamente. Verifique as credenciais." });
+      }
+
+      const cleanPhone = phone.replace(/\D/g, "");
+      const version = conversationChannel.meta_graph_version || process.env.META_GRAPH_VERSION || "v25.0";
+      const url = `https://graph.facebook.com/${version}/${phoneNumberId}/messages`;
+
+      const parameters = (variables || []).map((val: string) => ({
+        type: "text",
+        text: val
+      }));
+
+      const componentsPayload: any[] = [];
+      if (parameters.length > 0) {
+        componentsPayload.push({
+          type: "body",
+          parameters: parameters
+        });
+      }
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: cleanPhone,
+          type: "template",
+          template: {
+            name: templateName,
+            language: {
+              code: languageCode || "pt_BR"
+            },
+            components: componentsPayload
+          }
+        })
+      });
+
+      const responseBody: any = await response.json();
+
+      if (!response.ok) {
+        console.error("[Meta Cloud API send-template error]", responseBody);
+        
+        const friendlyError = mapMetaErrorResponse(responseBody?.error);
+        
+        return res.status(400).json({
+          success: false,
+          error: friendlyError,
+          errorDetails: responseBody?.error
+        });
+      }
+
+      const externalMsgId = responseBody?.messages?.[0]?.id || `meta-${Date.now()}`;
+      
+      const templates = await loadTemplatesDBOrFile();
+      const matchedTemplate = templates.find((t: any) => t.name === templateName && t.language === (languageCode || "pt_BR"));
+
+      let finalMessage = `[Modelo: ${templateName}]`;
+      if (matchedTemplate && matchedTemplate.body_text) {
+        let substituted = matchedTemplate.body_text;
+        (variables || []).forEach((val: string, index: number) => {
+          substituted = substituted.replace(new RegExp(`\\{\\{${index + 1}\\}\\}`, "g"), val);
+        });
+        finalMessage = substituted;
+      }
+
+      const now = new Date().toISOString();
+
+      const { data: savedMessage, error: messageError } = await supabaseAdmin
+        .from("crm_messages")
+        .insert({
+          conversation_id: conversationId,
+          customer_phone_normalized: phone,
+          external_message_id: externalMsgId,
+          sender_type: "agent",
+          sender_user_id: currentUser.id,
+          sender_name: currentUser.name,
+          from_phone: "",
+          to_phone: phone,
+          message_type: "text",
+          content: finalMessage,
+          status: "sent",
+          is_internal: false,
+          raw_payload: responseBody,
+          created_at: now
+        })
+        .select("*")
+        .single();
+
+      if (messageError) throw messageError;
+
+      await supabaseAdmin
+        .from("crm_conversations")
+        .update({
+          last_message: finalMessage,
+          last_message_at: now,
+          updated_at: now
+        })
+        .eq("id", conversationId);
+
+      if (broadcastEventGlobal) {
+        broadcastEventGlobal("message.received", {
+          customer_phone: phone,
+          conversation_id: conversationId,
+          message: {
+            ...savedMessage,
+            normalized_message_type: 'text',
+            display_content: savedMessage.content
+          },
+          direction: "outgoing"
+        });
+      }
+
+      return res.json({ success: true, message: savedMessage });
+    } catch (err: any) {
+      console.error("[META TEMPLATE SEND EXCEPTION]", err);
+      return res.status(500).json({ success: false, error: err?.message || "Exceção inesperada ao enviar." });
+    }
+  });
+  // END META CUSTOM ENDPOINTS
+
   app.post("/api/omnichannel/conversations/:id/send-message", async (req, res) => {
     try {
       const currentUser = await getAuthenticatedUser(req);
@@ -3896,6 +5244,13 @@ const DEFAULT_TEAM = {
       }
  
       if (conversationChannel?.type === "whatsapp_meta") {
+        const isWithinWindow = await checkOfficialChannelWindow(conversationId);
+        if (!isWithinWindow) {
+          return res.status(400).json({
+            success: false,
+            error: "Este cliente está fora da janela de atendimento. Use um modelo aprovado."
+          });
+        }
         const metaResponse = await sendMetaMessage(conversationChannel, phone, finalMessage);
         externalMsgId = metaResponse?.messages?.[0]?.id || `meta-${Date.now()}`;
         rawPayload = metaResponse;
@@ -5648,6 +7003,52 @@ const DEFAULT_TEAM = {
   });
 
   // --- Campaign Routes ---
+  app.post("/api/campaigns/upload", (req, res) => {
+    upload.single("file")(req, res, async (err) => {
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          return res.status(400).json({ success: false, error: "Arquivo muito grande. Limite de 25 MB." });
+        }
+        return res.status(400).json({ success: false, error: `Erro no upload: ${err.message}` });
+      } else if (err) {
+        return res.status(500).json({ success: false, error: `Erro inesperado: ${err.message}` });
+      }
+
+      const file = req.file;
+      try {
+        if (!file) throw new Error("Arquivo não recebido.");
+
+        const extension = getExtensionFromMimeOrFileName(file.mimetype, file.originalname);
+        const safeName = sanitizeFileName(file.originalname || `file-${Date.now()}.${extension}`);
+        const datePath = new Date().toISOString().slice(0, 10);
+        const storagePath = `campaigns/${datePath}/${Date.now()}-${safeName}`;
+
+        const { error: uploadErr } = await supabaseAdmin.storage
+          .from("chat-media")
+          .upload(storagePath, file.buffer, {
+            contentType: file.mimetype,
+            upsert: true
+          });
+
+        if (uploadErr) throw uploadErr;
+
+        const { data: storageData } = supabaseAdmin.storage.from("chat-media").getPublicUrl(storagePath);
+        const publicUrl = storageData.publicUrl;
+
+        return res.json({
+          success: true,
+          url: publicUrl,
+          fileName: file.originalname,
+          mimeType: file.mimetype,
+          size: file.size
+        });
+      } catch (error: any) {
+        console.error("[CAMPAIGN UPLOAD ERROR]", error);
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+  });
+
   app.get("/api/campaigns", async (req, res) => {
     try {
       const { data, error } = await supabaseAdmin
@@ -5728,7 +7129,7 @@ const DEFAULT_TEAM = {
   app.post("/api/campaigns", async (req, res) => {
     try {
       const user = await getAuthenticatedUser(req);
-      const { name, whatsapp_account_id, content, message_type, media_url, media_file_name, media_mime_type, contacts, batch_size, min_interval, max_interval } = req.body;
+      const { name, description, whatsapp_account_id, content, message_type, media_url, media_file_name, media_mime_type, contacts, batch_size, min_interval, max_interval } = req.body;
 
       if (!name || !whatsapp_account_id || !content || !contacts || !Array.isArray(contacts)) {
         return res.status(400).json({ success: false, error: "Dados incompletos para criação da campanha" });
@@ -5740,7 +7141,7 @@ const DEFAULT_TEAM = {
 
       const { data: campaign, error: cErr } = await supabaseAdmin.from(TABLES.campaigns).insert({
         name,
-        description: `WhatsApp Account ID: ${whatsapp_account_id}`,
+        description: description || `WhatsApp Account ID: ${whatsapp_account_id}`,
         message_text: content,
         message_type: message_type || 'text',
         media_url,
