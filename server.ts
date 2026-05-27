@@ -9177,7 +9177,7 @@ const DEFAULT_TEAM = {
     try {
       const list = await loadChannelsDBOrFile();
       const active = list.find((c: any) => c.is_active);
-      if (active) {
+      if (active && active.type === "whatsapp_zapi") {
         try {
           const raw = await getZapiStatusRaw();
           const normalized = normalizeZapiStatus(raw);
@@ -9193,6 +9193,34 @@ const DEFAULT_TEAM = {
           console.log("[CHANNELS ACTIVE SYNC REFRESH SKIP]:", zapiErr instanceof Error ? zapiErr.name : zapiErr);
         }
       }
+
+      // Appends environment based Z-API channel fallback if not represented in database
+      const hasEnvZapi = list.some((c: any) => c.id === "env-zapi" || (c.instance_id === process.env.ZAPI_INSTANCE_ID && c.type === "whatsapp_zapi"));
+      if (!hasEnvZapi && process.env.ZAPI_INSTANCE_ID && process.env.ZAPI_INSTANCE_TOKEN) {
+        let envStatus = "DISCONNECTED";
+        let envPhone = "";
+        try {
+          const rawStatus = await getZapiStatusRaw();
+          const normalized = normalizeZapiStatus(rawStatus);
+          envStatus = normalized.connected ? "CONNECTED" : "DISCONNECTED";
+          envPhone = normalized.phone || "";
+        } catch (zapiErr) {
+          console.log("[CHANNELS ENV ZAPI STATUS ERR]:", zapiErr instanceof Error ? zapiErr.name : zapiErr);
+        }
+
+        list.push({
+          id: "env-zapi",
+          name: "WhatsApp Z-API Principal",
+          type: "whatsapp_zapi",
+          instance_id: process.env.ZAPI_INSTANCE_ID,
+          instance_token: process.env.ZAPI_INSTANCE_TOKEN,
+          client_token: process.env.ZAPI_CLIENT_TOKEN || "",
+          is_active: true,
+          status: envStatus,
+          connected_phone: envPhone
+        });
+      }
+
       const safeList = list.map(c => maskSensitiveFields(c));
       return res.json({ success: true, channels: safeList });
     } catch (error: any) {

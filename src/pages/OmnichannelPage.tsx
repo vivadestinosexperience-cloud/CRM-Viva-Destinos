@@ -132,7 +132,34 @@ export default function OmnichannelPage() {
     updateInternalNote,
     deleteInternalNote,
     fetchWhatsAppAccounts,
+    tags,
+    addTag,
+    updateTag,
+    deleteTag,
   } = useAppStore();
+
+  const getUniqueById = <T extends { id: string }>(arr: T[]): T[] => {
+    const seen = new Set<string>();
+    return arr.filter(item => {
+      if (!item || !item.id || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  };
+
+  const safeTags = getUniqueById(Array.isArray(tags) ? tags.filter(t => t && t.id) : []);
+  const safeTeams = getUniqueById(Array.isArray(teams) ? teams.filter(t => t && t.id) : []);
+  const safeUsers = getUniqueById(Array.isArray(users) ? users.filter(u => u && u.id) : []);
+  const safeAccounts = getUniqueById(Array.isArray(whatsAppAccounts) ? whatsAppAccounts.filter(a => a && a.id) : []);
+  const safeCustomers = getUniqueById(Array.isArray(customers) ? customers.filter(c => c && c.id) : []);
+
+  const [newChatData, setNewChatData] = useState({
+    customerId: "",
+    newName: "",
+    newPhone: "",
+    accountId: "",
+    teamId: "",
+  });
 
   const { conversationId } = useParams();
   const navigate = useNavigate();
@@ -238,6 +265,7 @@ export default function OmnichannelPage() {
 
   useEffect(() => {
     if (showNewChatModal) {
+      fetchWhatsAppAccounts();
       const loadTemplatesForInitiation = async () => {
         try {
           const res = await authorizedFetch(`${getApiBaseUrl()}/api/meta/templates`);
@@ -257,9 +285,27 @@ export default function OmnichannelPage() {
       setTemplateType("none");
       setSelectedLocalTemplate(null);
       setManualMessageText("");
+      setNewChatData({
+        customerId: "",
+        newName: "",
+        newPhone: "",
+        accountId: "",
+        teamId: "",
+      });
     }
   }, [showNewChatModal]);
-  const { tags, addTag, updateTag, deleteTag } = useAppStore();
+
+  useEffect(() => {
+    if (showNewChatModal && !newChatData.accountId && safeAccounts.length > 0) {
+      const firstAccount = safeAccounts.find((a) => a.is_active) || safeAccounts[0];
+      if (firstAccount) {
+        setNewChatData((prev) => ({
+          ...prev,
+          accountId: firstAccount.id,
+        }));
+      }
+    }
+  }, [showNewChatModal, safeAccounts, newChatData.accountId]);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -433,21 +479,6 @@ export default function OmnichannelPage() {
   };
 
   const safeMessages = Array.isArray(messages) ? messages.filter(m => m && m.id) : [];
-
-  const getUniqueById = <T extends { id: string }>(arr: T[]): T[] => {
-    const seen = new Set<string>();
-    return arr.filter(item => {
-      if (!item || !item.id || seen.has(item.id)) return false;
-      seen.add(item.id);
-      return true;
-    });
-  };
-
-  const safeTags = getUniqueById(Array.isArray(tags) ? tags.filter(t => t && t.id) : []);
-  const safeTeams = getUniqueById(Array.isArray(teams) ? teams.filter(t => t && t.id) : []);
-  const safeUsers = getUniqueById(Array.isArray(users) ? users.filter(u => u && u.id) : []);
-  const safeAccounts = getUniqueById(Array.isArray(whatsAppAccounts) ? whatsAppAccounts.filter(a => a && a.id) : []);
-  const safeCustomers = getUniqueById(Array.isArray(customers) ? customers.filter(c => c && c.id) : []);
 
   const safeConversations = useMemo(() => {
     const rawList = Array.isArray(conversations) ? conversations.filter(c => c && c.id) : [];
@@ -1987,14 +2018,6 @@ export default function OmnichannelPage() {
       b.last_message_at || b.updated_at || b.created_at || 0,
     ).getTime();
     return timeB - timeA;
-  });
-
-  const [newChatData, setNewChatData] = useState({
-    customerId: "",
-    newName: "",
-    newPhone: "",
-    accountId: "",
-    teamId: "",
   });
 
   const loadTransferMembers = async (teamId: string) => {
