@@ -1035,7 +1035,15 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {whatsAppAccounts.map((account) => {
+        {(() => {
+          const seen = new Set();
+          return whatsAppAccounts.filter(acc => {
+            if (!acc.id) return false;
+            if (seen.has(acc.id)) return false;
+            seen.add(acc.id);
+            return true;
+          });
+        })().map((account) => {
           const status = STATUS_CONFIG[account.status] || STATUS_CONFIG['ERROR'];
           return (
             <motion.div 

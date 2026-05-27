@@ -2941,7 +2941,15 @@ export default function OmnichannelPage() {
             >
               Todos os Canais
             </button>
-            {safeAccounts.map((acc) => {
+            {(() => {
+              const seen = new Set();
+              return safeAccounts.filter(acc => {
+                if (!acc.id) return false;
+                if (seen.has(acc.id)) return false;
+                seen.add(acc.id);
+                return true;
+              });
+            })().map((acc) => {
               const isSelected = selectedAccountIds.includes(acc.id);
               return (
                 <button
@@ -3240,9 +3248,9 @@ export default function OmnichannelPage() {
                                       .toLowerCase()
                                       .includes((tagSearch || "").toLowerCase()),
                                   )
-                                  .map((tag) => (
+                                  .map((tag, idx) => (
                                     <button
-                                      key={tag.id}
+                                      key={`${tag.id || tag.name || ''}_${idx}`}
                                       onClick={() => {
                                         if (activeConversation) {
                                           handleLinkTag(
@@ -5304,7 +5312,15 @@ export default function OmnichannelPage() {
                         }}
                       >
                         <option value="">Selecione um canal</option>
-                        {safeAccounts.map((acc) => (
+                        {(() => {
+                          const seen = new Set();
+                          return safeAccounts.filter(acc => {
+                            if (!acc.id) return false;
+                            if (seen.has(acc.id)) return false;
+                            seen.add(acc.id);
+                            return true;
+                          });
+                        })().map((acc) => (
                           <option key={acc.id} value={acc.id}>
                             {acc.name} (
                             {acc.status === "CONNECTED" ? "Ativo" : "Off"})
