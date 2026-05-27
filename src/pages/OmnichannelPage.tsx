@@ -484,15 +484,20 @@ export default function OmnichannelPage() {
     const rawList = Array.isArray(conversations) ? conversations.filter(c => c && c.id) : [];
     const uniqueMap = new Map<string, Conversation>();
     for (const c of rawList) {
-      let p = c.customer_phone_normalized || "";
-      if (!p) {
+      let phoneField = c.customer_phone_normalized || "";
+      if (!phoneField) {
         const cust = c.customer || safeCustomers.find((cust) => cust.id === c.customer_id);
-        p = cust?.phone_normalized || cust?.phone || "";
+        phoneField = cust?.phone_normalized || cust?.phone || "";
       }
-      p = String(p).replace(/\D/g, "");
       
-      const normResult = normalizeBrazilPhone(p);
-      const key = normResult.valid ? normResult.phone : p;
+      const basePhone = phoneField.includes("-") ? phoneField.split("-")[0] : phoneField;
+      const channelIdSuffix = c.channel_id || c.whatsapp_account_id || "default";
+
+      const cleanedBasePhone = String(basePhone).replace(/\D/g, "");
+      const normResult = normalizeBrazilPhone(cleanedBasePhone);
+      const phoneKey = normResult.valid ? normResult.phone : cleanedBasePhone;
+      
+      const key = phoneKey ? `${phoneKey}-${channelIdSuffix}` : "";
       
       if (!key) {
         uniqueMap.set(c.id, c);
@@ -541,9 +546,10 @@ export default function OmnichannelPage() {
           const cust = rawFound.customer || safeCustomers.find((cust) => cust.id === rawFound.customer_id);
           phone = cust?.phone_normalized || cust?.phone || "";
         }
-        phone = String(phone).replace(/\D/g, "");
-        const normResult = normalizeBrazilPhone(phone);
-        const key = normResult.valid ? normResult.phone : phone;
+        const channelIdSuffix = rawFound.channel_id || rawFound.whatsapp_account_id || "default";
+        const cleanedPhone = String(phone.includes("-") ? phone.split("-")[0] : phone).replace(/\D/g, "");
+        const normResult = normalizeBrazilPhone(cleanedPhone);
+        const key = normResult.valid ? normResult.phone : cleanedPhone;
 
         if (key) {
           const uniqueFound = safeConversations.find(c => {
@@ -552,10 +558,13 @@ export default function OmnichannelPage() {
               const cust = c.customer || safeCustomers.find((cust) => cust.id === c.customer_id);
               p = cust?.phone_normalized || cust?.phone || "";
             }
-            p = String(p).replace(/\D/g, "");
-            const nr = normalizeBrazilPhone(p);
-            const k = nr.valid ? nr.phone : p;
-            return k === key;
+            const baseP = p.includes("-") ? p.split("-")[0] : p;
+            const cSuffix = c.channel_id || c.whatsapp_account_id || "default";
+            
+            const cleanedP = String(baseP).replace(/\D/g, "");
+            const nr = normalizeBrazilPhone(cleanedP);
+            const k = nr.valid ? nr.phone : cleanedP;
+            return k === key && cSuffix === channelIdSuffix;
           });
           if (uniqueFound) {
             setActiveConversationId(uniqueFound.id);

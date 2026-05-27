@@ -1,6 +1,10 @@
 export function normalizeBrazilPhone(input: string) {
+  let baseInput = input || "";
+  if (baseInput.includes("-")) {
+    baseInput = baseInput.split("-")[0];
+  }
   // Remove non-numeric characters
-  let cleaned = input.replace(/\D/g, '');
+  let cleaned = baseInput.replace(/\D/g, '');
   
   if (cleaned.startsWith('0')) {
     cleaned = cleaned.substring(1);

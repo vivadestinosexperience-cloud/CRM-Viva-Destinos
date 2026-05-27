@@ -299,6 +299,7 @@ export interface Conversation {
   started_at?: string;
   closed_at?: string;
   origin?: string;
+  channel_id?: string;
   transfer_reason?: string;
 
   // Internal Note

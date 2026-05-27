@@ -808,7 +808,11 @@ function isFilled(value: any): boolean {
 }
 
 function normalizeBrazilPhone(input: any) {
-  const raw = String(input || "").trim().toLowerCase();
+  let raw = String(input || "").trim().toLowerCase();
+
+  if (raw.includes("-")) {
+    raw = raw.split("-")[0];
+  }
 
   if (!raw) return "";
   if (raw.includes("@g.us")) return "";
@@ -845,7 +849,11 @@ function normalizeBrazilPhone(input: any) {
 }
 
 function getEquivalentBrazilPhones(phone: string): string[] {
-  let digits = String(phone || "").replace(/\D/g, "");
+  let cleanPhone = phone;
+  if (phone && phone.includes("-")) {
+    cleanPhone = phone.split("-")[0];
+  }
+  let digits = String(cleanPhone || "").replace(/\D/g, "");
   if (!digits) return [phone];
 
   if ((digits.length === 10 || digits.length === 11) && !digits.startsWith("55")) {
@@ -865,7 +873,7 @@ function getEquivalentBrazilPhones(phone: string): string[] {
       }
     }
   }
-  return [phone, digits];
+  return [cleanPhone, digits];
 }
 
 function isValidUUID(id: string): boolean {
@@ -1826,13 +1834,15 @@ const DEFAULT_TEAM = {
   }
 
   async function findOrCreateConversationByPhone(phone: string, customer: any, options: any = {}) {
-    const phones = getEquivalentBrazilPhones(phone);
     const channelId = options.channelId || null;
-
-    let query = supabaseAdmin.from(TABLES.conversations).select('*').in('customer_phone_normalized', phones);
-    if (channelId) {
-      query = query.eq('channel_id', channelId);
+    let basePhone = phone;
+    if (phone && phone.includes("-")) {
+      basePhone = phone.split("-")[0];
     }
+    const phones = getEquivalentBrazilPhones(basePhone);
+    const dbPhoneKeys = channelId ? phones.map(p => `${p}-${channelId}`) : phones;
+
+    let query = supabaseAdmin.from(TABLES.conversations).select('*').in('customer_phone_normalized', dbPhoneKeys);
     
     let { data: conversations, error: convFetchErr } = await query;
     if (convFetchErr) throw convFetchErr;
@@ -1849,10 +1859,11 @@ const DEFAULT_TEAM = {
     const unreadCount = options.unread_count !== undefined ? options.unread_count : 1;
 
     if (!conversation) {
-      const preferredPhone = phones.find(p => p.length === 13) || phone;
+      const preferredPhone = phones.find(p => p.length === 13) || basePhone;
+      const finalPhoneKey = channelId ? `${preferredPhone}-${channelId}` : preferredPhone;
       const { data: newConv, error: convErr } = await supabaseAdmin.from(TABLES.conversations).insert({
         customer_id: customer.id,
-        customer_phone_normalized: preferredPhone,
+        customer_phone_normalized: finalPhoneKey,
         status: options.status || 'NEW',
         assigned_user_id: null,
         assigned_user_name: null,
@@ -3847,14 +3858,17 @@ const DEFAULT_TEAM = {
         queue_name: c.queue_name || c.team_name || DEFAULT_TEAM.name
       }));
 
-      // Group/deduplicate conversations on-the-fly by equivalent Brazil phone
+      // Group/deduplicate conversations on-the-fly by equivalent Brazil phone + channel
       const uniqueConversationsMap = new Map<string, any>();
 
       for (const c of mapped) {
         let phoneKey = c.customer_phone_normalized || "";
-        const equivs = getEquivalentBrazilPhones(phoneKey);
-        // Normalize the key to the preferred 13-digit format
-        const standardizedKey = equivs.find(p => p.length === 13) || phoneKey;
+        const basePhone = phoneKey.includes("-") ? phoneKey.split("-")[0] : phoneKey;
+        const channelIdSuffix = c.channel_id || c.whatsapp_account_id || "default";
+
+        const equivs = getEquivalentBrazilPhones(basePhone);
+        // Normalize the key to the preferred 13-digit format and append channel id to separate them
+        const standardizedKey = (equivs.find(p => p.length === 13) || basePhone) + "-" + channelIdSuffix;
 
         if (!uniqueConversationsMap.has(standardizedKey)) {
           uniqueConversationsMap.set(standardizedKey, { ...c });
@@ -4024,15 +4038,16 @@ const DEFAULT_TEAM = {
       }
 
       // 1. Look up existing conversation first to prevent unique key violations
+      const searchKey = resolvedAccountId ? `${normalized}-${resolvedAccountId}` : normalized;
       const { data: existingConvs } = await supabaseAdmin
         .from(TABLES.conversations)
         .select("*")
-        .eq("customer_phone_normalized", normalized);
+        .eq("customer_phone_normalized", searchKey);
 
       const existingConv = existingConvs && existingConvs.length > 0 ? existingConvs[0] : null;
 
       if (existingConv) {
-        console.log(`[START CHAT] Atendimento existente localizado para o telefone ${normalized}. Reabrindo.`);
+        console.log(`[START CHAT] Atendimento existente localizado para o telefone ${normalized} no canal ${resolvedAccountId}. Reabrindo.`);
         
         const updatedPayload: any = {
           status: "OPEN",
@@ -4062,14 +4077,14 @@ const DEFAULT_TEAM = {
         if (updateErr) throw updateErr;
 
         conversation = reopenedConv;
-        infoMessage = "Já existe uma conversa com este telefone. Abrimos o atendimento existente.";
+        infoMessage = "Já existe uma conversa com este telefone neste canal. Abrimos o atendimento existente.";
       } else {
         // Create new conversation
         const insertPayload: any = {
           customer_id: customer.id,
           whatsapp_account_id: resolvedAccountId,
           channel_id: resolvedAccountId,
-          customer_phone_normalized: normalized,
+          customer_phone_normalized: searchKey,
           assigned_user_id: currentUser.id,
           assigned_user_name: currentUser.name,
           status: "OPEN",
@@ -4106,7 +4121,7 @@ const DEFAULT_TEAM = {
             const { data: rescueConvs } = await supabaseAdmin
               .from(TABLES.conversations)
               .select("*")
-              .eq("customer_phone_normalized", normalized);
+              .eq("customer_phone_normalized", searchKey);
 
             if (rescueConvs && rescueConvs.length > 0) {
               const rescued = rescueConvs[0];
@@ -4122,7 +4137,7 @@ const DEFAULT_TEAM = {
                 .select()
                 .single();
               conversation = reopenedRescued || rescued;
-              infoMessage = "Já existe uma conversa com este telefone. Abrimos o atendimento existente.";
+              infoMessage = "Já existe uma conversa com este telefone neste canal. Abrimos o atendimento existente.";
             } else {
               throw dbErr;
             }
@@ -4354,10 +4369,19 @@ const DEFAULT_TEAM = {
 
       let conversationIds = [id];
       if (mainConv && mainConv.customer_phone_normalized) {
-        const equivalentPhones = getEquivalentBrazilPhones(mainConv.customer_phone_normalized);
+        const basePhone = mainConv.customer_phone_normalized.includes("-") 
+          ? mainConv.customer_phone_normalized.split("-")[0] 
+          : mainConv.customer_phone_normalized;
+        const channelSuffix = mainConv.customer_phone_normalized.includes("-") 
+          ? mainConv.customer_phone_normalized.slice(basePhone.length) 
+          : "";
+
+        const equivalentPhones = getEquivalentBrazilPhones(basePhone);
+        const searchKeys = channelSuffix ? equivalentPhones.map(p => p + channelSuffix) : equivalentPhones;
+
         const { data: allRelatedConvs } = await supabaseAdmin.from(TABLES.conversations)
           .select('id')
-          .in('customer_phone_normalized', equivalentPhones);
+          .in('customer_phone_normalized', searchKeys);
         
         if (allRelatedConvs && allRelatedConvs.length > 0) {
           conversationIds = allRelatedConvs.map(c => c.id);
@@ -4842,13 +4866,16 @@ const DEFAULT_TEAM = {
         // ignore
       }
 
+      const activeChannelId = activeChannel?.id || null;
+      const dbSearchKeys = activeChannelId ? phoneToSearch.map(p => `${p}-${activeChannelId}`) : phoneToSearch;
+
       let alreadyExisted = false;
       let conversation: any = null;
 
       const { data: matchedConv } = await supabaseAdmin
         .from("crm_conversations")
         .select("*")
-        .in("customer_phone_normalized", phoneToSearch)
+        .in("customer_phone_normalized", dbSearchKeys)
         .maybeSingle();
 
       if (matchedConv) {
@@ -4858,8 +4885,8 @@ const DEFAULT_TEAM = {
           .from("crm_conversations")
           .update({ 
             status: "OPEN",
-            channel_id: activeChannel?.id || conversation.channel_id,
-            whatsapp_account_id: activeChannel?.id || conversation.whatsapp_account_id,
+            channel_id: activeChannelId || conversation.channel_id,
+            whatsapp_account_id: activeChannelId || conversation.whatsapp_account_id,
             last_message: finalMessage,
             last_message_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -4871,12 +4898,13 @@ const DEFAULT_TEAM = {
         if (updatedConv) conversation = updatedConv;
       } else {
         // Criar conversa nova
+        const finalInsertPhone = activeChannelId ? `${phoneNormalized}-${activeChannelId}` : phoneNormalized;
         const newConvPayload = {
           id: crypto.randomUUID(),
           customer_name: customer_name || "Cliente Manual",
-          customer_phone_normalized: phoneNormalized,
-          channel_id: activeChannel?.id || null,
-          whatsapp_account_id: activeChannel?.id || null,
+          customer_phone_normalized: finalInsertPhone,
+          channel_id: activeChannelId || null,
+          whatsapp_account_id: activeChannelId || null,
           status: "OPEN",
           assigned_user_id: currentUser?.id || null,
           assigned_user_name: currentUser?.name || null,
@@ -4898,7 +4926,7 @@ const DEFAULT_TEAM = {
             const { data: fallbackConv } = await supabaseAdmin
               .from("crm_conversations")
               .select("*")
-              .in("customer_phone_normalized", phoneToSearch)
+              .in("customer_phone_normalized", dbSearchKeys)
               .maybeSingle();
             
             if (fallbackConv) {
@@ -8173,6 +8201,108 @@ const DEFAULT_TEAM = {
         messageStatus: `${appUrl}/api/webhooks/zapi/message-status`
       }
     });
+  });
+
+  app.post("/api/zapi/sync-and-check-connections", async (req, res) => {
+    try {
+      const list = await loadChannelsDBOrFile();
+      const results = [];
+
+      // Check if environment variables are set and not represented in the loaded list
+      const hasEnvZapi = list.some((c: any) => c.instance_id === process.env.ZAPI_INSTANCE_ID && (c.type === "whatsapp_zapi" || c.provider_type === "zapi"));
+      if (!hasEnvZapi && process.env.ZAPI_INSTANCE_ID && process.env.ZAPI_INSTANCE_TOKEN) {
+        list.push({
+          id: "env-zapi",
+          name: "WhatsApp Z-API Principal (Config Ambiente)",
+          type: "whatsapp_zapi",
+          provider_type: "zapi",
+          instance_id: process.env.ZAPI_INSTANCE_ID,
+          instance_token: process.env.ZAPI_INSTANCE_TOKEN,
+          client_token: process.env.ZAPI_CLIENT_TOKEN || "",
+          is_active: true,
+          status: "DISCONNECTED",
+          connected_phone: ""
+        });
+      }
+
+      for (const chan of list) {
+        // Only target Z-API channels
+        if ((chan.type === "whatsapp_zapi" || chan.provider_type === "zapi" || String(chan.type || "").includes("zapi")) && chan.instance_id && chan.instance_token) {
+          try {
+            const raw = await getZapiStatusRaw({
+              query: {
+                instanceId: chan.instance_id,
+                instanceToken: chan.instance_token,
+                clientToken: chan.client_token
+              }
+            });
+            const normalized = normalizeZapiStatus(raw);
+            const isConnected = normalized.connected;
+            const phoneNum = normalized.phone || "";
+
+            let updated = false;
+            const prevStatus = chan.status;
+            const prevPhone = chan.connected_phone;
+
+            const nextStatus = isConnected ? "CONNECTED" : "DISCONNECTED";
+
+            // If found connected, make sure it is marked connected and is active so it won't be hidden
+            if (isConnected) {
+              chan.status = "CONNECTED";
+              if (phoneNum) {
+                chan.connected_phone = phoneNum;
+                chan.phone_number = phoneNum;
+              }
+              // Automatically activate if it's connected and we had no active channel, or if it was the recovered one
+              const hasAnyActive = list.some((c: any) => c.is_active && c.id !== chan.id);
+              if (!hasAnyActive || chan.id === "env-zapi") {
+                chan.is_active = true;
+              }
+              await saveChannelToDBOrFile(chan);
+              updated = true;
+            } else if (chan.status !== nextStatus || prevPhone !== phoneNum) {
+              chan.status = nextStatus;
+              if (phoneNum) {
+                chan.connected_phone = phoneNum;
+                chan.phone_number = phoneNum;
+              }
+              await saveChannelToDBOrFile(chan);
+              updated = true;
+            }
+
+            results.push({
+              id: chan.id,
+              name: chan.name,
+              instance_id: chan.instance_id,
+              prevStatus,
+              newStatus: chan.status,
+              connectedPhone: phoneNum || prevPhone,
+              updated,
+              connected: isConnected,
+              details: "Status sincronizado com a Z-API diretamente."
+            });
+          } catch (err: any) {
+            results.push({
+              id: chan.id,
+              name: chan.name,
+              instance_id: chan.instance_id,
+              error: err.message || String(err),
+              connected: false,
+              updated: false
+            });
+          }
+        }
+      }
+
+      return res.json({
+        success: true,
+        message: "Status dos canais verificado e sincronizado com a Z-API.",
+        channels: results
+      });
+    } catch (error: any) {
+      console.error("[SYNC AND CHECK CONNECTIONS ERROR]:", error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
   });
 
   app.get("/api/zapi/config-status", async (req, res) => {

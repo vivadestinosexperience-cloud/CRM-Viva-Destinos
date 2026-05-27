@@ -92,9 +92,10 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string }
 };
 
 export default function ChannelsSettingsPage() {
-  const { whatsAppAccounts, addWhatsAppAccount, updateWhatsAppAccount, deleteWhatsAppAccount, isSaving, teams, users } = useAppStore();
+  const { whatsAppAccounts, addWhatsAppAccount, updateWhatsAppAccount, deleteWhatsAppAccount, isSaving, teams, users, fetchWhatsAppAccounts } = useAppStore();
   const [showZapiModal, setShowZapiModal] = useState(false);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+  const [isDebuggingConnection, setIsDebuggingConnection] = useState(false);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -189,6 +190,41 @@ export default function ChannelsSettingsPage() {
       
       return statusData;
     }, { label: 'Erro ao verificar configuração', showToast: false });
+  };
+
+  const handleDebugConnections = async () => {
+    setIsDebuggingConnection(true);
+    try {
+      const res = await authorizedFetch("/api/zapi/sync-and-check-connections", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        }
+      });
+      const data = await safeReadJson(res);
+      if (!res.ok) throw new Error(data.error || "Erro ao executar verificação");
+
+      if (fetchWhatsAppAccounts) {
+        await fetchWhatsAppAccounts();
+      }
+
+      if (data.channels && data.channels.length > 0) {
+        const connectedList = data.channels.filter((c: any) => c.connected);
+        if (connectedList.length > 0) {
+          const namesAndPhones = connectedList.map((c: any) => `${c.name} (${c.connectedPhone})`).join(", ");
+          toast.success(`Sucesso! Conexão ativa sincronizada: ${namesAndPhones}`);
+        } else {
+          toast.info("Nenhum WhatsApp ativo/conectado oculto foi localizado na Z-API. Se já conectou o celular, aguarde alguns instantes.");
+        }
+      } else {
+        toast.info("Nenhuma conta Z-API configurada foi localizada para verificação.");
+      }
+    } catch (err: any) {
+      console.error("Debug connection error:", err);
+      toast.error(`Erro ao buscar conexão ativa: ${err.message || err}`);
+    } finally {
+      setIsDebuggingConnection(false);
+    }
   };
 
   useEffect(() => {
@@ -667,6 +703,14 @@ Onde consigo gerar esse Client Token na minha conta trial?`;
           >
             <RefreshCw className="w-4 h-4 text-emerald-500" />
             Verificar Configuração
+          </button>
+          <button 
+            onClick={handleDebugConnections}
+            disabled={isDebuggingConnection}
+            className="flex items-center gap-2 px-6 py-4 bg-amber-500 text-white rounded-3xl font-black text-[10px] uppercase tracking-widest hover:bg-amber-600 active:scale-95 transition-all shadow-md shadow-amber-100 disabled:opacity-50"
+          >
+            <Smartphone className={`w-4 h-4 ${isDebuggingConnection ? 'animate-spin' : 'text-amber-100'}`} />
+            {isDebuggingConnection ? 'Verificando...' : 'Debug: Buscar Conexão Oculta'}
           </button>
           <button 
             onClick={() => setShowZapiModal(true)}
