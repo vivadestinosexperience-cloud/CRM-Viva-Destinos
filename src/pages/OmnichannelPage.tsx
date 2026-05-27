@@ -221,6 +221,15 @@ export default function OmnichannelPage() {
   const [editingMessageText, setEditingMessageText] = useState<string>("");
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
 
+  const [sessionTimerTick, setSessionTimerTick] = useState<number>(0);
+
+  useEffect(() => {
+    const timerInterval = setInterval(() => {
+      setSessionTimerTick((t) => t + 1);
+    }, 10000);
+    return () => clearInterval(timerInterval);
+  }, []);
+
   useEffect(() => {
     quickReplyService.list()
       .then(setQuickReplies)
@@ -1104,6 +1113,62 @@ export default function OmnichannelPage() {
   const currentAccount = safeAccounts.find(
     (a) => a.id === activeConversation?.whatsapp_account_id,
   ) || safeAccounts.find((a) => a.is_active) || safeAccounts[0];
+
+  const isMetaConversation = activeConversation && currentAccount?.provider === "META_CLOUD";
+
+  const sessionStatus = useMemo(() => {
+    if (!activeConversation) {
+      return {
+        status: "no_conversation" as const,
+        text: "",
+        colorClass: "",
+        description: "",
+        timeLeftStr: ""
+      };
+    }
+
+    const lastCustomerMsg = [...safeMessages]
+      .reverse()
+      .find((m) => m.sender_type === "customer");
+    
+    if (!lastCustomerMsg) {
+      return {
+        status: "no_message" as const,
+        text: "Sem Janela Ativa",
+        colorClass: "bg-slate-100/80 border-slate-200 text-slate-500",
+        description: "Janela Meta de 24h só se inicia quando uma mensagem for recebida do cliente.",
+        timeLeftStr: ""
+      };
+    }
+
+    const lastMsgTime = new Date(lastCustomerMsg.created_at).getTime();
+    const diffMs = Date.now() - lastMsgTime;
+    const period24h = 24 * 60 * 60 * 1000;
+    
+    if (diffMs >= period24h) {
+      return {
+        status: "expired" as const,
+        text: "Sessão Expirada (24h+)",
+        colorClass: "bg-rose-50 border-rose-200 text-rose-700",
+        description: "Mais de 24 horas desde a última mensagem do cliente. Envie um Modelo de Mensagem.",
+        timeLeftStr: "Expirado"
+      };
+    } else {
+      const remainingMs = period24h - diffMs;
+      const hours = Math.floor(remainingMs / (3600 * 1000));
+      const mins = Math.floor((remainingMs % (3600 * 1000)) / (60 * 1000));
+      const secs = Math.floor((remainingMs % (60 * 1000)) / 1000);
+      const timeLeftStr = `${hours}h ${mins}m restantes`;
+
+      return {
+        status: "active" as const,
+        text: `Janela Ativa (${timeLeftStr})`,
+        colorClass: "bg-emerald-50 border-emerald-200 text-emerald-700",
+        description: "Uma janela de 24 horas está ativa para mensagens livres.",
+        timeLeftStr
+      };
+    }
+  }, [activeConversation, safeMessages, sessionTimerTick]);
 
   // Load and refresh Kanban linkage
   const refreshKanbanLinkage = () => {
@@ -3105,6 +3170,19 @@ export default function OmnichannelPage() {
                     )}
                     <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
 
+                    {isMetaConversation && (
+                      <>
+                        <div
+                          className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider border flex items-center gap-1 shadow-sm ${sessionStatus.colorClass}`}
+                          title={sessionStatus.description}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${sessionStatus.status === "active" ? "bg-emerald-500 animate-pulse" : sessionStatus.status === "expired" ? "bg-rose-500 animate-pulse" : "bg-slate-400"}`} />
+                          {sessionStatus.text}
+                        </div>
+                        <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
+                      </>
+                    )}
+
                     {/* Exibição de Etiquetas no Header */}
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {safeArray(activeConversation.tags).map((tag: any, idx: number) => (
@@ -3232,6 +3310,17 @@ export default function OmnichannelPage() {
                 >
                   <ArrowRightLeft className="w-5 h-5" />
                 </button>
+                {isMetaConversation && (
+                  <button
+                    onClick={() => setShowTemplateModal(true)}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 hover:text-emerald-800 rounded-xl border border-emerald-200 transition-all font-bold text-xs"
+                    title="Reiniciar conversa com Modelos de Mensagem (Templates Meta)"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span className="hidden lg:inline">Reiniciar (Modelos de Mensagem)</span>
+                    <span className="lg:hidden">Modelos Meta</span>
+                  </button>
+                )}
                 {activeConversation.status === "RESOLVED" ||
                 activeConversation.status === "CLOSED" ||
                 activeConversation.status === "CONCLUIDO" ||
@@ -3761,10 +3850,33 @@ export default function OmnichannelPage() {
                     )}
                   </div>
 
-                  <form
-                    onSubmit={handleSendMessage}
-                    className={`relative flex items-end gap-3.5 p-4 rounded-3xl focus-within:ring-2 transition-all shadow-md border ${isInternalMode ? "bg-amber-50/50 border-amber-200 focus-within:ring-amber-500" : "bg-slate-50 border-slate-200 focus-within:ring-blue-500"}`}
-                  >
+                  {isMetaConversation && sessionStatus.status !== "active" && !isInternalMode ? (
+                    <div className="bg-amber-50/60 border border-amber-200 p-6 text-center flex flex-col items-center justify-center space-y-4 shadow-sm animate-in fade-in duration-300 rounded-[2rem] w-full">
+                      <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center text-amber-600">
+                        <Clock className="w-6 h-6 animate-pulse" />
+                      </div>
+                      <div className="max-w-md">
+                        <h4 className="font-bold text-slate-800 text-sm">
+                          Sessão WhatsApp da Meta Expirada (Janela de 24h)
+                        </h4>
+                        <p className="text-xs text-slate-500 mt-1.5 leading-relaxed font-semibold">
+                          Já se passaram mais de 24 horas desde a última mensagem enviada por este cliente no WhatsApp. Para retomar o atendimento e liberar o envio de novas mensagens livres, envie um dos <strong className="text-amber-800 font-extrabold">Modelos de Mensagem Aprovados (Templates Meta)</strong>.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowTemplateModal(true)}
+                        className="px-5 py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs uppercase tracking-widest rounded-2xl transition-all shadow-lg hover:scale-[1.02] active:scale-95 flex items-center gap-2"
+                      >
+                        <RefreshCw className="w-4 h-4 animate-spin" style={{ animationDuration: "3s" }} />
+                        Reiniciar Conversa usando Modelos de Mensagem (Templates Meta)
+                      </button>
+                    </div>
+                  ) : (
+                    <form
+                      onSubmit={handleSendMessage}
+                      className={`relative flex items-end gap-3.5 p-4 rounded-3xl focus-within:ring-2 transition-all shadow-md border ${isInternalMode ? "bg-amber-50/50 border-amber-200 focus-within:ring-amber-500" : "bg-slate-50 border-slate-200 focus-within:ring-blue-500"}`}
+                    >
                     <div className="flex items-center gap-1 relative">
                       <button
                         type="button"
@@ -4008,6 +4120,7 @@ export default function OmnichannelPage() {
                       </button>
                     </div>
                   </form>
+                  )}
                 </div>
               )}
             </footer>
