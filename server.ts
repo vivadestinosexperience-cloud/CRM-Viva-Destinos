@@ -4182,7 +4182,8 @@ const DEFAULT_TEAM = {
             },
             {
               source: "start-chat",
-              source_id: conversation.id
+              source_id: conversation.id,
+              channel: conversationChannel
             }
           );
           externalMsgId = zapiResponse?.messageId || zapiResponse?.id || `sent-${Date.now()}`;
