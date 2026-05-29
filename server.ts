@@ -4859,6 +4859,8 @@ const DEFAULT_TEAM = {
       }
 
       // 6. Criar ou abrir conversa existente
+      const customer = await findOrCreateCustomerByPhone(phoneNormalized, customer_name || "Cliente Manual");
+
       let phoneToSearch = [phoneNormalized];
       try {
         const equivs = getEquivalentBrazilPhones(phoneNormalized);
@@ -4892,8 +4894,7 @@ const DEFAULT_TEAM = {
             whatsapp_account_id: activeChannelId || conversation.whatsapp_account_id,
             last_message: finalMessage,
             last_message_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            customer_name: customer_name && (!conversation.customer_name || conversation.customer_name === "Cliente WhatsApp") ? customer_name : conversation.customer_name 
+            updated_at: new Date().toISOString()
           })
           .eq("id", conversation.id)
           .select()
@@ -4904,7 +4905,7 @@ const DEFAULT_TEAM = {
         const finalInsertPhone = activeChannelId ? `${phoneNormalized}-${activeChannelId}` : phoneNormalized;
         const newConvPayload = {
           id: crypto.randomUUID(),
-          customer_name: customer_name || "Cliente Manual",
+          customer_id: customer.id,
           customer_phone_normalized: finalInsertPhone,
           channel_id: activeChannelId || null,
           whatsapp_account_id: activeChannelId || null,
