@@ -1595,7 +1595,9 @@ async function checkOfficialChannelWindow(conversationId: string): Promise<boole
 
 async function resolveMetaChannelConfig() {
   const list = await loadChannelsDBOrFile();
-  const activeMeta = list.find((c: any) => c.type === "whatsapp_meta" && c.is_active);
+  const activeMeta = list.find((c: any) => c.type === "whatsapp_meta" && c.instance_token) || 
+                     list.find((c: any) => c.type === "whatsapp_meta" && c.is_active) || 
+                     list.find((c: any) => c.type === "whatsapp_meta");
   return {
     accessToken: activeMeta?.instance_token || process.env.META_ACCESS_TOKEN || "",
     wabaId: activeMeta?.client_token || process.env.META_WABA_ID || "1331425545749731",
