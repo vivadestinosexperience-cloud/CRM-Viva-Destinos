@@ -4424,6 +4424,63 @@ export default function OmnichannelPage() {
                     </div>
                   </section>
 
+                  {/* PAID TRAFFIC INFO SECTION */}
+                  {activeConversation && ((activeConversation as any).traffic_source || (activeConversation as any).traffic_campaign) && (
+                    <section className="border-t border-slate-100 pt-4 mt-4 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <TrendingUp className="w-4 h-4 text-rose-500" />
+                        <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                          Tráfego Pago (Meta Ads)
+                        </h4>
+                      </div>
+                      <div className="bg-rose-50/50 border border-slate-100 rounded-2xl p-3.5 space-y-2.5 shadow-sm text-xs">
+                        {(activeConversation as any).traffic_source && (
+                          <div>
+                            <span className="text-[9px] uppercase tracking-wider font-extrabold text-slate-400 block">Origem</span>
+                            <span className="font-bold text-rose-700">{(activeConversation as any).traffic_source}</span>
+                          </div>
+                        )}
+                        {(activeConversation as any).traffic_campaign && (
+                          <div>
+                            <span className="text-[9px] uppercase tracking-wider font-extrabold text-slate-400 block">Campanha</span>
+                            <span className="font-bold text-slate-800">{(activeConversation as any).traffic_campaign}</span>
+                          </div>
+                        )}
+                        {(activeConversation as any).traffic_headline && (
+                          <div>
+                            <span className="text-[9px] uppercase tracking-wider font-extrabold text-slate-400 block">Headline / Term</span>
+                            <span className="font-medium text-slate-700 italic">"{(activeConversation as any).traffic_headline}"</span>
+                          </div>
+                        )}
+                        {(activeConversation as any).traffic_medium && (
+                          <div>
+                            <span className="text-[9px] uppercase tracking-wider font-extrabold text-slate-400 block">Meio</span>
+                            <span className="font-mono text-[10px] text-slate-600 bg-white border border-slate-200 px-1 py-0.5 rounded">{(activeConversation as any).traffic_medium}</span>
+                          </div>
+                        )}
+                        {(activeConversation as any).traffic_content && (
+                          <div>
+                            <span className="text-[9px] uppercase tracking-wider font-extrabold text-slate-400 block">Conteúdo</span>
+                            <span className="font-medium text-slate-700">{(activeConversation as any).traffic_content}</span>
+                          </div>
+                        )}
+                        {(activeConversation as any).traffic_access_url && (
+                          <div>
+                            <span className="text-[9px] uppercase tracking-wider font-extrabold text-slate-400 block">Acesso ao Conteúdo (Link)</span>
+                            <a 
+                              href={(activeConversation as any).traffic_access_url} 
+                              target="_blank" 
+                              rel="noopener noreferrer" 
+                              className="text-blue-600 hover:underline truncate block font-mono text-[9px] mt-0.5"
+                            >
+                              {(activeConversation as any).traffic_access_url}
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                  )}
+
                   {/* KANBAN / CRM LINKAGE SECTION */}
                   <section className="border-t border-slate-100 pt-5 mt-4">
                     <div className="flex items-center justify-between mb-3">

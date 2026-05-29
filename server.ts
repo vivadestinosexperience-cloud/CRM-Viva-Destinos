@@ -2042,6 +2042,11 @@ const DEFAULT_TEAM = {
       channelId: channelId
     });
 
+    const zapiReferral = payload?.referral || payload?.message?.referral || payload?.text?.referral;
+    if (zapiReferral && !isOutgoing) {
+      await applyPaidTrafficReferral(conversation.id, zapiReferral);
+    }
+
     const message = await createIncomingDirectMessage(conversation, customer, normalized);
     await updateConversationAfterIncomingDirectMessage(conversation, normalized, message);
 
@@ -2122,7 +2127,120 @@ const DEFAULT_TEAM = {
     return responseBody;
   }
 
-  async function processIncomingMetaMessage(phone: string, customerName: string, messageText: string, externalMsgId: string, channelId: string | null) {
+  function parseUtmParams(urlStr: string) {
+    const result = {
+      utm_source: "",
+      utm_medium: "",
+      utm_campaign: "",
+      utm_content: "",
+      utm_term: ""
+    };
+    if (!urlStr) return result;
+    try {
+      let safeUrl = urlStr;
+      if (!urlStr.startsWith("http://") && !urlStr.startsWith("https://")) {
+        safeUrl = "https://facebook.com" + (urlStr.startsWith("/") ? "" : "/") + urlStr;
+      }
+      const parsed = new URL(safeUrl);
+      result.utm_source = parsed.searchParams.get("utm_source") || "";
+      result.utm_medium = parsed.searchParams.get("utm_medium") || "";
+      result.utm_campaign = parsed.searchParams.get("utm_campaign") || "";
+      result.utm_content = parsed.searchParams.get("utm_content") || "";
+      result.utm_term = parsed.searchParams.get("utm_term") || "";
+    } catch (err) {
+      console.warn("[UTM PARSER WARNING] Failed to parse URL:", urlStr);
+    }
+    return result;
+  }
+
+  async function applyPaidTrafficReferral(conversationId: string, referral: any) {
+    if (!conversationId || !referral) return null;
+    try {
+      const sourceUrl = referral.source_url || referral.sourceUrl || "";
+      const utms = parseUtmParams(sourceUrl);
+      
+      const trafficData = {
+        traffic_source: utms.utm_source || referral.source_type || referral.sourceType || "Meta Ads",
+        traffic_campaign: utms.utm_campaign || referral.source_id || referral.sourceId || "Campanha Meta Ads",
+        traffic_headline: referral.headline || utms.utm_term || "Click-to-WhatsApp",
+        traffic_medium: utms.utm_medium || "cpc",
+        traffic_content: referral.body || utms.utm_content || "Anúncio",
+        traffic_access_url: sourceUrl || null
+      };
+
+      console.log(`[TRAFFIC META DETECTED] Para conversação ID: ${conversationId}:`, trafficData);
+
+      // 1. Update the conversation fields
+      const { error: updateErr } = await supabaseAdmin
+        .from("crm_conversations")
+        .update({
+          traffic_source: trafficData.traffic_source,
+          traffic_campaign: trafficData.traffic_campaign,
+          traffic_headline: trafficData.traffic_headline,
+          traffic_medium: trafficData.traffic_medium,
+          traffic_content: trafficData.traffic_content,
+          traffic_access_url: trafficData.traffic_access_url
+        })
+        .eq("id", conversationId);
+
+      if (updateErr) {
+        console.error("[TRAFFIC CRM UPDATE DB ERROR]:", updateErr);
+      }
+
+      // 2. Resolve/Create "TRÁFEGO-PAGO" tag
+      let tagId = null;
+      try {
+        const { data: existingTag } = await supabaseAdmin
+          .from("crm_tags")
+          .select("id")
+          .eq("name", "TRÁFEGO-PAGO")
+          .maybeSingle();
+
+        if (existingTag) {
+          tagId = existingTag.id;
+        } else {
+          const { data: newTag } = await supabaseAdmin
+            .from("crm_tags")
+            .insert({
+              name: "TRÁFEGO-PAGO",
+              color: "#E11D48", // Rose Red
+              description: "Leads oriundos de tráfego pago (Meta Ads)"
+            })
+            .select("id")
+            .single();
+          if (newTag) tagId = newTag.id;
+        }
+      } catch (tagErr) {
+        console.error("[TRAFFIC TAG RESOLVE ERROR]:", tagErr);
+      }
+
+      // 3. Link tag to conversation if got tagId
+      if (tagId) {
+        const { error: linkErr } = await supabaseAdmin
+          .from("crm_conversation_tags")
+          .upsert({
+            conversation_id: conversationId,
+            tag_id: tagId,
+            created_by: "system",
+            created_by_name: "Meta Ads Integration"
+          }, { onConflict: "conversation_id,tag_id" });
+
+        if (linkErr) {
+          console.error("[TRAFFIC TAG LINKING DB ERROR]:", linkErr);
+        } else {
+          console.log(`[TRAFFIC TAG LINK SUCCESS] Tag 'TRÁFEGO-PAGO' associada à conversa ${conversationId}.`);
+          broadcastEvent("conversation.updated", { id: conversationId });
+        }
+      }
+      
+      return trafficData;
+    } catch (err) {
+      console.error("[APPLY PAID TRAFFIC EXCEPTION]:", err);
+      return null;
+    }
+  }
+
+  async function processIncomingMetaMessage(phone: string, customerName: string, messageText: string, externalMsgId: string, channelId: string | null, referral?: any) {
     const cleanPhone = normalizeBrazilPhone(phone);
     const customer = await findOrCreateCustomerByPhone(cleanPhone, customerName || "Cliente WhatsApp");
     
@@ -2140,6 +2258,10 @@ const DEFAULT_TEAM = {
         .update({ channel_id: channelId })
         .eq("id", conversation.id);
       conversation.channel_id = channelId;
+    }
+
+    if (referral) {
+      await applyPaidTrafficReferral(conversation.id, referral);
     }
 
     const { data: message, error: messageError } = await supabaseAdmin
@@ -2177,9 +2299,15 @@ const DEFAULT_TEAM = {
       .select("*")
       .single();
 
+    const { data: finalConv } = await supabaseAdmin
+      .from("crm_conversations")
+      .select("*")
+      .eq("id", conversation.id)
+      .single();
+
     broadcastEvent("message.received", { 
       customer, 
-      conversation: updatedConv || conversation, 
+      conversation: finalConv || updatedConv || conversation, 
       message: {
         ...message,
         normalized_message_type: 'text',
@@ -2188,7 +2316,7 @@ const DEFAULT_TEAM = {
       direction: "incoming" 
     });
 
-    return { customer, conversation: updatedConv || conversation, message };
+    return { customer, conversation: finalConv || updatedConv || conversation, message };
   }
 
   // --- Campaign Helpers ---
@@ -3368,7 +3496,8 @@ const DEFAULT_TEAM = {
         channelId = matchedChannel?.id || null;
       }
 
-      const result = await processIncomingMetaMessage(senderPhone, customerName, messageText, messageId, channelId);
+      const referral = messageObj?.referral || null;
+      const result = await processIncomingMetaMessage(senderPhone, customerName, messageText, messageId, channelId, referral);
 
       if (isMetaSpecificRoute) {
         res.setHeader("Content-Type", "text/plain");

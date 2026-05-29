@@ -215,6 +215,26 @@ BEGIN
       ALTER TABLE public.whatsapp_message_templates ADD COLUMN synced_at TIMESTAMPTZ DEFAULT NOW();
     END IF;
 
+    -- ADD PAID TRAFFIC REFERRAL COLUMNS TO CRM_CONVERSATIONS
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='crm_conversations' AND column_name='traffic_source') THEN
+      ALTER TABLE public.crm_conversations ADD COLUMN traffic_source TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='crm_conversations' AND column_name='traffic_campaign') THEN
+      ALTER TABLE public.crm_conversations ADD COLUMN traffic_campaign TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='crm_conversations' AND column_name='traffic_headline') THEN
+      ALTER TABLE public.crm_conversations ADD COLUMN traffic_headline TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='crm_conversations' AND column_name='traffic_medium') THEN
+      ALTER TABLE public.crm_conversations ADD COLUMN traffic_medium TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='crm_conversations' AND column_name='traffic_content') THEN
+      ALTER TABLE public.crm_conversations ADD COLUMN traffic_content TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='crm_conversations' AND column_name='traffic_access_url') THEN
+      ALTER TABLE public.crm_conversations ADD COLUMN traffic_access_url TEXT;
+    END IF;
+
     -- Update quality_score type if it was TEXT to support JSONB or keep text-friendly handles
     -- PostgreSQL doesn't allow direct simple text-to-jsonb cast without USING, so we use USING clause or fallback.
     -- (No changes to quality_score column unless needed, but we can store JSON string or keep it as text)
