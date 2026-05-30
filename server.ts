@@ -2010,6 +2010,41 @@ const DEFAULT_TEAM = {
     await supabaseAdmin.from(TABLES.conversations).update(updates).eq('id', conversation.id);
   }
 
+  async function fetchUpdatedConversationWithTags(conversationId: string) {
+    try {
+      const { data: conversation } = await supabaseAdmin
+        .from(TABLES.conversations)
+        .select("*")
+        .eq("id", conversationId)
+        .single();
+      
+      if (!conversation) return null;
+
+      const { data: tagsData } = await supabaseAdmin
+        .from(TABLES.conversation_tags)
+        .select(`
+          tag:tag_id (*)
+        `)
+        .eq('conversation_id', conversationId);
+
+      const tags = (tagsData || [])
+        .map((t: any) => t.tag)
+        .filter(Boolean);
+
+      return {
+        ...conversation,
+        team_id: conversation.team_id || DEFAULT_TEAM.id,
+        team_name: conversation.team_name || DEFAULT_TEAM.name,
+        queue_id: conversation.queue_id || conversation.team_id || DEFAULT_TEAM.id,
+        queue_name: conversation.queue_name || conversation.team_name || DEFAULT_TEAM.name,
+        tags
+      };
+    } catch (err) {
+      console.error("[fetchUpdatedConversationWithTags Error]", err);
+      return null;
+    }
+  }
+
   async function processIncomingDirectZapiMessage(payload: any, logId: string | null, diagnosis: any) {
     if (!diagnosis?.allowed || !diagnosis?.phoneNormalized) {
       throw new Error("Tentativa de processar payload não individual como mensagem direta.");
@@ -2062,6 +2097,9 @@ const DEFAULT_TEAM = {
     const message = await createIncomingDirectMessage(conversation, customer, normalized);
     await updateConversationAfterIncomingDirectMessage(conversation, normalized, message);
 
+    // Fetch the fully updated conversation with its tags and tracking fields
+    const updatedConversationWithTags = await fetchUpdatedConversationWithTags(conversation.id) || conversation;
+
     if (logId) {
       await supabaseAdmin.from("zapi_webhook_logs").update({
         processed: true,
@@ -2081,7 +2119,16 @@ const DEFAULT_TEAM = {
       }).eq("id", logId);
     }
 
-    broadcastEvent("message.received", { customer, conversation, message, direction: isOutgoing ? "outgoing" : "incoming" });
+    broadcastEvent("message.received", { 
+      customer, 
+      conversation: updatedConversationWithTags, 
+      message: {
+        ...message,
+        normalized_message_type: normalized.messageType || 'text',
+        display_content: message.content
+      }, 
+      direction: isOutgoing ? "outgoing" : "incoming" 
+    });
 
     return {
       phone_normalized: phone,
@@ -2361,15 +2408,12 @@ const DEFAULT_TEAM = {
       .select("*")
       .single();
 
-    const { data: finalConv } = await supabaseAdmin
-      .from("crm_conversations")
-      .select("*")
-      .eq("id", conversation.id)
-      .single();
+    // Fetch the fully updated conversation with its tags and tracking fields
+    const updatedConversationWithTags = await fetchUpdatedConversationWithTags(conversation.id) || updatedConv || conversation;
 
     broadcastEvent("message.received", { 
       customer, 
-      conversation: finalConv || updatedConv || conversation, 
+      conversation: updatedConversationWithTags, 
       message: {
         ...message,
         normalized_message_type: 'text',
@@ -2378,7 +2422,7 @@ const DEFAULT_TEAM = {
       direction: "incoming" 
     });
 
-    return { customer, conversation: finalConv || updatedConv || conversation, message };
+    return { customer, conversation: updatedConversationWithTags, message };
   }
 
   // --- Campaign Helpers ---
@@ -4070,21 +4114,16 @@ const DEFAULT_TEAM = {
           const existingTime = new Date(existing.last_message_at || 0).getTime();
           const incomingTime = new Date(c.last_message_at || 0).getTime();
           
-          if (incomingTime > existingTime) {
-            existing.last_message = c.last_message;
-            existing.last_message_at = c.last_message_at;
-            existing.id = c.id;
-            existing.status = c.status;
-            existing.assigned_user_id = c.assigned_user_id;
-            existing.assigned_user_name = c.assigned_user_name;
-            if (c.customer) {
-              existing.customer = c.customer;
-            }
-          }
-          
-          // Combine unread count
-          existing.unread_count = (existing.unread_count || 0) + (c.unread_count || 0);
-          
+          // Capture merged traffic variables from either conversation
+          const mergedTraffic = {
+            traffic_source: c.traffic_source || existing.traffic_source || null,
+            traffic_campaign: c.traffic_campaign || existing.traffic_campaign || null,
+            traffic_headline: c.traffic_headline || existing.traffic_headline || null,
+            traffic_medium: c.traffic_medium || existing.traffic_medium || null,
+            traffic_content: c.traffic_content || existing.traffic_content || null,
+            traffic_access_url: c.traffic_access_url || existing.traffic_access_url || null,
+          };
+
           // Merge tags
           const existingTags = existing.tags || [];
           const incomingTags = c.tags || [];
@@ -4094,7 +4133,23 @@ const DEFAULT_TEAM = {
               mergedTags.push(it);
             }
           }
-          existing.tags = mergedTags;
+
+          const combinedUnread = (existing.unread_count || 0) + (c.unread_count || 0);
+
+          if (incomingTime > existingTime) {
+            Object.assign(existing, {
+              ...c,
+              ...mergedTraffic,
+              unread_count: combinedUnread,
+              tags: mergedTags
+            });
+          } else {
+            Object.assign(existing, {
+              ...mergedTraffic,
+              unread_count: combinedUnread,
+              tags: mergedTags
+            });
+          }
         }
       }
 

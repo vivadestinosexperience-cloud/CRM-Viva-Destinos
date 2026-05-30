@@ -248,6 +248,12 @@ const buildHeaderRow = (customDefs: CustomFieldDefinition[]): string[] => {
     "Telefone",
     "Última Mensagem",
     "Status de Andamento",
+    "Origem UTM (Rastreio)",
+    "Campanha UTM",
+    "Headline UTM",
+    "Meio UTM",
+    "Conteúdo UTM",
+    "URL de Acesso",
     ...customDefs.map((d) => d.name),
   ];
 };
@@ -281,6 +287,13 @@ const buildConversationRow = (
   const lastMessage = conv.last_message || "";
   const cleanStatus = getCleanStatusLabel(conv);
 
+  const trafficSource = (conv as any).traffic_source || "";
+  const trafficCampaign = (conv as any).traffic_campaign || "";
+  const trafficHeadline = (conv as any).traffic_headline || "";
+  const trafficMedium = (conv as any).traffic_medium || "";
+  const trafficContent = (conv as any).traffic_content || "";
+  const trafficAccessUrl = (conv as any).traffic_access_url || "";
+
   const row = [
     conv.id,
     createdDate,
@@ -288,6 +301,12 @@ const buildConversationRow = (
     clientPhone,
     lastMessage,
     cleanStatus,
+    trafficSource,
+    trafficCampaign,
+    trafficHeadline,
+    trafficMedium,
+    trafficContent,
+    trafficAccessUrl,
   ];
 
   // Custom field values
@@ -425,25 +444,9 @@ export const syncConversationToSheet = async (
     const rowData = buildConversationRow(conv, customDefs);
 
     if (existingRowIndex !== -1) {
-      // Row exists -> Update cells up to the row length
-      const targetCol = getColLetter(rowData.length);
-      const range = `A${existingRowIndex}:${targetCol}${existingRowIndex}`;
-      const response = await apiFetch(
-        `${BASE_SHEETS_URL}/${spreadsheetId}/values/${range}?valueInputOption=USER_ENTERED`,
-        {
-          method: "PUT",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            range,
-            majorDimension: "ROWS",
-            values: [rowData],
-          }),
-        }
-      );
-      return response.ok;
+      // Row exists -> Skip syncing to Google Sheets (Only log on the very first contact message!)
+      console.log(`[Google Sheets] Sincronização ignorada para conversa ${conv.id} porque ela já existe na planilha (regras de primeiro contato).`);
+      return true; // Already exists, do not overwrite custom data or status
     } else {
       // Row does not exist -> Append row
       const range = "A1";
@@ -508,39 +511,8 @@ export const syncAllConversationsToSheet = async (
       const existingRowIndex = existingIdsMap.get(conv.id);
 
       if (existingRowIndex) {
-        // Update existing row (wrapped in try...catch to ensure robust execution across other rows)
-        try {
-          const targetCol = getColLetter(rowData.length);
-          const range = `A${existingRowIndex}:${targetCol}${existingRowIndex}`;
-          const res = await apiFetch(
-            `${BASE_SHEETS_URL}/${spreadsheetId}/values/${range}?valueInputOption=USER_ENTERED`,
-            {
-              method: "PUT",
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                range,
-                majorDimension: "ROWS",
-                values: [rowData],
-              }),
-            }
-          );
-          if (res.ok) {
-            updatedCount++;
-          } else {
-            const errorText = await res.text();
-            console.warn(`[Google Sheets] Failed to update row ${existingRowIndex} for conversation ${conv.id}:`, errorText);
-            // Fallback: if PUT fails, we can add it to append list or just continue to avoid failure
-            rowsToAppend.push(rowData);
-            appendedCount++;
-          }
-        } catch (rowErr) {
-          console.error(`[Google Sheets] Networking/API error for row ${existingRowIndex}:`, rowErr);
-          rowsToAppend.push(rowData);
-          appendedCount++;
-        }
+        // Row already exists in Sheet -> Skip because we only log on first contact message
+        console.log(`[Google Sheets] Batch sync: Skipping existing conversation ${conv.id}`);
       } else {
         // Append row
         rowsToAppend.push(rowData);

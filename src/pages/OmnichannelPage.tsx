@@ -514,16 +514,27 @@ export default function OmnichannelPage() {
             mergedTags.push(tg);
           }
         }
+
+        const mergedTraffic = {
+          traffic_source: c.traffic_source || existing.traffic_source || undefined,
+          traffic_campaign: c.traffic_campaign || existing.traffic_campaign || undefined,
+          traffic_headline: c.traffic_headline || existing.traffic_headline || undefined,
+          traffic_medium: c.traffic_medium || existing.traffic_medium || undefined,
+          traffic_content: c.traffic_content || existing.traffic_content || undefined,
+          traffic_access_url: c.traffic_access_url || existing.traffic_access_url || undefined,
+        };
         
         if (incomingTime > existingTime) {
           uniqueMap.set(key, {
             ...c,
+            ...mergedTraffic,
             unread_count: (existing.unread_count || 0) + (c.unread_count || 0),
             tags: mergedTags
           });
         } else {
           uniqueMap.set(key, {
             ...existing,
+            ...mergedTraffic,
             unread_count: (existing.unread_count || 0) + (c.unread_count || 0),
             tags: mergedTags
           });
@@ -611,6 +622,13 @@ export default function OmnichannelPage() {
           );
         });
         setConversations(ordered);
+
+        // Fetch tags and sync with useAppStore to ensure newly created tags are immediate in filters
+        tagService.list().then(tagsList => {
+          if (tagsList && tagsList.length > 0) {
+            useAppStore.setState({ tags: tagsList });
+          }
+        }).catch(e => console.warn("[TAGS REFRESH ERROR]", e));
 
         // Auto-select first conversation if requested (foreground load only, and if no conversation is currently active and no route param is present)
         if (!silent && !activeConversationIdRef.current && !conversationId && ordered.length > 0) {
@@ -6035,7 +6053,7 @@ export default function OmnichannelPage() {
       <TagManagementModal
         isOpen={showTagManagement}
         onClose={() => setShowTagManagement(false)}
-        tags={tags}
+        tags={safeTags}
         onAdd={addTag}
         onUpdate={updateTag}
         onDelete={deleteTag}
@@ -6053,7 +6071,7 @@ export default function OmnichannelPage() {
         isOpen={showFilterPanel}
         onClose={() => setShowFilterPanel(false)}
         teams={teams}
-        tags={tags}
+        tags={safeTags}
         accounts={whatsAppAccounts}
         users={users}
         selectedTagIds={selectedTagIds}
