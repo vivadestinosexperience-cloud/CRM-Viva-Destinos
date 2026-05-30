@@ -2045,6 +2045,18 @@ const DEFAULT_TEAM = {
     const zapiReferral = payload?.referral || payload?.message?.referral || payload?.text?.referral;
     if (zapiReferral && !isOutgoing) {
       await applyPaidTrafficReferral(conversation.id, zapiReferral);
+    } else if (!isOutgoing && normalized.content) {
+      const extractedUtm = extractUtmsFromText(normalized.content);
+      if (extractedUtm && extractedUtm.utm_source) {
+        console.log("[ZAPI UTM EXTRACTION SUCCESS] Extracted UTMs from plain message text:", extractedUtm);
+        await applyPaidTrafficReferral(conversation.id, {
+          source_type: "text_utm",
+          source_id: extractedUtm.utm_campaign || "utm_campaign",
+          source_url: `https://facebook.com/?utm_source=${extractedUtm.utm_source}&utm_medium=${extractedUtm.utm_medium}&utm_campaign=${extractedUtm.utm_campaign}&utm_content=${extractedUtm.utm_content}&utm_term=${extractedUtm.utm_term}`,
+          headline: extractedUtm.utm_term || "UTM Z-API Message Link",
+          body: normalized.content
+        });
+      }
     }
 
     const message = await createIncomingDirectMessage(conversation, customer, normalized);
@@ -2150,6 +2162,44 @@ const DEFAULT_TEAM = {
     } catch (err) {
       console.warn("[UTM PARSER WARNING] Failed to parse URL:", urlStr);
     }
+    return result;
+  }
+
+  function extractUtmsFromText(text: string) {
+    const result = {
+      utm_source: "",
+      utm_medium: "",
+      utm_campaign: "",
+      utm_content: "",
+      utm_term: ""
+    };
+    if (!text) return null;
+
+    // 1. Detect if there is a URL inside the text
+    const urlRegex = /(https?:\/\/[^\s]+)/gi;
+    const urls = text.match(urlRegex);
+    if (urls && urls.length > 0) {
+      const parsedUtms = parseUtmParams(urls[0]);
+      if (parsedUtms.utm_source) {
+        return parsedUtms;
+      }
+    }
+
+    // 2. Direct key=value scanning from plain text body (e.g. pre-filled Click-to-WhatsApp text)
+    const keywords = ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"];
+    let foundAny = false;
+    keywords.forEach(kw => {
+      const regex = new RegExp(`${kw}\\s*[=:]\\s*([^&\\s\\n?]+)`, 'i');
+      const match = text.match(regex);
+      if (match && match[1]) {
+        let val = match[1].trim();
+        val = val.replace(/^[,"'.({\s]+|[,"'.)}\s]+$/g, '');
+        (result as any)[kw] = val;
+        foundAny = true;
+      }
+    });
+
+    if (!foundAny) return null;
     return result;
   }
 
@@ -2262,6 +2312,18 @@ const DEFAULT_TEAM = {
 
     if (referral) {
       await applyPaidTrafficReferral(conversation.id, referral);
+    } else if (messageText) {
+      const extractedUtm = extractUtmsFromText(messageText);
+      if (extractedUtm && extractedUtm.utm_source) {
+        console.log("[UTM EXTRACTION METADATA SUCCESS] Extracted UTMs from plain message text:", extractedUtm);
+        await applyPaidTrafficReferral(conversation.id, {
+          source_type: "text_utm",
+          source_id: extractedUtm.utm_campaign || "utm_campaign",
+          source_url: `https://facebook.com/?utm_source=${extractedUtm.utm_source}&utm_medium=${extractedUtm.utm_medium}&utm_campaign=${extractedUtm.utm_campaign}&utm_content=${extractedUtm.utm_content}&utm_term=${extractedUtm.utm_term}`,
+          headline: extractedUtm.utm_term || "UTM Message Text Link",
+          body: messageText
+        });
+      }
     }
 
     const { data: message, error: messageError } = await supabaseAdmin

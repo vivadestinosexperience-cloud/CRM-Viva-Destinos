@@ -302,6 +302,14 @@ export interface Conversation {
   channel_id?: string;
   transfer_reason?: string;
 
+  // Paid traffic tracking fields
+  traffic_source?: string;
+  traffic_campaign?: string;
+  traffic_headline?: string;
+  traffic_medium?: string;
+  traffic_content?: string;
+  traffic_access_url?: string;
+
   // Internal Note
   internal_note?: InternalNote;
 
