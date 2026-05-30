@@ -3505,6 +3505,72 @@ export default function OmnichannelPage() {
                 </div>
               ) : null}
 
+              {/* Paid Traffic Lead Tracking Announcement Card */}
+              {activeConversation && ((activeConversation as any).traffic_source || (activeConversation as any).traffic_campaign) && (
+                <div id="meta-traffic-announcement-card" className="bg-rose-50 border border-rose-100 rounded-3xl p-5 my-4 shadow-sm flex flex-col gap-3 animate-fade-in text-slate-800">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-full bg-rose-500 flex items-center justify-center text-white shadow-sm shrink-0">
+                        <TrendingUp className="w-4.5 h-4.5" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight">Origem de Anúncio Detectada</h4>
+                        <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Mapeado via Meta Cloud API</p>
+                      </div>
+                    </div>
+                    <span className="text-[9px] bg-rose-500 text-white px-2.5 py-1 rounded-full font-black uppercase tracking-widest animate-pulse border border-rose-600">
+                      TRÁFEGO-PAGO
+                    </span>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5 bg-white/75 backdrop-blur-sm border border-slate-100 rounded-2xl p-4 text-xs mt-1">
+                    {(activeConversation as any).traffic_source && (
+                      <div>
+                        <span className="text-[9px] uppercase tracking-wider font-black text-slate-400 block mb-0.5">Origem / Canal</span>
+                        <span className="font-extrabold text-rose-600">{(activeConversation as any).traffic_source}</span>
+                      </div>
+                    )}
+                    {(activeConversation as any).traffic_campaign && (
+                      <div>
+                        <span className="text-[9px] uppercase tracking-wider font-black text-slate-400 block mb-0.5">Campanha</span>
+                        <span className="font-extrabold text-slate-800">{(activeConversation as any).traffic_campaign}</span>
+                      </div>
+                    )}
+                    {(activeConversation as any).traffic_headline && (
+                      <div>
+                        <span className="text-[9px] uppercase tracking-wider font-black text-slate-400 block mb-0.5">Headline de Origem</span>
+                        <span className="font-semibold text-slate-700 italic">"{(activeConversation as any).traffic_headline}"</span>
+                      </div>
+                    )}
+                    {(activeConversation as any).traffic_medium && (
+                      <div>
+                        <span className="text-[9px] uppercase tracking-wider font-black text-slate-400 block mb-0.5">Meio de Divulgação</span>
+                        <span className="font-mono text-[10px] text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded inline-block">{(activeConversation as any).traffic_medium}</span>
+                      </div>
+                    )}
+                    {(activeConversation as any).traffic_content && (
+                      <div>
+                        <span className="text-[9px] uppercase tracking-wider font-black text-slate-400 block mb-0.5">Conteúdo do Anúncio</span>
+                        <span className="font-medium text-slate-700 font-sans">{(activeConversation as any).traffic_content}</span>
+                      </div>
+                    )}
+                    {(activeConversation as any).traffic_access_url && (
+                      <div className="col-span-1 sm:col-span-2 md:col-span-3 border-t border-slate-100 pt-2.5 mt-1">
+                        <span className="text-[9px] uppercase tracking-wider font-black text-slate-400 block mb-0.5">URL de Acesso ao Conteúdo</span>
+                        <a 
+                          href={(activeConversation as any).traffic_access_url} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="text-blue-600 hover:underline hover:text-blue-800 truncate block font-mono text-[10px] mt-0.5"
+                        >
+                          {(activeConversation as any).traffic_access_url}
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {(() => {
                 const seen = new Set<string>();
                 return safeMessages.filter((m) => {
